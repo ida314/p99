@@ -1,0 +1,233 @@
+/* One accent colour (cyan), one warning colour (yellow), everything
+   else is the terminal's own palette. The screens are dense text; chrome
+   should stay out of the way. */
+
+Screen {
+    background: $surface;
+}
+
+#banner {
+    color: $accent;
+    text-style: bold;
+    height: auto;
+    margin: 0 2;
+}
+
+.tagline {
+    color: $text-muted;
+    margin: 0 4 1 4;
+}
+
+.panel {
+    height: auto;
+    margin: 0 2;
+    padding: 0 1;
+}
+
+/* The home menu is a real list so j/k and enter reach it, but it should read
+   as a menu: no border, no scrollbar, sized to its four entries. */
+#menu {
+    height: auto;
+    margin: 1 2;
+    padding: 0;
+    border: none;
+    background: transparent;
+    scrollbar-size: 0 0;
+}
+
+.section-title {
+    color: $accent;
+    text-style: bold;
+    margin: 1 2 0 2;
+}
+
+.hint-bar {
+    dock: bottom;
+    height: 1;
+    background: $panel;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+/* --- setup ------------------------------------------------------------- */
+
+#setup-controls {
+    height: auto;
+    margin: 1 2 0 2;
+}
+
+#setup-controls Input {
+    width: 1fr;
+}
+
+#count {
+    width: 12;
+    margin-left: 1;
+}
+
+#problem-list {
+    margin: 1 2;
+    height: 1fr;
+    border: round $panel;
+}
+
+#setup-status {
+    margin: 0 2;
+    color: $text-muted;
+    height: 1;
+}
+
+/* --- solve ------------------------------------------------------------- */
+
+#solve-body {
+    height: 1fr;
+}
+
+#progress {
+    color: $text-muted;
+    margin: 1 2 0 2;
+}
+
+#problem-title {
+    text-style: bold;
+    margin: 0 2;
+}
+
+#problem-meta {
+    color: $text-muted;
+    margin: 0 2;
+}
+
+#problem-url {
+    color: $accent;
+    margin: 0 2 1 2;
+}
+
+#timer {
+    margin: 1 2;
+    height: auto;
+    color: $accent;
+}
+
+#attempt-state {
+    margin: 0 2;
+    height: auto;
+}
+
+/* status line for the last thing that happened — sits under the numbers you
+   are already looking at rather than docked at the bottom of the terminal */
+#toast {
+    height: 1;
+    margin: 1 2;
+    color: $text-muted;
+}
+
+#hint-panel {
+    margin: 0 2;
+    padding: 1 2;
+    height: auto;
+    border: round $warning;
+    display: none;
+}
+
+#hint-panel.visible {
+    display: block;
+}
+
+/* --- modals ------------------------------------------------------------ */
+
+FinishModal {
+    align: center middle;
+}
+
+#finish-box {
+    width: 62;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#finish-box .field-label {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#finish-box Input {
+    width: 1fr;
+}
+
+#optional-row {
+    height: auto;
+}
+
+ConfirmModal {
+    align: center middle;
+}
+
+#confirm-box {
+    width: 54;
+    height: auto;
+    padding: 1 2;
+    border: round $warning;
+    background: $surface;
+}
+
+#confirm-buttons {
+    height: auto;
+    margin-top: 1;
+}
+
+#confirm-buttons Button {
+    margin-right: 2;
+}
+
+/* --- history / stats --------------------------------------------------- */
+
+#history-body {
+    height: 1fr;
+}
+
+#run-list {
+    width: 26;
+    border: round $panel;
+    margin: 1 0 1 1;
+}
+
+/* The stat lines are drawn at a fixed 62 columns (render.WIDTH), so this pane
+   spends its width carefully: a one-column gutter instead of a box, and a thin
+   scrollbar. A box border here costs six columns and wraps every rule. */
+#detail-pane {
+    width: 1fr;
+    margin: 1 0 1 1;
+    border-left: tall $panel;
+    scrollbar-size-vertical: 1;
+}
+
+/* No padding: every line render.py emits already starts with its own two
+   spaces, and a stat line header is exactly WIDTH wide, so a single borrowed
+   column wraps the difficulty tag onto its own line. */
+#run-detail {
+    height: auto;
+    padding: 0;
+}
+
+/* h and l move between the two panes, so which one has focus has to be
+   visible — otherwise j and k appear to act at random. */
+#run-list:focus {
+    border: round $accent;
+}
+
+#detail-pane:focus {
+    border-left: tall $accent;
+}
+
+#stats-body {
+    height: 1fr;
+    margin: 1 0;
+}
+
+.dist-block {
+    height: auto;
+    margin: 0 2 1 2;
+}
