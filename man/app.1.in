@@ -1,0 +1,214 @@
+.\" Template. The Makefile renders this into build/<command>.1 by substituting
+.\" the @PLACEHOLDERS@ from src/core/branding.py — edit this file, never the
+.\" generated one, and never write the project's name here.
+.TH @COMMAND_UPPER@ 1 "@DATE@" "@NAME@ @VERSION@" "User Commands"
+.SH NAME
+@COMMAND@ \- @DESCRIPTION@
+.SH SYNOPSIS
+.B @COMMAND@
+.RI [ command ]
+.RI [ options ]
+.SH DESCRIPTION
+.B @NAME@
+turns interview practice into timed, scored, permanently recorded runs.
+You solve problems in a browser and report the verdict yourself;
+.B @NAME@
+times the attempt, records what happened, and prompts you to write down what
+made it hard while you still remember.
+.PP
+Everything is stored as an append-only event log. Run summaries and rankings
+are projections rebuilt from that log, and scores are computed when you read
+them rather than stored, so changing the scoring weights re-scores all of your
+history at once. Nothing is ever overwritten.
+.PP
+With no command,
+.B @COMMAND@
+starts the terminal interface and lands on the home screen.
+.SH COMMANDS
+.TP
+.B stats
+Solve times as distributions rather than averages: the 50th, 90th and 99th
+percentiles, what is dragging the tail, and how the current window compares to
+the one before it. The 99th percentile is greyed out on small samples, where it
+is one attempt and not a statistic.
+.TP
+.B history
+Every run, ranked against every other run.
+.TP
+.B replay
+Rebuild all projections from the event log. Safe to run at any time; it changes
+no history, only the tables derived from it.
+.TP
+.B seed
+Insert or update the problem catalog. Never touches attempt history.
+.TP
+.B doctor
+Print the resolved paths, catalog size, editor and configuration.
+.SH OPTIONS
+.SS stats
+.TP
+.BI \-\-tag " TAG"
+Restrict to problems carrying a tag.
+.TP
+.BI \-\-pattern " PATTERN"
+Restrict to one pattern group, e.g.
+.IR sliding-window .
+.TP
+.BI \-\-difficulty " easy|medium|hard"
+Restrict to one difficulty.
+.TP
+.BI \-\-days " N"
+Look back N days.
+.B 0
+means all time.
+.TP
+.BI \-\-by " pattern|difficulty|tag"
+Also print one distribution per group, ordered by volume.
+.TP
+.BI \-\-limit " N"
+Maximum number of groups to print with
+.BR \-\-by .
+.TP
+.BI \-\-min\-samples " N"
+Sample count below which the 99th percentile is greyed out.
+.SS history
+.TP
+.BI \-\-limit " N"
+Show only the most recent N runs.
+.TP
+.BI \-\-run " N"
+Expand one run, by run number, into its per-problem breakdown.
+.SS seed
+.TP
+.BI \-\-file " PATH"
+Seed from a JSON catalog instead of the bundled one.
+.TP
+.BI \-\-list " NAME"
+Which bundled catalog to seed.
+.SH KEYS
+Navigation is vim's, on every screen. The arrow keys, Home/End and
+PageUp/PageDown work everywhere too.
+.TP
+.BR j ", " k
+Down, up.
+.TP
+.BR h ", " l
+Left, right. Where a screen has two panes, these move between them.
+.TP
+.BR gg ", " G
+Top, bottom.
+.TP
+.BR ^d ", " ^u
+Half a screen down, up.
+.TP
+.BR ^f ", " ^b
+A full screen down, up.
+.PP
+Because those keys are motions everywhere, no screen binds them to an action.
+.PP
+On the home screen:
+.B n
+starts a run,
+.B r
+opens the runs,
+.B t
+opens the statistics,
+.B q
+quits. The menu is also a list, so
+.BR j / k
+and Enter reach the same places.
+.PP
+On the setup screen:
+.B /
+(or
+.BR i )
+moves to the filter box and
+.B Escape
+comes back out of it to the list — a second
+.B Escape
+leaves the screen.
+.B Space
+picks a problem,
+.B ^r
+rolls a fresh random set,
+.B ^s
+starts the run.
+.PP
+On the active problem screen:
+.TP
+.B o
+Open the problem in a browser.
+.TP
+.B p
+Pause and resume. Paused time is recorded, not hidden.
+.TP
+.B ?
+Reveal the next hint tier. Hints are monotonic and cannot be taken back; the
+last tier is the full solution and ends the attempt.
+.TP
+.B s
+Log a submission.
+.TP
+.B f
+Finish: verdict, self-confidence, then the two editor steps.
+.TP
+.B x
+Give up. Scores zero, and is still recorded.
+.TP
+.B q
+End the run.
+.SH FILES
+.TP
+.I ~/.config/@SLUG@/config.toml
+Written on first run with every default present and commented.
+.TP
+.I ~/.local/share/@SLUG@/@SLUG@.db
+The event log and the projections built from it.
+.TP
+.I ~/.local/share/@SLUG@/code/<problem>/<attempt-id>.<ext>
+Archived solutions.
+.TP
+.I ~/.local/share/@SLUG@/notes/<problem>/<attempt-id>.md
+Reflection notes.
+.PP
+Solutions and notes are kept as ordinary files rather than in the database so
+they can be searched, diffed and opened with the usual tools.
+.SH ENVIRONMENT
+.TP
+.B @ENVPFX@_HOME
+Relocate the configuration and data directories under one path. Useful for a
+throwaway profile.
+.TP
+.B @ENVPFX@_DB
+Use a specific database file.
+.TP
+.B @ENVPFX@_EDITOR
+Editor for the capture steps. Takes precedence over
+.B VISUAL
+and
+.BR EDITOR .
+.TP
+.B @ENVPFX@_BROWSER
+Command used to open a problem.
+.TP
+.BR VISUAL ", " EDITOR
+Consulted, in that order, when
+.B @ENVPFX@_EDITOR
+is unset. Without any of them the capture steps are skipped, which costs
+nothing but loses the notes.
+.TP
+.BR XDG_CONFIG_HOME ", " XDG_DATA_HOME
+Respected when
+.B @ENVPFX@_HOME
+is unset.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 2
+The command line could not be parsed.
+.SH NOTES
+Notes are collected from the first run even though nothing reads them yet.
+Measurements can be recomputed from the event log forever; reflections cannot
+be written after the fact.
