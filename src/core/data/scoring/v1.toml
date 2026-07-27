@@ -1,0 +1,49 @@
+# scoring weights — v1 (spec §5)
+#
+# These are guesses and are expected to be wrong. Nothing here is denormalized
+# into the event log: `attempts` stores only measured facts and the score is
+# computed on read, so editing this file (or adding v2.toml) rescores all of
+# history instantly.
+#
+# After ~30 sessions, check whether score correlates with your own sense of
+# "that went well". If it doesn't, these numbers are wrong -- not your intuition.
+
+version = 1
+name = "v1"
+
+# Multiplier applied when the attempt is a scheduled review. Reviews are worth
+# more than first encounters: retention is the thing being trained.
+review_mult = 1.25
+
+# Indexed by max_hint_tier, 0..4. Bottoms out at 0.15 rather than 0 on purpose:
+# reading the solution after a real fight should still beat not logging it.
+# Penalize hints enough to matter, never enough to make you hide them (§2.3).
+hint_mult = [1.0, 0.85, 0.65, 0.4, 0.15]
+
+[base]
+easy = 30
+medium = 50
+hard = 80
+
+[par_seconds]
+easy = 900
+medium = 1800
+hard = 2700
+
+[time_mult]
+# time_mult = clamp(intercept - active_seconds / par_seconds, floor, ceiling).
+# The floor is 0.4 so a slow correct solve is never worth less than a third of
+# a fast one -- speed is a real constraint, correctness dominates.
+intercept = 2.0
+floor = 0.4
+ceiling = 1.6
+
+[penalties]
+# per failed submission. `attempts.submissions` counts failures only, so every
+# one of them costs -- there is no free first wrong answer.
+per_extra_submission = 2
+
+[bonuses]
+# LeetCode runtime percentile at or above this earns a flat bonus
+runtime_pct_threshold = 80
+runtime = 5
