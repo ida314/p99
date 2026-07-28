@@ -113,6 +113,8 @@ starts a run,
 opens the runs,
 .B t
 opens the statistics,
+.B s
+opens the settings,
 .B q
 quits. The menu is also a list, so
 .BR j / k
@@ -147,7 +149,10 @@ Reveal the next hint tier. Hints are monotonic and cannot be taken back; the
 last tier is the full solution and ends the attempt.
 .TP
 .B s
-Log a submission.
+Log a failed submit, then hand you an editor buffer to paste the code that was
+rejected. Skippable with
+.BR :q! ,
+like every capture step, and switchable off in the settings screen.
 .TP
 .B f
 Finish: verdict, self-confidence, then the two editor steps.
@@ -160,13 +165,19 @@ End the run.
 .SH FILES
 .TP
 .I ~/.config/@SLUG@/config.toml
-Written on first run with every default present and commented.
+Written on first run with every default present and commented. The settings
+screen never rewrites it: changes made there are events layered on top, and
+.B x
+on a settings row drops the override and takes this file's value back.
 .TP
 .I ~/.local/share/@SLUG@/@SLUG@.db
 The event log and the projections built from it.
 .TP
 .I ~/.local/share/@SLUG@/code/<problem>/<attempt-id>.<ext>
 Archived solutions.
+.TP
+.I ~/.local/share/@SLUG@/code/<problem>/<attempt-id>-wrong<n>.<ext>
+Archived failed submits, beside the solution they became.
 .TP
 .I ~/.local/share/@SLUG@/notes/<problem>/<attempt-id>.md
 Reflection notes.

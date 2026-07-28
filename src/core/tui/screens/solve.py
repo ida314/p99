@@ -16,7 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import branding, capture, config
+from ... import branding, capture
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar
 from ...scoring import HINT_TIER_NAMES, fmt_duration
@@ -188,11 +188,10 @@ class SolveScreen(VimMotion, Screen[None]):
         self._tick()
 
     def action_submit(self) -> None:
-        if self.engine.attempt is None:
+        attempt = self.engine.attempt
+        if attempt is None or self._busy or attempt.finished:
             return
-        n = self.engine.record_submission("wrong_answer")
-        self._toast(f"logged failed submit #{n}", "red")
-        self._tick()
+        self._submit_flow()
 
     def action_finish(self) -> None:
         attempt = self.engine.attempt
@@ -216,6 +215,70 @@ class SolveScreen(VimMotion, Screen[None]):
         self._end_run_flow()
 
     # --- flows ------------------------------------------------------------
+
+    def _submit_flow(self) -> Worker:
+        return self.run_worker(self._do_submit(), exclusive=True)
+
+    async def _do_submit(self) -> None:
+        """Log a failed submit, then offer to archive the code behind it."""
+        attempt = self.engine.attempt
+        if attempt is None:
+            return
+        self._busy = True
+        try:
+            # The clock reading goes in the buffer header, so take it before
+            # anything else: it is how far in you were when this looked right.
+            active = attempt.active_seconds
+            n = self.engine.record_submission("wrong_answer")
+            self._toast(f"logged failed submit #{attempt.submissions}", "red")
+            self._tick()
+
+            cfg = self.app.config  # type: ignore[attr-defined]
+            if not (cfg.capture.enabled and cfg.capture.on_failed_submit):
+                return
+            if not capture.editor_available():
+                self._toast(
+                    f"failed submit #{attempt.submissions} logged — no $EDITOR, so no code kept",
+                    "yellow",
+                )
+                return
+
+            row = {**(self.engine.attempt_row() or {}), "active_seconds": active}
+            result = capture.CaptureResult(False)
+            # Pasting a wrong answer is not solve time. The attempt is still
+            # running, so the only honest way to not bill it is the pause the
+            # user could have taken by hand — logged in `paused_seconds` like
+            # any other, and visible on the screen the whole time.
+            was_paused = attempt.paused
+            if not was_paused:
+                self.engine.pause()
+            try:
+                with self.app.editor_context():  # type: ignore[attr-defined]
+                    result = capture.capture_submission(
+                        attempt.problem, row, attempt.id, n, cfg.capture.language
+                    )
+                if result.saved and result.path:
+                    self.engine.archive_submission(str(result.path), n, cfg.capture.language)
+            except SuspendNotSupported:
+                self._toast("this terminal can't hand off to $EDITOR", "yellow")
+                return
+            except Exception:
+                # Same rule as the post-solve capture: a broken editor handoff
+                # never costs you the thing that was already recorded.
+                self._toast("the editor handoff failed — the submit is still logged", "yellow")
+                return
+            finally:
+                if not was_paused:
+                    self.engine.resume()
+                self._tick()
+
+            self._toast(
+                f"failed submit #{attempt.submissions} — "
+                f"{'wrong answer archived' if result.saved else 'code skipped'}",
+                "red",
+            )
+        finally:
+            self._busy = False
 
     def _finish_flow(self) -> Worker:
         return self.run_worker(self._do_finish(), exclusive=True)
@@ -241,7 +304,7 @@ class SolveScreen(VimMotion, Screen[None]):
                 self._toast("back to the problem")
                 return
 
-            cfg = config.load()
+            cfg = self.app.config  # type: ignore[attr-defined]
             self.engine.finish(
                 result["verdict"],
                 timing=timing,
@@ -286,7 +349,7 @@ class SolveScreen(VimMotion, Screen[None]):
         attempt = self.engine.attempt
         if attempt is None:
             return
-        cfg = config.load()
+        cfg = self.app.config  # type: ignore[attr-defined]
         row = self.engine.attempt_row() or {}
         code = note = capture.CaptureResult(False)
         blocked = ""

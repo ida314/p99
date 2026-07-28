@@ -154,6 +154,43 @@ def test_an_archived_solution_lands_at_the_spec_path(monkeypatch):
     assert result.path.read_text().endswith("class Solution:\n    pass\n")
 
 
+def test_submission_header_says_which_submit_and_how_far_in():
+    header = capture.submission_header(
+        PROBLEM,
+        {"started_at": "2026-07-25T21:03:00+00:00", "active_seconds": 872, "max_hint_tier": 1},
+        "py",
+        2,
+    )
+    assert "FAILED SUBMIT #2" in header
+    assert "14:32" in header  # the clock at the submit, not at the end
+    assert "paste the code you just submitted" in header
+    assert ":q! to skip" in header
+
+
+def test_an_archived_wrong_answer_sits_beside_the_solution(monkeypatch):
+    monkeypatch.setattr(capture, "editor_available", lambda: True)
+
+    def paste(path):
+        path.write_text(path.read_text() + "while l < r:  # off by one\n")
+        return True
+
+    monkeypatch.setattr(capture, "spawn_editor", paste)
+
+    result = capture.capture_submission(PROBLEM, {}, 7, 2, "python")
+    assert result.saved
+    assert result.path == paths.submission_path(PROBLEM.slug, 7, 2, "py")
+    assert result.path.parent == paths.code_path(PROBLEM.slug, 7, "py").parent
+    assert result.path != paths.code_path(PROBLEM.slug, 7, "py")
+
+
+def test_skipping_a_wrong_answer_costs_nothing(monkeypatch):
+    monkeypatch.setattr(capture, "editor_available", lambda: True)
+    monkeypatch.setattr(capture, "spawn_editor", lambda path: True)
+    result = capture.capture_submission(PROBLEM, {}, 7, 1, "python")
+    assert not result.saved
+    assert not paths.submission_path(PROBLEM.slug, 7, 1, "py").exists()
+
+
 def test_missing_editor_is_not_an_error(monkeypatch):
     monkeypatch.setattr(capture, "editor_available", lambda: False)
     assert not capture.capture_note(PROBLEM, 1).saved
@@ -162,6 +199,9 @@ def test_missing_editor_is_not_an_error(monkeypatch):
 def test_paths_follow_the_spec(isolated_home):
     assert paths.code_path("two-sum", 12, "py").as_posix().endswith("code/two-sum/12.py")
     assert paths.note_path("two-sum", 12).as_posix().endswith("notes/two-sum/12.md")
+    assert (
+        paths.submission_path("two-sum", 12, 3, "py").as_posix().endswith("code/two-sum/12-wrong3.py")
+    )
 
 
 def test_bundled_catalog_json_is_unique_and_complete():

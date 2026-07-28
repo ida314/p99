@@ -174,6 +174,35 @@ async def test_the_home_menu_is_navigable(app):
         assert isinstance(app.screen, HistoryScreen)
 
 
+async def test_settings_values_move_sideways_and_come_back(app):
+    """`h`/`l` may change a value only because `h` puts back what `l` took."""
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        before = app.config.session.planned_n
+
+        await pilot.press("j", "j", "j")  # problems per run
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.config.session.planned_n != before
+
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.config.session.planned_n == before
+
+
+async def test_pure_motions_never_change_a_setting(app):
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        before = app.config
+
+        for key in ("j", "k", "g", "g", "G", "ctrl+d", "ctrl+u"):
+            await pilot.press(key)
+        await pilot.pause()
+        assert app.config == before
+
+
 async def test_h_and_l_move_between_the_history_panes(app):
     async with app.run_test() as pilot:
         await pilot.press("r")

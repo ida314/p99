@@ -83,8 +83,8 @@ def editor_available() -> bool:
     return bool(cmd) and shutil.which(cmd[0]) is not None
 
 
-def solution_header(problem: Problem, attempt: dict, ext: str) -> str:
-    """The pre-filled comment header on the solution buffer."""
+def _code_header(problem: Problem, attempt: dict, ext: str, status: str, prompt: str) -> str:
+    """The three pre-filled comment lines every code buffer opens with."""
     prefix = COMMENT_PREFIX.get(ext, "#")
     started = attempt.get("started_at")
     when = ""
@@ -95,12 +95,38 @@ def solution_header(problem: Problem, attempt: dict, ext: str) -> str:
             when = started
     tier = int(attempt.get("max_hint_tier") or 0)
     hints = f"hints: tier {tier}" if tier else "hints: none"
-    verdict = VERDICT_LABELS.get(attempt.get("verdict") or "", "UNRESOLVED")
     duration = fmt_duration(attempt.get("active_seconds"))
     return (
         f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
-        f"{prefix} {when} | {duration} | {hints} | {verdict}\n"
-        f"{prefix} paste your solution below. :wq to save, :q! to skip.\n\n"
+        f"{prefix} {when} | {duration} | {hints} | {status}\n"
+        f"{prefix} {prompt} :wq to save, :q! to skip.\n\n"
+    )
+
+
+def solution_header(problem: Problem, attempt: dict, ext: str) -> str:
+    """The pre-filled comment header on the solution buffer."""
+    return _code_header(
+        problem,
+        attempt,
+        ext,
+        VERDICT_LABELS.get(attempt.get("verdict") or "", "UNRESOLVED"),
+        "paste your solution below.",
+    )
+
+
+def submission_header(problem: Problem, attempt: dict, ext: str, n: int) -> str:
+    """The same header, for the code behind a failed submit.
+
+    The duration on line two is the clock at the moment of the submit, not at
+    the end of the attempt — that is the point of keeping these: how far in you
+    were when this particular wrong answer looked right.
+    """
+    return _code_header(
+        problem,
+        attempt,
+        ext,
+        f"FAILED SUBMIT #{n}",
+        "paste the code you just submitted below.",
     )
 
 
@@ -187,6 +213,35 @@ def capture_solution(
     dest = paths.code_path(problem.slug, attempt_id, ext)
     return _run_capture(
         f"{problem.slug}.{ext}",
+        header,
+        dest,
+        lambda text: not _strip_comments(text, prefix),
+    )
+
+
+def capture_submission(
+    problem: Problem,
+    attempt: dict,
+    attempt_id: int,
+    n: int,
+    language: str | None = None,
+) -> CaptureResult:
+    """The wrong answer behind failed submit `n`, mid-attempt.
+
+    Same bargain as every other capture step: pre-filled header, `:q!` skips,
+    skipping costs nothing. A rejected submission is the only artifact of the
+    attempt that stops existing the moment you edit the buffer it came from, so
+    it is worth one keystroke to keep — the diff against what finally passed is
+    the whole lesson.
+    """
+    cfg = config.load()
+    lang = language or cfg.capture.language
+    ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
+    prefix = COMMENT_PREFIX.get(ext, "#")
+    header = submission_header(problem, attempt, ext, n)
+    dest = paths.submission_path(problem.slug, attempt_id, n, ext)
+    return _run_capture(
+        f"{problem.slug}-wrong{n}.{ext}",
         header,
         dest,
         lambda text: not _strip_comments(text, prefix),

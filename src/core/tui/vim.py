@@ -1,10 +1,15 @@
 """Vim motions, shared by every screen.
 
-The rule this file exists to hold up: **`h j k l` and `g` are motions on every
-screen, and no screen may bind them to an action.** That is why the solve screen
-reveals a hint on `?` and gives up on `x` — both used to sit on a motion key,
-and a reflex `h` that irreversibly reveals a hint tier and costs you points is
-not something a keymap should let you do.
+The rule this file exists to hold up: **`j k g G` and the control pairs are
+motions on every screen, and no screen may bind them to anything else.** That is
+why the solve screen reveals a hint on `?` and gives up on `x` — both used to
+sit on a motion key, and a reflex `h` that irreversibly reveals a hint tier and
+costs you points is not something a keymap should let you do.
+
+`h` and `l` are the one exception, and only ever mean "left" and "right": a
+screen may bind them to horizontal movement through its own content — panes on
+the history screen, values on the settings screen — never to an action that
+sticks. Whatever `l` does there, `h` has to undo.
 
 Motions are bound on the *screen*, not on the widgets. A key event bubbles
 outward from whatever has focus, so an `Input` swallows a literal `j` — typing

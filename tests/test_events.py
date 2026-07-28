@@ -14,7 +14,8 @@ def _run_a_session(conn, slugs=("two-sum", "3sum")):
     for slug in slugs:
         eng.start_problem(slug)
         eng.reveal_hint()
-        eng.record_submission("wrong_answer")
+        n = eng.record_submission("wrong_answer")
+        eng.archive_submission(f"/tmp/{slug}-wrong{n}.py", n, "python")
         eng.finish("accepted", self_confidence=3, lc_runtime_pct=91.0, language="python")
         eng.archive_code(f"/tmp/{slug}.py", "python")
         eng.record_note(f"/tmp/{slug}.md")
@@ -30,7 +31,7 @@ def _snapshot(conn):
             out.append({k: row[k] for k in row.keys() if k not in skip})
         return out
 
-    return rows("sessions"), rows("attempts")
+    return rows("sessions"), rows("attempts"), rows("submissions")
 
 
 def test_projections_are_rebuilt_identically_by_replay(conn):
@@ -99,6 +100,68 @@ def test_accepted_submission_does_not_count_against_you(conn):
     eng.record_submission("accepted")
     eng.finish("accepted")
     assert conn.execute("SELECT submissions FROM attempts").fetchone()["submissions"] == 1
+
+
+def test_every_submission_is_logged_in_order_with_its_code(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    first = eng.record_submission("wrong_answer")
+    eng.archive_submission("/tmp/1-wrong1.py", first, "python")
+    second = eng.record_submission("wrong_answer")  # skipped the editor
+    eng.finish("accepted")
+
+    assert (first, second) == (1, 2)
+    rows = conn.execute("SELECT * FROM submissions ORDER BY n").fetchall()
+    assert [r["n"] for r in rows] == [1, 2]
+    assert [r["code_path"] for r in rows] == ["/tmp/1-wrong1.py", None]
+    assert all(r["verdict"] == "wrong_answer" for r in rows)
+    assert all(r["attempt_id"] == eng.attempt.id for r in rows)
+
+
+def test_archived_wrong_answers_never_touch_the_solution_path(conn):
+    """`attempts.code_path` is the solution you settled on, not a wrong answer."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    n = eng.record_submission("wrong_answer")
+    eng.archive_submission("/tmp/wrong.py", n, "python")
+    eng.finish("accepted")
+    eng.archive_code("/tmp/right.py", "python")
+
+    assert conn.execute("SELECT code_path FROM attempts").fetchone()["code_path"] == "/tmp/right.py"
+    assert conn.execute("SELECT code_path FROM submissions").fetchone()["code_path"] == "/tmp/wrong.py"
+
+
+def test_submission_numbers_survive_an_accepted_submit_in_the_middle(conn):
+    """`n` numbers submits; `submissions` counts failures. They are not the same."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.record_submission("wrong_answer")
+    eng.record_submission("accepted")
+    third = eng.record_submission("wrong_answer")
+    eng.finish("accepted")
+
+    assert third == 3  # would collide with the first wrong answer's file at 2
+    assert conn.execute("SELECT submissions FROM attempts").fetchone()["submissions"] == 2
+    assert [r["n"] for r in conn.execute("SELECT n FROM submissions ORDER BY n")] == [1, 2, 3]
+
+
+def test_a_submission_logged_before_this_feature_still_projects(conn):
+    """Old events carry no `n`; replay has to number them anyway."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    attempt = eng.start_problem("two-sum")
+    for _ in range(2):
+        events.append(
+            conn,
+            events.PROBLEM_SUBMITTED,
+            {"attempt_uuid": attempt.uuid, "slug": "two-sum", "verdict": "wrong_answer"},
+        )
+    assert [r["n"] for r in conn.execute("SELECT n FROM submissions ORDER BY n")] == [1, 2]
+    events.replay(conn)
+    assert [r["n"] for r in conn.execute("SELECT n FROM submissions ORDER BY n")] == [1, 2]
 
 
 def test_gave_up_is_still_recorded(conn):

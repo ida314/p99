@@ -61,6 +61,10 @@ class Attempt:
     paused_seconds: float = 0.0
     max_hint_tier: int = 0
     submissions: int = 0
+    #: Every submit logged, pass or fail — `submissions` counts only the fails.
+    #: This is the one that numbers the archived wrong answers, so it can never
+    #: reuse a number and overwrite a file.
+    submits_logged: int = 0
     finished: bool = False
     final_timing: dict[str, int] | None = None
 
@@ -268,16 +272,27 @@ class RunEngine:
         return tier, HINT_STUBS[tier]
 
     def record_submission(self, verdict: str) -> int:
-        """Log a submission to LeetCode. Only failures count against you."""
+        """Log a submission to LeetCode. Only failures count against you.
+
+        Returns the submission's number within the attempt, which is also what
+        names its archived code — so the caller can hand it to `capture` and to
+        `archive_submission` without counting anything itself.
+        """
         a = self._require_attempt()
+        a.submits_logged += 1
         events.append(
             self.conn,
             events.PROBLEM_SUBMITTED,
-            {"attempt_uuid": a.uuid, "slug": a.problem.slug, "verdict": verdict},
+            {
+                "attempt_uuid": a.uuid,
+                "slug": a.problem.slug,
+                "verdict": verdict,
+                "n": a.submits_logged,
+            },
         )
         if verdict != "accepted":
             a.submissions += 1
-        return a.submissions
+        return a.submits_logged
 
     def finish(
         self,
@@ -334,6 +349,21 @@ class RunEngine:
             {
                 "attempt_uuid": a.uuid,
                 "slug": a.problem.slug,
+                "code_path": path,
+                "language": language,
+            },
+        )
+
+    def archive_submission(self, path: str, n: int, language: str | None = None) -> None:
+        """Attach archived code to submission `n` of the current attempt."""
+        a = self._require_attempt()
+        events.append(
+            self.conn,
+            events.SUBMISSION_ARCHIVED,
+            {
+                "attempt_uuid": a.uuid,
+                "slug": a.problem.slug,
+                "n": n,
                 "code_path": path,
                 "language": language,
             },

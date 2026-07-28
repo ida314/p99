@@ -23,6 +23,7 @@ MENU = [
     ("n", "new_run", "new run"),
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
+    ("s", "settings", "settings"),
     ("q", "quit", "quit"),
 ]
 
@@ -36,6 +37,7 @@ class HomeScreen(VimMotion, Screen):
         Binding("n", "new_run", "new run"),
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
+        Binding("s", "settings", "settings"),
         Binding("q", "quit", "quit"),
         Binding("l", "select", "open", show=False),
     ]
@@ -117,3 +119,6 @@ class HomeScreen(VimMotion, Screen):
 
     def action_stats(self) -> None:
         self.app.action_stats()  # type: ignore[attr-defined]
+
+    def action_settings(self) -> None:
+        self.app.action_settings()  # type: ignore[attr-defined]

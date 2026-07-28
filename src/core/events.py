@@ -29,6 +29,7 @@ PROBLEM_SUBMITTED = "problem_submitted"
 PROBLEM_ABANDONED = "problem_abandoned"
 PROBLEM_FINISHED = "problem_finished"
 CODE_ARCHIVED = "code_archived"
+SUBMISSION_ARCHIVED = "submission_archived"
 NOTE_WRITTEN = "note_written"
 SESSION_ENDED = "session_ended"
 REVIEW_COMPLETED = "review_completed"   # Phase 3
@@ -45,6 +46,7 @@ EVENT_TYPES = frozenset(
         PROBLEM_ABANDONED,
         PROBLEM_FINISHED,
         CODE_ARCHIVED,
+        SUBMISSION_ARCHIVED,
         NOTE_WRITTEN,
         SESSION_ENDED,
         REVIEW_COMPLETED,
@@ -202,6 +204,28 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
                 "UPDATE attempts SET submissions = COALESCE(submissions, 0) + 1 WHERE uuid = ?",
                 (p["attempt_uuid"],),
             )
+        # `n` is carried in the payload because it is what named the archived
+        # file. Events written before submissions existed have none, so fall
+        # back to position within the attempt — deterministic under replay.
+        n = p.get("n")
+        if n is None:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM submissions WHERE attempt_uuid = ?",
+                (p["attempt_uuid"],),
+            ).fetchone()
+            n = int(row["n"]) + 1
+        conn.execute(
+            "INSERT OR IGNORE INTO submissions"
+            "(attempt_uuid, attempt_id, slug, n, verdict, submitted_at) VALUES(?,?,?,?,?,?)",
+            (
+                p["attempt_uuid"],
+                _attempt_id(conn, p["attempt_uuid"]),
+                p.get("slug"),
+                int(n),
+                p.get("verdict"),
+                p.get("submitted_at", event.ts),
+            ),
+        )
 
     elif event.type == PROBLEM_ABANDONED:
         _update_attempt(
@@ -237,6 +261,12 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
             language=p.get("language"),
         )
 
+    elif event.type == SUBMISSION_ARCHIVED:
+        conn.execute(
+            "UPDATE submissions SET code_path = ?, language = ? WHERE attempt_uuid = ? AND n = ?",
+            (p.get("code_path"), p.get("language"), p["attempt_uuid"], int(p["n"])),
+        )
+
     elif event.type == NOTE_WRITTEN:
         _update_attempt(conn, p["attempt_uuid"], note_path=p.get("note_path"))
 
@@ -252,11 +282,17 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
         )
 
     elif event.type == SETTINGS_CHANGED:
-        conn.execute(
-            "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            (p["key"], json.dumps(p["value"]), event.ts),
-        )
+        # A null value clears the override rather than storing one, which is
+        # how the settings screen hands a knob back to config.toml. No setting
+        # is allowed to mean null, so the encoding costs nothing.
+        if p.get("value") is None:
+            conn.execute("DELETE FROM settings WHERE key = ?", (p["key"],))
+        else:
+            conn.execute(
+                "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (p["key"], json.dumps(p["value"]), event.ts),
+            )
 
 
 def replay(conn: sqlite3.Connection) -> int:

@@ -1,6 +1,7 @@
 from .finish import ConfirmModal, FinishModal
 from .history import HistoryScreen
 from .home import HomeScreen
+from .settings import SettingsScreen
 from .setup import SetupScreen
 from .solve import SolveScreen
 from .statsscreen import StatsScreen
@@ -11,6 +12,7 @@ __all__ = [
     "FinishModal",
     "HistoryScreen",
     "HomeScreen",
+    "SettingsScreen",
     "SetupScreen",
     "SolveScreen",
     "StatsScreen",

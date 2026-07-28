@@ -12,6 +12,7 @@ from ..engine import RunEngine
 from .screens import (
     HistoryScreen,
     HomeScreen,
+    SettingsScreen,
     SetupScreen,
     SolveScreen,
     StatsScreen,
@@ -29,7 +30,7 @@ class CoreApp(App):
     def __init__(self, conn: sqlite3.Connection | None = None):
         super().__init__()
         self.conn = conn or db.open_db()
-        self.config = config_module.load()
+        self.config = config_module.load(self.conn)
         self.weights = scoring.load_weights(self.config.scoring.weights)
         self.engine = RunEngine(self.conn)
         # Set by the summary screen so a hard quit still seals the run with the
@@ -71,11 +72,19 @@ class CoreApp(App):
             self._start_run,
         )
 
+    def reload_config(self) -> None:
+        """Re-read both config layers. Called after the settings screen writes.
+
+        Every screen reads `app.config` rather than loading its own, so a knob
+        changed mid-run takes effect on the next problem without a restart.
+        """
+        self.config = config_module.load(self.conn)
+        self.weights = scoring.load_weights(self.config.scoring.weights)
+
     def _start_run(self, slugs: list[str] | None) -> None:
         if not slugs:
             return
-        self.config = config_module.load()
-        self.weights = scoring.load_weights(self.config.scoring.weights)
+        self.reload_config()
         self.engine.start_session(slugs, planned_n=len(slugs))
         self.push_screen(SolveScreen(self.engine))
 
@@ -92,6 +101,9 @@ class CoreApp(App):
 
     def action_stats(self) -> None:
         self.push_screen(StatsScreen())
+
+    def action_settings(self) -> None:
+        self.push_screen(SettingsScreen())
 
 
 def run(conn: sqlite3.Connection | None = None) -> None:

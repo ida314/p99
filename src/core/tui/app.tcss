@@ -77,6 +77,31 @@ Screen {
     height: 1;
 }
 
+/* --- settings ---------------------------------------------------------- */
+
+/* Same treatment as the home menu: a real list so j/k reach it, drawn as
+   plain rows rather than a widget. */
+#settings-list {
+    height: auto;
+    margin: 1 2;
+    padding: 0;
+    border: none;
+    background: transparent;
+    scrollbar-size: 0 0;
+}
+
+#settings-help {
+    margin: 1 2 0 2;
+    height: auto;
+    color: $text-muted;
+}
+
+#settings-source {
+    margin: 0 2;
+    height: auto;
+    color: $text-muted;
+}
+
 /* --- solve ------------------------------------------------------------- */
 
 #solve-body {

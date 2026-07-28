@@ -53,7 +53,10 @@ p99 stats --tag graph
    You solve in the browser and self-report the verdict; LeetCode is the judge.
 3. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
-   costs nothing.
+   costs nothing. `s` opens a third one on the spot, for the code that just got
+   rejected — a wrong answer is the only artifact of an attempt that stops
+   existing the moment you fix it, and the diff against what finally passed is
+   the lesson. Turn it off in settings if you would rather not be asked.
 4. **Summary** — the run's death screen, scored and ranked against every past run.
 
 ### Keys
@@ -64,26 +67,29 @@ still work.
 | | |
 |---|---|
 | `j` `k` | down, up |
-| `h` `l` | left, right — between panes where a screen has two |
+| `h` `l` | left, right — between panes, or through the values of a setting |
 | `gg` `G` | top, bottom |
 | `ctrl+d` `ctrl+u` | half a screen |
 | `ctrl+f` `ctrl+b` | a full screen |
 
-Because those are motions everywhere, **no screen binds them to an action.**
-That is the whole reason the hint key is `?` and not `h`: a reflex `h` that
-reveals a hint tier is irreversible and costs real points.
+Because those are motions everywhere, **no screen binds `j` `k` `gg` `G` to an
+action**, and `h`/`l` only ever move sideways through what a screen already
+shows — whatever `l` does, `h` undoes. That is the whole reason the hint key is
+`?` and not `h`: a reflex `h` that reveals a hint tier is irreversible and costs
+real points.
 
 | | |
 |---|---|
 | `n` | new run (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
+| `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |
 | `space` | pick a problem (setup) |
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
-| `s` | log a submission |
+| `s` | log a failed submit, then paste the code behind it (solve) |
 | `f` | finish — verdict, confidence, then capture |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `q` | end the run / back |
@@ -106,8 +112,14 @@ them in vim:
 ~/.config/p99/config.toml
 ~/.local/share/p99/p99.db
 ~/.local/share/p99/code/<slug>/<attempt_id>.<ext>
+~/.local/share/p99/code/<slug>/<attempt_id>-wrong<n>.<ext>
 ~/.local/share/p99/notes/<slug>/<attempt_id>.md
 ```
+
+Settings changed in the app are `settings_changed` events layered on top of
+`config.toml`, which is never rewritten — so the file keeps the comments that
+explain every knob, and `x` on a settings row drops the override and takes the
+file's answer back.
 
 Environment: `P99_HOME` relocates all of the above (useful for a throwaway
 profile), `P99_DB` points at a specific database, `P99_EDITOR` overrides

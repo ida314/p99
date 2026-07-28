@@ -16,6 +16,7 @@ from core.tui.screens import (
     FinishModal,
     HistoryScreen,
     HomeScreen,
+    SettingsScreen,
     SetupScreen,
     SolveScreen,
     StatsScreen,
@@ -347,6 +348,161 @@ async def test_a_tier_four_hint_ends_the_attempt_from_the_ui(app):
     row = app.conn.execute("SELECT verdict, max_hint_tier FROM attempts ORDER BY id").fetchone()
     assert row["verdict"] == "gave_up"
     assert row["max_hint_tier"] == 4
+
+
+async def test_a_failed_submit_archives_the_code_behind_it(capturing_app):
+    """`s` logs the submit, then hands you the buffer to paste the wrong answer."""
+    app = capturing_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt.submissions == 1
+        assert not app.engine.attempt.paused  # the clock is running again
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM submissions").fetchone()
+    assert row["n"] == 1
+    assert row["verdict"] == "wrong_answer"
+
+    from pathlib import Path
+
+    wrong = Path(row["code_path"])
+    assert wrong.exists()
+    assert wrong.name == f"{row['attempt_id']}-wrong1.py"
+    assert "shrink condition" in wrong.read_text()
+
+    # The solution it eventually became is a different file, still its own.
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["code_path"] != row["code_path"]
+    assert Path(attempt["code_path"]).name == f"{attempt['id']}.py"
+
+
+async def test_pasting_a_wrong_answer_is_not_billed_as_solve_time(capturing_app, monkeypatch):
+    """The editor round-trip lands in paused_seconds, not in your percentile."""
+    from core import capture as capture_module
+
+    app = capturing_app
+    clock = {"t": 1000.0}
+    app.engine.clock = lambda: clock["t"]  # before the attempt starts
+
+    def slow_editor(problem, row, attempt_id, n, language):
+        clock["t"] += 45  # three quarters of a minute finding the buffer
+        return capture_module.CaptureResult(False, reason="skipped")
+
+    monkeypatch.setattr(capture_module, "capture_submission", slow_editor)
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        attempt = app.engine.attempt
+        clock["t"] += 120  # two minutes of actual solving
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert not attempt.paused  # the clock is running again
+        assert attempt.total_paused_seconds == 45
+        assert attempt.active_seconds == 120  # the handoff cost nothing
+
+
+async def test_a_failed_submit_is_logged_even_with_capture_off(app):
+    """Capture disabled: `s` is exactly what it was before, no editor, no prompt."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt.submissions == 1
+
+    row = app.conn.execute("SELECT * FROM submissions").fetchone()
+    assert row["n"] == 1
+    assert row["code_path"] is None
+
+
+async def test_settings_opens_from_home_and_toggles_wrong_answer_capture(app):
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        assert app.config.capture.on_failed_submit is True
+
+        # Second row is capture.on_failed_submit; `l` cycles it to off.
+        await pilot.press("j")
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.config.capture.on_failed_submit is False
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+    # Persisted as an event, so it is still off on the next launch.
+    from core import config as config_module
+
+    assert config_module.overrides(app.conn) == {"capture.on_failed_submit": False}
+
+
+async def test_a_settings_change_takes_effect_without_a_restart(capturing_app):
+    """Turn wrong-answer capture off, then `s` must not open the editor."""
+    app = capturing_app
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("j")
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.config.capture.on_failed_submit is False
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM submissions").fetchone()
+    assert row["code_path"] is None
+
+
+async def test_x_hands_a_setting_back_to_the_config_file(app):
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("j")
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.config.capture.on_failed_submit is False
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.config.capture.on_failed_submit is True
+
+    from core import config as config_module
+
+    assert config_module.overrides(app.conn) == {}
 
 
 async def test_a_skipped_second_note_edit_keeps_the_first(capturing_app, monkeypatch):

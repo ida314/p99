@@ -48,7 +48,7 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = _open()
-    cfg = config_module.load()
+    cfg = config_module.load(conn)
     weights = scoring.load_weights(cfg.scoring.weights)
     days = None if args.days == 0 else (args.days or cfg.stats.window_days)
     min_samples = args.min_samples or cfg.stats.min_samples
@@ -90,7 +90,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 def cmd_history(args: argparse.Namespace) -> int:
     conn = _open()
-    cfg = config_module.load()
+    cfg = config_module.load(conn)
     weights = scoring.load_weights(cfg.scoring.weights)
     runs = stats.load_runs(conn, weights=weights)
     console.print()
@@ -151,9 +151,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from . import capture
 
     conn = db.open_db()
-    cfg = config_module.load()
+    cfg = config_module.load(conn)
     ov = stats.overview(conn)
     editor = " ".join(config_module.editor())
+
+    changed = config_module.overrides(conn)
+    capture_state = "on" if cfg.capture.enabled else "off"
+    if cfg.capture.enabled:
+        capture_state += f", wrong answers {'on' if cfg.capture.on_failed_submit else 'off'}"
 
     rows = [
         ("config", str(paths.config_file()), paths.config_file().exists()),
@@ -161,6 +166,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ("code archive", str(paths.code_dir()), paths.code_dir().exists()),
         ("notes", str(paths.notes_dir()), paths.notes_dir().exists()),
         ("editor", editor, capture.editor_available()),
+        ("capture", capture_state, cfg.capture.enabled),
+        (
+            "settings",
+            f"{len(changed)} changed in-app" + (f": {', '.join(sorted(changed))}" if changed else ""),
+            True,
+        ),
         ("catalog", f"{ov.catalog_size} problems ({cfg.session.active_list})", ov.catalog_size > 0),
         ("weights", f"{cfg.scoring.weights} ({', '.join(scoring.available_weights())})", True),
         ("events", str(conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]), True),

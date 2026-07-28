@@ -3,6 +3,7 @@
     ~/.config/<slug>/config.toml
     ~/.local/share/<slug>/<slug>.db
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>.<ext>
+    ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-wrong<n>.<ext>
     ~/.local/share/<slug>/notes/<problem-slug>/<attempt_id>.md
 
 `<slug>` is `branding.SLUG`; nothing here spells the name out. Everything is
@@ -63,6 +64,12 @@ def notes_dir() -> Path:
 def code_path(slug: str, attempt_id: int, ext: str) -> Path:
     ext = ext.lstrip(".")
     return code_dir() / slug / f"{attempt_id}.{ext}"
+
+
+def submission_path(slug: str, attempt_id: int, n: int, ext: str) -> Path:
+    """A failed submit's code, beside the solution it eventually became."""
+    ext = ext.lstrip(".")
+    return code_dir() / slug / f"{attempt_id}-wrong{n}.{ext}"
 
 
 def note_path(slug: str, attempt_id: int) -> Path:

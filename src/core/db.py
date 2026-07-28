@@ -85,6 +85,24 @@ CREATE TABLE IF NOT EXISTS attempts (
 CREATE INDEX IF NOT EXISTS attempts_session_idx ON attempts(session_id);
 CREATE INDEX IF NOT EXISTS attempts_slug_idx    ON attempts(slug);
 
+-- One row per submit to LeetCode. `attempts.submissions` is the count; this is
+-- the detail, and it is where a failed submit's archived code hangs. Kept off
+-- `attempts` because there are many per attempt and because `attempts.code_path`
+-- belongs to the solution you settled on, not to a wrong answer along the way.
+CREATE TABLE IF NOT EXISTS submissions (
+  id           INTEGER PRIMARY KEY,
+  attempt_uuid TEXT NOT NULL,
+  attempt_id   INTEGER REFERENCES attempts(id),
+  slug         TEXT,
+  n            INTEGER NOT NULL,    -- 1-based, within the attempt
+  verdict      TEXT,                -- as reported at submit time
+  submitted_at TEXT NOT NULL,
+  code_path    TEXT,                -- archived wrong answer; null if skipped
+  language     TEXT,
+  UNIQUE(attempt_uuid, n)
+);
+CREATE INDEX IF NOT EXISTS submissions_attempt_idx ON submissions(attempt_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key          TEXT PRIMARY KEY,
   value        TEXT NOT NULL,
@@ -144,7 +162,14 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 """
 
 # Projection tables that `replay` truncates. `problems` is deliberately absent.
-PROJECTION_TABLES = ("attempts", "sessions", "settings", "fsrs_cards", "tag_mastery")
+PROJECTION_TABLES = (
+    "submissions",  # references attempts: children first, see the docstring
+    "attempts",
+    "sessions",
+    "settings",
+    "fsrs_cards",
+    "tag_mastery",
+)
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
