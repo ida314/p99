@@ -68,6 +68,18 @@ def test_gave_up_scores_zero_but_is_not_erased(w):
     assert any(c.label == "verdict" for c in score.components)
 
 
+def test_used_editorial_scores_zero_and_says_so(w):
+    """Reading the answer is logged as its own thing, not laundered into a solve."""
+    score = score_attempt(
+        attempt(verdict="used_editorial", active_seconds=1200, submissions=3), "medium", w
+    )
+    assert score.total == 0
+    assert not score.is_clean
+    assert not scoring.is_clean_solve(attempt(verdict="used_editorial"))
+    labels = [c.detail for c in score.components if c.label == "verdict"]
+    assert labels == ["USED EDITORIAL"]
+
+
 def test_hint_penalty_never_reaches_zero(w):
     """Reading the solution after a real fight must still beat not logging it."""
     assert w.hint_mult[-1] > 0

@@ -25,11 +25,15 @@ DEFAULT_WEIGHTS = "v1"
 
 # Verdicts that mean "the problem is solved".
 CLEAN_VERDICTS = frozenset({"accepted"})
-VERDICTS = ("accepted", "wrong_answer", "tle", "gave_up")
+# Verdicts where the answer came from somewhere other than you: the attempt is
+# worth nothing regardless of how it went, penalties included.
+ZERO_VERDICTS = frozenset({"gave_up", "used_editorial"})
+VERDICTS = ("accepted", "wrong_answer", "tle", "used_editorial", "gave_up")
 VERDICT_LABELS = {
     "accepted": "ACCEPTED",
     "wrong_answer": "WRONG ANSWER",
     "tle": "TIME LIMIT EXCEEDED",
+    "used_editorial": "USED EDITORIAL",
     "gave_up": "GAVE UP",
 }
 
@@ -153,13 +157,15 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
 
     # gave_up scores 0, but the attempt is still logged and still schedules a
     # review (spec §5). Zero is the point: it costs you the run, not the record.
-    if verdict == "gave_up":
+    # `used_editorial` is the same bargain — you did reach an answer, but not one
+    # you can claim, so the only thing it buys is the review.
+    if verdict in ZERO_VERDICTS:
         return Score(
             total=0,
             components=(
                 time_line,
                 Component("hints", _hint_label(tier), 0),
-                Component("verdict", VERDICT_LABELS["gave_up"], 0),
+                Component("verdict", VERDICT_LABELS[verdict], 0),
             ),
             par_seconds=par,
             time_mult=time_mult,

@@ -24,6 +24,7 @@ VERDICT_LABEL_STYLE = {
     "ACCEPTED": "bold green",
     "WRONG ANSWER": "red",
     "TIME LIMIT EXCEEDED": "red",
+    "USED EDITORIAL": "bright_black",
     "GAVE UP": "bright_black",
 }
 
