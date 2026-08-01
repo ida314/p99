@@ -155,6 +155,10 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     `used_editorial` postdates the spec, which only names `gave_up`. It sits in
     `ZERO_VERDICTS` beside it, and commit 100efb0's bargain was that reading the
     editorial still schedules a review -- so it rates the same: Again.
+
+    `ungraded` never reaches here: `grade_attempt` returns before calling this,
+    because the one thing every branch below assumes is that the verdict says
+    something about whether you were right.
     """
     verdict = attempt.get("verdict")
     tier = int(attempt.get("max_hint_tier") or 0)
@@ -243,7 +247,12 @@ def grade_attempt(
         "WHERE a.uuid = ?",
         (attempt_uuid,),
     ).fetchone()
+    # No verdict: the attempt is still open. `ungraded`: it is closed, but
+    # nothing judged it, so there is no outcome to fold in. Both leave the card
+    # exactly where it was rather than inventing a rating.
     if row is None or row["verdict"] is None:
+        return None
+    if row["verdict"] in scoring.UNSCHEDULED_VERDICTS:
         return None
 
     params = params or load_params()
@@ -309,6 +318,20 @@ def due_cards(conn: sqlite3.Connection, on: datetime) -> list[sqlite3.Row]:
             "FROM fsrs_cards c JOIN problems p ON p.slug = c.slug "
             "WHERE c.due <= ? ORDER BY c.due ASC",
             (on.isoformat(),),
+        ).fetchall()
+    )
+
+
+def cards_by_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every card, soonest due first — due or not.
+
+    `due_cards` answers "what does the scheduler want today"; this answers "in
+    what order do these problems matter", which is what the offline cache walks
+    when its budget is too small for the whole list.
+    """
+    return list(
+        conn.execute(
+            "SELECT * FROM fsrs_cards ORDER BY due IS NULL, due ASC, slug ASC"
         ).fetchall()
     )
 

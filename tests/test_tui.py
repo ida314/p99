@@ -6,6 +6,8 @@ config so no editor is ever spawned.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from textual.widgets import Input
@@ -602,3 +604,60 @@ async def test_motions_do_not_start_a_run_from_the_queue(app):
             await pilot.pause()
         assert isinstance(app.screen, QueueScreen)
         assert app.engine.session is None
+
+
+async def test_o_opens_the_cached_copy_in_offline_mode(app, monkeypatch):
+    """The whole feature, through the keyboard: `o` on a plane."""
+    opened: list[str] = []
+    monkeypatch.setattr("core.capture.open_url", lambda url: opened.append(url) or True)
+
+    def go_offline() -> None:
+        app.config = replace(app.config, cache=replace(app.config.cache, offline=True))
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        problem = app.engine.attempt.problem
+
+        # Online: the real page, because that is where the submit button is.
+        await pilot.press("o")
+        await pilot.pause()
+        assert opened == [problem.url]
+
+        # Offline with nothing cached: it says so rather than opening a page
+        # that cannot load.
+        go_offline()
+        await pilot.press("o")
+        await pilot.pause()
+        assert opened == [problem.url]  # unchanged
+
+        # Offline, cached: the local file.
+        paths.cache_path(problem.slug).write_text("<html>cached</html>")
+        await pilot.press("o")
+        await pilot.pause()
+        assert opened[-1].startswith("file://")
+        assert opened[-1].endswith(f"{problem.slug}.html")
+
+
+async def test_the_finish_prompt_defaults_to_not_graded_when_offline(app):
+    """A default of ACCEPTED is how a flight's unverified solves rot the stats."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        app.config = replace(app.config, cache=replace(app.config.cache, offline=True))
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FinishModal)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    verdict = app.conn.execute(
+        "SELECT verdict FROM attempts ORDER BY id LIMIT 1"
+    ).fetchone()["verdict"]
+    assert verdict == "ungraded"

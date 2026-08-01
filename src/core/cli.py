@@ -8,6 +8,7 @@ event log makes possible.
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from rich.console import Console
 
 from . import (
     branding,
+    cache,
     catalog,
     config as config_module,
     db,
@@ -171,6 +173,85 @@ def cmd_seed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """Warm the offline cache, so a flight is a normal run (see `core.cache`).
+
+    The whole active list, in priority order, bounded by `[cache] max_mb`. There
+    is no per-problem selection on purpose: the queue cannot know what you will
+    need on day two of a trip, and a cache that is missing the problem you were
+    handed fails at the one moment nothing can be done about it.
+    """
+    conn = _open()
+    cfg = config_module.load(conn)
+    lists = (args.list,) if args.list else cfg.active_lists
+    budget = args.max_mb * 1024 * 1024 if args.max_mb else cfg.cache.budget_bytes
+
+    if args.session:
+        # Prompted, never taken from argv: an argument would be visible in `ps`
+        # and would land in shell history.
+        import getpass
+
+        value = getpass.getpass("LEETCODE_SESSION cookie (input hidden): ").strip()
+        if not value:
+            console.print("[yellow]nothing entered[/yellow] — session unchanged")
+            return 1
+        path = cache.write_session(value)
+        console.print(f"stored in {path} (0600)")
+
+    if args.dry_run:
+        order = cache.priority(conn, lists)
+        have = sum(1 for p in order if cache.local_path(p.slug) is not None)
+        console.print()
+        console.print(
+            f"  [bold]{len(order)}[/bold] problems in {', '.join(lists)} — "
+            f"{have} already cached, {len(order) - have} to fetch"
+        )
+        console.print(f"  budget [bold]{cache.fmt_bytes(budget)}[/bold]\n")
+        for index, problem in enumerate(order, start=1):
+            mark = "[green]·[/green]" if cache.local_path(problem.slug) else " "
+            console.print(f"  {mark} {index:>3}. {problem.slug}", highlight=False)
+        console.print()
+        return 0
+
+    console.print()
+    with console.status("fetching…") as spinner:
+
+        def progress(slug: str, state: str) -> None:
+            spinner.update(f"{slug} — {state}")
+            if state.startswith("failed"):
+                console.print(f"  [yellow]--[/yellow] {slug}: {state}", highlight=False)
+
+        report = cache.sync(
+            conn,
+            lists=lists,
+            budget_bytes=budget,
+            language=cfg.capture.language,
+            refresh=args.refresh,
+            on_progress=progress,
+        )
+
+    bits = [f"[bold]{len(report.fetched)}[/bold] fetched"]
+    if report.kept:
+        bits.append(f"{len(report.kept)} already cached")
+    if report.pruned:
+        bits.append(f"{len(report.pruned)} pruned")
+    if report.skipped:
+        bits.append(f"[yellow]{len(report.skipped)} over budget[/yellow]")
+    if report.failures:
+        bits.append(f"[yellow]{len(report.failures)} failed[/yellow]")
+    console.print(
+        f"  {', '.join(bits)} — {cache.fmt_bytes(report.total_bytes)}"
+        f" / {cache.fmt_bytes(budget)}"
+    )
+    if report.skipped:
+        console.print(
+            r"  [yellow]budget spent[/yellow] — raise \[cache] max_mb to cache the"
+            f" remaining {len(report.skipped)}"
+        )
+    console.print()
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     from . import capture
 
@@ -188,6 +269,31 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             cards_state += f", next {nxt[:10]}"
     else:
         cards_state = "none yet — finish a problem and one appears"
+
+    cache_status = cache.status(
+        conn, lists=cfg.active_lists, budget_bytes=cfg.cache.budget_bytes
+    )
+    cache_state = (
+        f"{cache_status.cached}/{cache_status.total} problems, "
+        f"{cache.fmt_bytes(cache_status.bytes)} / {cache.fmt_bytes(cache_status.budget_bytes)}"
+    )
+    if cache_status.fetched_at:
+        cache_state += f", fetched {cache_status.fetched_at[:10]}"
+    if cfg.cache.offline:
+        cache_state += "  ·  OFFLINE MODE ON"
+    if not cache_status.cached:
+        cache_state += f" — run `{branding.COMMAND} fetch`"
+
+    # Never the value, only whether there is one.
+    has_session = cache.session_cookie() is not None
+    if not has_session:
+        session_state = f"none — premium problems will be skipped ({cache.ENV_SESSION})"
+    elif os.environ.get(cache.ENV_SESSION):
+        session_state = f"set via {cache.ENV_SESSION}"
+    else:
+        session_state = str(paths.session_file())
+        if cache.session_is_exposed():
+            session_state += "  [yellow](readable by others — chmod 600)[/yellow]"
 
     changed = config_module.overrides(conn)
     capture_state = "on" if cfg.capture.enabled else "off"
@@ -207,6 +313,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             True,
         ),
         ("catalog", f"{ov.catalog_size} problems ({cfg.session.active_list})", ov.catalog_size > 0),
+        ("cache", cache_state, cache_status.complete),
+        ("leetcode session", session_state, has_session),
         ("weights", f"{cfg.scoring.weights} ({', '.join(scoring.available_weights())})", True),
         ("schedule", f"{cfg.srs.params} ({', '.join(srs.available_params())})", True),
         ("cards", cards_state, card_count > 0),
@@ -223,6 +331,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "  [yellow]no $EDITOR found[/yellow] — solution archiving and reflection "
             "notes will be skipped. Set $EDITOR.\n"
         )
+    # Only failures are worth naming. A healthy cache is the status line above;
+    # listing 150 problems that worked would be a screen nobody reads.
+    if cache_status.failures:
+        console.print(f"  [yellow]{len(cache_status.failures)} problems failed to cache[/yellow]")
+        for slug, reason in sorted(cache_status.failures.items()):
+            console.print(f"    {slug}: {reason}", highlight=False)
+        console.print()
     return 0
 
 
@@ -265,6 +380,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_seed.add_argument("--file", help="a JSON catalog to seed from")
     p_seed.add_argument("--list", default=catalog.DEFAULT_LIST)
     p_seed.set_defaults(func=cmd_seed)
+
+    p_fetch = sub.add_parser("fetch", help="cache the active list for offline use")
+    p_fetch.add_argument(
+        "--refresh", action="store_true", help="re-download problems already cached"
+    )
+    p_fetch.add_argument("--list", help="cache this list instead of the active one")
+    p_fetch.add_argument(
+        "--max-mb", type=int, dest="max_mb", help="cache size ceiling (default: config)"
+    )
+    p_fetch.add_argument(
+        "--dry-run", action="store_true", help="show the priority order, fetch nothing"
+    )
+    p_fetch.add_argument(
+        "--session",
+        action="store_true",
+        help="prompt for your LEETCODE_SESSION cookie (unlocks premium problems)",
+    )
+    p_fetch.set_defaults(func=cmd_fetch)
 
     p_doctor = sub.add_parser("doctor", help="paths, catalog, editor, config")
     p_doctor.set_defaults(func=cmd_doctor)

@@ -150,6 +150,29 @@ def test_giving_up_still_schedules_a_review(conn):
     assert card["due"]
 
 
+def test_an_ungraded_attempt_schedules_nothing(conn):
+    """No judge ran, so there is no outcome to fold into a card.
+
+    The attempt is still recorded — it is the *schedule* that stays out of it,
+    because rating a card on an outcome nobody established is worse than having
+    no card at all.
+    """
+    _solve(conn, "two-sum", verdict="ungraded", self_confidence=4)
+
+    assert _cards(conn) == {}
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM attempts WHERE verdict = 'ungraded'"
+    ).fetchone()["n"] == 1
+
+
+def test_an_ungraded_attempt_leaves_an_existing_card_where_it_was(conn):
+    _solve(conn, "two-sum", self_confidence=3)
+    before = _cards(conn)["two-sum"]
+
+    _solve(conn, "two-sum", verdict="ungraded", self_confidence=4)
+    assert _cards(conn)["two-sum"] == before
+
+
 def test_cards_are_rebuilt_identically_by_replay(conn):
     for slug in ("two-sum", "3sum", "valid-anagram"):
         _solve(conn, slug, self_confidence=4)

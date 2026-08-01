@@ -68,6 +68,16 @@ params = "v1"
 min_samples = 20
 # default lookback window for the stats screen
 window_days = 60
+
+[cache]
+# offline mode: `o` on the solve screen opens the cached copy of the problem
+# instead of leetcode.com. Flip it when you board — nothing auto-detects,
+# because captive-portal wifi lies about being a network.
+offline = false
+# ceiling on the on-disk problem cache. `{branding.COMMAND} fetch` walks the
+# active list in priority order until this is spent; the whole neetcode150 is
+# about 1.5 MB, so this is a runaway guard, not a budget you have to manage.
+max_mb = 50
 """
 
 EXT_BY_LANGUAGE = {
@@ -124,12 +134,33 @@ class StatsConfig:
 
 
 @dataclass(frozen=True)
+class CacheConfig:
+    offline: bool = False
+    max_mb: int = 50
+
+    @property
+    def budget_bytes(self) -> int:
+        return max(0, int(self.max_mb)) * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     srs: SrsConfig = field(default_factory=SrsConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+
+    @property
+    def active_lists(self) -> tuple[str, ...]:
+        """Every catalog list in play, for the things that span more than one.
+
+        One today. It is a tuple rather than `session.active_list` spelled out
+        at each call site because the offline cache is scoped by it: when a
+        second list arrives, this property changes and nothing downstream does.
+        """
+        return (self.session.active_list,)
 
 
 def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -148,6 +179,7 @@ def _build(raw: dict[str, Any]) -> Config:
         scoring=pick(ScoringConfig, "scoring"),
         srs=pick(SrsConfig, "srs"),
         stats=pick(StatsConfig, "stats"),
+        cache=pick(CacheConfig, "cache"),
     )
 
 
@@ -266,6 +298,12 @@ def options() -> tuple[Option, ...]:
             "review schedule",
             "which FSRS parameter file schedules reviews — replay reschedules everything",
             tuple(srs.available_params()),
+        ),
+        Option(
+            "cache.offline",
+            "offline",
+            "`o` opens the cached copy of the problem instead of leetcode.com — for planes",
+            (False, True),
         ),
     )
 

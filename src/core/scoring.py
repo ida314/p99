@@ -28,13 +28,19 @@ CLEAN_VERDICTS = frozenset({"accepted"})
 # Verdicts where the answer came from somewhere other than you: the attempt is
 # worth nothing regardless of how it went, penalties included.
 ZERO_VERDICTS = frozenset({"gave_up", "used_editorial"})
-VERDICTS = ("accepted", "wrong_answer", "tle", "used_editorial", "gave_up")
+# Verdicts where nothing checked the answer, so there is no outcome to learn
+# from: offline, with no judge to submit to. Unlike every other verdict these
+# schedule no review at all -- see `srs.grade_attempt`. Rating a card on an
+# outcome nobody established is worse than having no card.
+UNSCHEDULED_VERDICTS = frozenset({"ungraded"})
+VERDICTS = ("accepted", "wrong_answer", "tle", "used_editorial", "gave_up", "ungraded")
 VERDICT_LABELS = {
     "accepted": "ACCEPTED",
     "wrong_answer": "WRONG ANSWER",
     "tle": "TIME LIMIT EXCEEDED",
     "used_editorial": "USED EDITORIAL",
     "gave_up": "GAVE UP",
+    "ungraded": "NOT GRADED",
 }
 
 
@@ -177,6 +183,9 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
 
     if verdict not in CLEAN_VERDICTS:
         # Unsolved but not surrendered: no base credit, only the submit penalty.
+        # `ungraded` lands here too, and that is the point: an unverified solve
+        # scores exactly what an unfinished one does, because in both cases
+        # nothing established that you were right.
         total = -submit_pen
         components = [
             time_line,

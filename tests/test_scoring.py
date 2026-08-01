@@ -80,6 +80,16 @@ def test_used_editorial_scores_zero_and_says_so(w):
     assert labels == ["USED EDITORIAL"]
 
 
+def test_ungraded_is_not_a_solve(w):
+    """Offline there is no judge, so `accepted` would be a claim nothing checked."""
+    score = score_attempt(attempt(verdict="ungraded", active_seconds=1200), "medium", w)
+    assert score.total == 0
+    assert not score.is_clean
+    assert not scoring.is_clean_solve(attempt(verdict="ungraded"))
+    labels = [c.detail for c in score.components if c.label == "verdict"]
+    assert labels == ["NOT GRADED"]
+
+
 def test_hint_penalty_never_reaches_zero(w):
     """Reading the solution after a real fight must still beat not logging it."""
     assert w.hint_mult[-1] > 0

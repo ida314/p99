@@ -26,6 +26,9 @@ VERDICT_LABEL_STYLE = {
     "TIME LIMIT EXCEEDED": "red",
     "USED EDITORIAL": "bright_black",
     "GAVE UP": "bright_black",
+    # Yellow, not the grey the two surrenders get: this one is an open loop,
+    # not a closed one. You still owe this problem a verdict.
+    "NOT GRADED": "yellow",
 }
 
 BANNER = branding.BANNER

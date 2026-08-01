@@ -96,3 +96,20 @@ def test_stepping_wraps_and_recovers_from_an_unknown_value():
     assert option.step(False, 1) is True
     assert option.step(False, -1) is True
     assert option.step("nonsense", 1) is True  # first choice, not a crash
+
+
+def test_offline_mode_round_trips_through_the_settings_layer(conn):
+    """The one knob you flip without a network, so it must not need the file."""
+    _write_file_config()
+    assert config.load(conn).cache.offline is False
+
+    config.set_option(conn, "cache.offline", True)
+    assert config.load(conn).cache.offline is True
+
+    config.clear_option(conn, "cache.offline")
+    assert config.load(conn).cache.offline is False
+
+
+def test_the_cache_budget_is_read_as_bytes(conn):
+    _write_file_config(FILE_CONFIG + "\n[cache]\nmax_mb = 2\n")
+    assert config.load(conn).cache.budget_bytes == 2 * 1024 * 1024

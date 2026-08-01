@@ -1,10 +1,12 @@
 """Filesystem layout (spec §3).
 
     ~/.config/<slug>/config.toml
+    ~/.config/<slug>/session               (0600, optional)
     ~/.local/share/<slug>/<slug>.db
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>.<ext>
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-wrong<n>.<ext>
     ~/.local/share/<slug>/notes/<problem-slug>/<attempt_id>.md
+    ~/.local/share/<slug>/cache/<problem-slug>.html
 
 `<slug>` is `branding.SLUG`; nothing here spells the name out. Everything is
 overridable with `<PREFIX>_HOME` so tests and throwaway profiles never touch
@@ -47,6 +49,17 @@ def config_file() -> Path:
     return config_dir() / "config.toml"
 
 
+def session_file() -> Path:
+    """The LeetCode session cookie, for caching premium problems.
+
+    A file of its own rather than a key in `config.toml` or the settings table:
+    the settings table is a projection of the append-only log, so a credential
+    put there could never be deleted, would survive every replay, and would sit
+    in the one file you would hand someone while debugging.
+    """
+    return config_dir() / "session"
+
+
 def db_file() -> Path:
     if raw := os.environ.get(ENV_DB):
         return Path(raw).expanduser()
@@ -59,6 +72,17 @@ def code_dir() -> Path:
 
 def notes_dir() -> Path:
     return data_dir() / "notes"
+
+
+def cache_dir() -> Path:
+    """Offline problem statements. Derived, disposable, safe to delete.
+
+    Unlike everything else under `data_dir`, nothing here is yours: it is
+    `<command> fetch`'s copy of the catalog's problem pages, and the manifest
+    that tracks it lives inside the directory rather than in the database so
+    that deleting the directory is a complete reset.
+    """
+    return data_dir() / "cache"
 
 
 def code_path(slug: str, attempt_id: int, ext: str) -> Path:
@@ -76,6 +100,14 @@ def note_path(slug: str, attempt_id: int) -> Path:
     return notes_dir() / slug / f"{attempt_id}.md"
 
 
+def cache_path(slug: str) -> Path:
+    return cache_dir() / f"{slug}.html"
+
+
+def cache_manifest() -> Path:
+    return cache_dir() / "manifest.json"
+
+
 def ensure_dirs() -> None:
-    for d in (config_dir(), data_dir(), code_dir(), notes_dir()):
+    for d in (config_dir(), data_dir(), code_dir(), notes_dir(), cache_dir()):
         d.mkdir(parents=True, exist_ok=True)

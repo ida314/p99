@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   active_seconds     INTEGER,             -- excludes paused time
   wall_seconds       INTEGER,
   paused_seconds     INTEGER DEFAULT 0,
-  verdict            TEXT,                -- accepted|wrong_answer|tle|used_editorial|gave_up
+  verdict            TEXT,                -- accepted|wrong_answer|tle|used_editorial|gave_up|ungraded
   max_hint_tier      INTEGER DEFAULT 0,   -- 0..4
   submissions        INTEGER DEFAULT 0,   -- failed submits before accept
   self_confidence    INTEGER,             -- 1..4, asked at end

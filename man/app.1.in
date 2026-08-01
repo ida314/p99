@@ -50,8 +50,21 @@ no history, only the tables derived from it.
 .B seed
 Insert or update the problem catalog. Never touches attempt history.
 .TP
+.B fetch
+Cache the active list's problem statements for offline use, so a flight is a
+normal run. Downloads the whole list in priority order — today's queue first,
+then cards by due date, then the rest spread across patterns — until
+.I cache.max_mb
+is spent. Self-contained pages with images inlined; nothing is left to request.
+Idempotent and resumable, and a problem that will not download is reported
+rather than ending the sweep. Set
+.I cache.offline
+to point
+.B o
+at the cached copy instead of the browser.
+.TP
 .B doctor
-Print the resolved paths, catalog size, editor and configuration.
+Print the resolved paths, catalog size, editor, cache state and configuration.
 .SH OPTIONS
 .SS stats
 .TP
@@ -103,6 +116,30 @@ Seed from a JSON catalog instead of the bundled one.
 .TP
 .BI \-\-list " NAME"
 Which bundled catalog to seed.
+.SS fetch
+.TP
+.B \-\-refresh
+Re-download problems already cached.
+.TP
+.BI \-\-list " NAME"
+Cache this list instead of the active one.
+.TP
+.BI \-\-max\-mb " N"
+Cache size ceiling, overriding
+.IR cache.max_mb .
+.TP
+.B \-\-dry\-run
+Print the priority order and what is already cached. Fetches nothing.
+.TP
+.B \-\-session
+Prompt for your
+.B LEETCODE_SESSION
+cookie and store it at
+.I ~/.config/@SLUG@/session
+with mode 0600, then continue. Prompted rather than taken as an argument so it
+never appears in
+.BR ps (1)
+or your shell history.
 .SH KEYS
 Navigation is vim's, on every screen. The arrow keys, Home/End and
 PageUp/PageDown work everywhere too.
@@ -200,8 +237,20 @@ screen never rewrites it: changes made there are events layered on top, and
 .B x
 on a settings row drops the override and takes this file's value back.
 .TP
+.I ~/.config/@SLUG@/session
+Your LeetCode session cookie, if you have one, mode 0600. Optional: without it
+premium problems cannot be cached. Kept out of both
+.I config.toml
+and the settings table on purpose — the settings table is a projection of an
+append-only log, so a credential written there could never be removed and would
+survive every replay.
+.TP
 .I ~/.local/share/@SLUG@/@SLUG@.db
 The event log and the projections built from it.
+.TP
+.I ~/.local/share/@SLUG@/cache/<problem>.html
+Cached problem statements, self-contained. Derived and disposable: deleting the
+directory costs nothing but a re-fetch.
 .TP
 .I ~/.local/share/@SLUG@/code/<problem>/<attempt-id>.<ext>
 Archived solutions.
@@ -231,6 +280,15 @@ and
 .TP
 .B @ENVPFX@_BROWSER
 Command used to open a problem.
+.TP
+.B @ENVPFX@_LEETCODE_SESSION
+Your
+.B LEETCODE_SESSION
+cookie, unlocking premium problems for
+.BR fetch .
+Takes precedence over the
+.I session
+file. Never printed, never logged, and never written into a cached page.
 .TP
 .BR VISUAL ", " EDITOR
 Consulted, in that order, when

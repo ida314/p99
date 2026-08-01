@@ -98,7 +98,21 @@ def _recent_slugs(conn: sqlite3.Connection, now: datetime) -> set[str]:
 
 
 def _attempted_slugs(conn: sqlite3.Connection) -> set[str]:
-    return {r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM attempts")}
+    """Problems something is known about, so they are no longer "unseen".
+
+    An `ungraded` attempt does not count: nothing judged it, so it schedules no
+    card. Were it counted here the problem would fall out of the unseen pool
+    while never becoming due, and drop out of the queue entirely -- reachable
+    only as a tail driver. A NULL verdict is an attempt still in progress and
+    does count; `_recent_slugs` handles the cooldown either way, because having
+    just seen a problem is true no matter how it ended.
+    """
+    return {
+        r["slug"]
+        for r in conn.execute(
+            "SELECT DISTINCT slug FROM attempts WHERE verdict IS NULL OR verdict != 'ungraded'"
+        )
+    }
 
 
 def _tail_driver_slugs(conn: sqlite3.Connection, weights: Weights, days: int = 60) -> list[str]:
@@ -117,8 +131,11 @@ def _tail_driver_slugs(conn: sqlite3.Connection, weights: Weights, days: int = 6
     return out
 
 
-def _spread_by_pattern(problems: list) -> list:
+def spread_by_pattern(problems: list) -> list:
     """Reorder the catalog so a prefix of it is a usable candidate pool.
+
+    Public because the offline cache walks the same order for the same reason:
+    if a budget truncates it, what survives should be interleavable.
 
     Two constraints have to survive being truncated to `3n` entries, and the
     catalog's own order defeats both. It is grouped by pattern -- the first nine
@@ -216,7 +233,7 @@ def candidates(
     # Both fills below walk the catalog spread across patterns, so the pool the
     # selector sees can actually satisfy the interleaving rule and the
     # difficulty mix rather than being nine arrays-hashing problems in a row.
-    unseen = _spread_by_pattern([p for slug, p in problems.items() if slug not in attempted])
+    unseen = spread_by_pattern([p for slug, p in problems.items() if slug not in attempted])
 
     # 3. Unattempted problems carrying your weakest tags.
     weak = [m.tag for m in stats.tag_mastery(conn, weights, min_attempts=3)]

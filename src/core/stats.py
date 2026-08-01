@@ -137,6 +137,8 @@ def _tail_reason(attempt: dict[str, Any]) -> str:
         bits.append("gave up")
     elif attempt.get("verdict") == "used_editorial":
         bits.append("used editorial")
+    elif attempt.get("verdict") == "ungraded":
+        bits.append("not graded")
     tier = int(attempt.get("max_hint_tier") or 0)
     if tier:
         bits.append(f"tier-{tier} hint")

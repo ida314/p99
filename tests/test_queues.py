@@ -38,6 +38,39 @@ def _solve(conn, slug, verdict="accepted", **kw):
 # --- shape -----------------------------------------------------------------
 
 
+def test_an_ungraded_problem_does_not_vanish_from_the_queue(conn):
+    """The hole `ungraded` would otherwise open.
+
+    It schedules no card, so it can never come back as `due`. If it also counted
+    as attempted it would drop out of the `unseen` pool too, and be reachable
+    only as a tail driver — solve a problem on a plane and the scheduler forgets
+    it exists.
+    """
+    _solve(conn, "two-sum", verdict="ungraded")
+    # The engine stamps attempts with the real clock, so the cooldown has to be
+    # cleared relative to that rather than to this module's fixed NOW.
+    after_cooldown = datetime.now(timezone.utc) + timedelta(days=queues.COOLDOWN_DAYS + 1)
+
+    assert not srs.card_row(conn, "two-sum")
+    pool = queues.candidates(
+        conn, n=150, active_list="neetcode150", weights=WEIGHTS, now=after_cooldown
+    )
+    assert "two-sum" in {item.slug for item in pool}
+
+
+def test_the_cooldown_still_applies_to_an_ungraded_attempt(conn):
+    """Having just seen a problem is true however the attempt ended."""
+    _solve(conn, "two-sum", verdict="ungraded")
+    pool = queues.candidates(
+        conn,
+        n=150,
+        active_list="neetcode150",
+        weights=WEIGHTS,
+        now=datetime.now(timezone.utc),
+    )
+    assert "two-sum" not in {item.slug for item in pool}
+
+
 def test_a_fresh_catalog_still_fills_a_queue(conn):
     """The morning queue is never empty (spec §10)."""
     queue = _build(conn, n=5)

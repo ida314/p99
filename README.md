@@ -35,8 +35,9 @@ p99                 # the TUI — start a run
 p99 queue           # what to do today, and why
 p99 stats           # percentile distributions, sliceable
 p99 history         # run rankings, you vs. your past self
+p99 fetch           # cache the problem list for offline use
 p99 replay          # rebuild every projection from the event log
-p99 doctor          # paths, catalog, editor, config
+p99 doctor          # paths, catalog, editor, cache, config
 ```
 
 `p99 stats` slices:
@@ -75,7 +76,8 @@ in settings and replaying reschedules all of it.
 1. **Start** — pick how many problems. Selection is random-from-list or manual.
 2. **Solve** — timer runs, `o` opens the problem on leetcode.com, `p` pauses,
    `?` reveals the next hint tier, `s` logs a submission, `f` finishes.
-   You solve in the browser and self-report the verdict; LeetCode is the judge.
+   You solve in the browser and self-report the verdict; LeetCode is the judge —
+   except [offline](#offline), where there isn't one.
 3. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
@@ -156,12 +158,59 @@ file's answer back.
 
 Environment: `P99_HOME` relocates all of the above (useful for a throwaway
 profile), `P99_DB` points at a specific database, `P99_EDITOR` overrides
-`$VISUAL`/`$EDITOR` for the capture steps, and `P99_BROWSER` overrides how `o`
-opens a problem. `p99 doctor` prints what it resolved. The `P99_` prefix and the
+`$VISUAL`/`$EDITOR` for the capture steps, `P99_BROWSER` overrides how `o`
+opens a problem, and `P99_LEETCODE_SESSION` carries the cookie that unlocks
+premium problems for `p99 fetch`. `p99 doctor` prints what it resolved. The `P99_` prefix and the
 directory names are both derived from one constant — see [Renaming](#renaming).
 
-**No problem content is ever stored.** The catalog holds title, slug, URL,
-difficulty, tags and pattern — nothing else.
+**No problem content is ever in the database.** The catalog holds title, slug,
+URL, difficulty, tags and pattern — nothing else. The one copy of problem
+content that exists is the offline cache below, which lives in its own directory
+as files, is never read by a projection, and can be deleted at any time.
+
+## Offline
+
+`p99 fetch` downloads the active list's problem statements into
+`~/.local/share/p99/cache/` as self-contained HTML — images inlined, official
+hints folded away behind `<details>`, the starter snippet for your language,
+nothing left to request. Then flip `offline` in settings and `o` opens the
+cached copy instead of leetcode.com.
+
+The whole list, every time. Not a subset you pick beforehand, because the queue
+cannot know what you will need on day two of a trip — it reads live card state,
+and cards move as you solve — and `n` can hand you anything in the list. A cache
+missing the problem you were handed fails at the one moment nothing can be done
+about it. All 150 problems cost about 3 MB, so there is nothing to ration; the
+`[cache] max_mb` ceiling exists so that pointing this at a far larger catalog
+truncates in a defined order rather than filling the disk.
+
+Seven neetcode150 entries are premium-only. Without a LeetCode subscription they
+can be neither cached nor opened, and `p99 doctor` names them. With one:
+
+```sh
+p99 fetch --session      # prompts for your LEETCODE_SESSION cookie, then fetches
+```
+
+Read it out of your browser's cookies for `leetcode.com` (devtools →
+Application → Cookies → `LEETCODE_SESSION`). It is stored at
+`~/.config/p99/session`, mode 0600, or supply it as `P99_LEETCODE_SESSION`
+instead. It goes in neither `config.toml` nor the settings table on purpose: the
+settings table is a projection of an append-only log, so a credential written
+there could never be deleted and would survive every replay. It is never
+printed, never logged, and never written into a cached page — `p99 doctor`
+reports only whether one exists, and complains if the file is readable by
+anyone else.
+
+Nothing auto-detects. Captive-portal wifi answers DNS and resolves nothing, so a
+guess would be wrong at exactly the moment it mattered; offline is a setting you
+flip when you board.
+
+The catch is that offline there is no judge, so `accepted` would be a claim
+nothing checked. The finish prompt defaults to the `ungraded` verdict instead:
+it scores zero, counts as no kind of solve, and — alone among the verdicts —
+schedules no review at all. Rating a card on an outcome nobody established is
+worse than having no card, so the problem stays in the queue as if unseen, and
+the cooldown still keeps it from coming back tomorrow.
 
 ## Three places this deviates from the spec
 

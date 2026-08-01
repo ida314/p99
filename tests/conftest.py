@@ -10,6 +10,9 @@ def isolated_home(tmp_path, monkeypatch):
     """Never touch the real data directory from a test."""
     monkeypatch.setenv(paths.ENV_HOME, str(tmp_path))
     monkeypatch.delenv(paths.ENV_DB, raising=False)
+    # A real session cookie in the developer's environment must not leak into a
+    # test run and quietly change what the fetcher does.
+    monkeypatch.delenv(branding.env("LEETCODE_SESSION"), raising=False)
     yield tmp_path
 
 

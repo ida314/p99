@@ -45,19 +45,33 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         self.submissions = submissions
         self.hint_tier = hint_tier
 
+    @property
+    def _default_verdict(self) -> int:
+        """Which verdict the cursor starts on.
+
+        `accepted` normally. Offline it starts on `ungraded`, because there was
+        no judge to accept anything — and a default of ACCEPTED is precisely how
+        a plane's worth of unverified solves quietly rots the distributions.
+        """
+        offline = getattr(getattr(self.app, "config", None), "cache", None)
+        if offline is not None and offline.offline and "ungraded" in VERDICTS:
+            return VERDICTS.index("ungraded")
+        return 0
+
     def compose(self) -> ComposeResult:
         summary = (
             f"{fmt_duration(self.active_seconds)}   ·   "
             f"{self.submissions} failed submit{'s' if self.submissions != 1 else ''}   ·   "
             f"{'no hints' if not self.hint_tier else f'hint tier {self.hint_tier}'}"
         )
+        default = self._default_verdict
         with Vertical(id="finish-box"):
             yield Static(self.problem_title, classes="modal-title")
             yield Static(summary, classes="field-label")
             yield Static("verdict", classes="field-label")
             with RadioSet(id="verdict"):
                 for i, v in enumerate(VERDICTS):
-                    yield RadioButton(VERDICT_LABELS[v], value=(i == 0))
+                    yield RadioButton(VERDICT_LABELS[v], value=(i == default))
             yield Static("how well will this stick?", classes="field-label")
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
@@ -97,7 +111,9 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         confidence_index = self.query_one("#confidence", RadioSet).pressed_index
         self.dismiss(
             {
-                "verdict": VERDICTS[verdict_index if verdict_index >= 0 else 0],
+                "verdict": VERDICTS[
+                    verdict_index if verdict_index >= 0 else self._default_verdict
+                ],
                 "self_confidence": (confidence_index + 1) if confidence_index >= 0 else None,
                 "lc_runtime_pct": self._pct(self.query_one("#runtime", Input).value),
                 "lc_memory_pct": self._pct(self.query_one("#memory", Input).value),

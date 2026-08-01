@@ -16,7 +16,8 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import branding, capture
+from ... import branding, cache, capture
+from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar
 from ...scoring import HINT_TIER_NAMES, fmt_duration
@@ -99,7 +100,7 @@ class SolveScreen(VimMotion, Screen[None]):
         self.query_one("#problem-meta", Static).update(
             f"{p.pattern or '—'}  ·  {', '.join(p.tags)}"
         )
-        self.query_one("#problem-url", Static).update(p.url)
+        self.query_one("#problem-url", Static).update(self._where_line(p))
 
         panel = self.query_one("#hint-panel", Static)
         panel.remove_class("visible")
@@ -146,14 +147,42 @@ class SolveScreen(VimMotion, Screen[None]):
 
     # --- actions ----------------------------------------------------------
 
+    @property
+    def _offline(self) -> bool:
+        return bool(self.app.config.cache.offline)  # type: ignore[attr-defined]
+
+    def _where_line(self, problem: Problem) -> Text:
+        """The URL line, which offline becomes the cache indicator.
+
+        Where the problem is coming from belongs where the address already was;
+        offline mode is not worth a widget of its own, but silently opening a
+        different thing than the line says would be.
+        """
+        if not self._offline:
+            return Text(problem.url)
+        if cache.local_path(problem.slug) is not None:
+            return Text(f"offline — cached copy of {problem.slug}", style="cyan")
+        return Text(
+            f"offline — not cached, run `{branding.COMMAND} fetch`", style="yellow"
+        )
+
     def action_open_url(self) -> None:
         attempt = self.engine.attempt
         if attempt is None:
             return
-        if capture.open_url(attempt.problem.url):
-            self._toast(f"opened {attempt.problem.url}")
+        target, is_local = cache.target_for(attempt.problem, offline=self._offline)
+        if self._offline and not is_local:
+            self._toast(
+                f"not cached — `{branding.COMMAND} fetch` while you have a network",
+                "yellow",
+            )
+            return
+        if not capture.open_url(target):
+            self._toast(f"couldn't open a browser — {target}", "yellow")
+        elif is_local:
+            self._toast("opened the cached copy")
         else:
-            self._toast(f"couldn't open a browser — {attempt.problem.url}", "yellow")
+            self._toast(f"opened {target}")
 
     def action_pause(self) -> None:
         if self.engine.attempt is None:
