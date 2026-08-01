@@ -9,7 +9,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ... import stats
+from datetime import datetime, timezone
+
+from ... import srs, stats
 from ...render import BANNER, rule
 from ...scoring import fmt_duration
 from ..vim import MOTIONS, VimMotion
@@ -21,6 +23,7 @@ from rich.text import Text
 #: real list, so `j`/`k` and enter get you there without knowing any of them.
 MENU = [
     ("n", "new_run", "new run"),
+    ("d", "queue", "queue"),
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
     ("s", "settings", "settings"),
@@ -35,6 +38,9 @@ class HomeScreen(VimMotion, Screen):
     BINDINGS = [
         *MOTIONS,
         Binding("n", "new_run", "new run"),
+        # `d` for due. Not `q` (quit) and not a motion key; the queue is the one
+        # screen you are meant to reach without thinking about it.
+        Binding("d", "queue", "queue"),
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
         Binding("s", "settings", "settings"),
@@ -83,10 +89,14 @@ class HomeScreen(VimMotion, Screen):
         clean_pct = f"{ov.clean_solves / ov.total_attempts * 100:.0f}%" if ov.total_attempts else "—"
         coverage = f"{ov.distinct_slugs} / {ov.catalog_size} problems seen"
 
+        cards, due = srs.counts(conn, datetime.now(timezone.utc))
+        scheduled = f"{due} due now" if cards else "nothing scheduled yet"
+
         rows = [
             rule(),
             row("runs logged", str(ov.total_runs), stats.gate_note(ov.total_runs)),
             row("attempts", str(ov.total_attempts), coverage),
+            row("scheduled", f"{cards} cards", scheduled),
             row("clean solves", f"{ov.clean_solves}", f"{clean_pct} of attempts"),
             row("time on problems", fmt_duration(ov.total_active_seconds)),
             row("best run", str(ov.best_score) if ov.total_runs else "—"),
@@ -113,6 +123,9 @@ class HomeScreen(VimMotion, Screen):
 
     def action_new_run(self) -> None:
         self.app.action_new_run()  # type: ignore[attr-defined]
+
+    def action_queue(self) -> None:
+        self.app.action_queue()  # type: ignore[attr-defined]
 
     def action_history(self) -> None:
         self.app.action_history()  # type: ignore[attr-defined]

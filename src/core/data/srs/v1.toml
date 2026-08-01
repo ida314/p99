@@ -1,0 +1,52 @@
+# FSRS parameters — v1 (spec §8)
+#
+# Same bargain as `data/scoring/v1.toml`: nothing here is denormalized into the
+# event log. `fsrs_cards` is a projection, so editing this file and running
+# `p99 replay` re-derives every card from scratch. Swapping to a `v2.toml` and
+# replaying reschedules all of history instantly.
+#
+# The caveat that matters (spec §8): FSRS's published parameters are fitted on
+# flashcard recall -- sub-10-second retrieval events. This models 30-minute
+# constructive problem solving. The *shape* transfers (forgetting curves,
+# stability growth); the constants are not going to be right. Once you have
+# 200+ reviews logged, run FSRS's own optimizer on your data -- it is built for
+# exactly this -- and write the result out as v2.
+
+version = 1
+name = "v1"
+
+# The 21 published FSRS-6 weights, verbatim from py-fsrs's DEFAULT_PARAMETERS.
+# Index 20 is the decay term. A fitted model, not an algorithm worth improving
+# by hand: change these only by running the optimizer.
+weights = [
+  0.212,  1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001,
+  1.8722, 0.1666, 0.796,  1.4835, 0.0614, 0.2629, 1.6483, 0.6014,
+  1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+]
+
+# Probability of recall the scheduler aims for at the moment a card comes due.
+desired_retention = 0.9
+
+# Minutes. **Deliberately empty**, and this is the one real departure from
+# py-fsrs's defaults.
+#
+# The library ships learning_steps = [1min, 10min] and relearning_steps =
+# [10min], which are right for a flashcard: fail it, see it again in a minute.
+# They are nonsense here. You are not going to re-solve a 30-minute algorithm
+# problem sixty seconds after finishing it, and a scheduler that asks you to
+# is one you will stop opening.
+#
+# Empty steps put every graded attempt straight into the review state on a
+# day-scale interval: Again -> 1d, Hard -> 1d, Good -> 2d, Easy -> 8d on a
+# first encounter. That is a schedule you can actually keep.
+learning_steps = []
+relearning_steps = []
+
+# Days. The library default; a card this far out is effectively retired.
+maximum_interval = 36500
+
+# Spec §8 mitigation (a): default intervals run too aggressive for hard
+# problems, so shrink theirs. Applied to the computed interval only when the
+# problem's difficulty is `hard` -- tune it by feel, it is a guess like the
+# scoring weights are guesses.
+hard_interval_mult = 0.8

@@ -234,6 +234,73 @@ def empty_state(message: str, hint: str = "") -> RenderableType:
     return Group(*rows)
 
 
+# --- the queue (spec §10) --------------------------------------------------
+
+
+def queue_panel(queue, show_rationale: bool = True) -> RenderableType:
+    """Today's queue: what to do, in what order, and why.
+
+    Reviews are marked and their overdue age shown, because "3 reviews" is a
+    number and "this one has been sitting for nine days" is a reason to start.
+    """
+    if queue is None or not queue.items:
+        return empty_state(
+            "Nothing queued.",
+            "Seed the catalog and log a run — the queue builds itself from there.",
+        )
+
+    rows: list[RenderableType] = [rule()]
+    header = Text("  ")
+    header.append(f"{'problem':<34}", style="bright_black")
+    header.append(f"{'pattern':<20}", style="bright_black")
+    header.append("when", style="bright_black")
+    rows.append(header)
+
+    for n, item in enumerate(queue.items, 1):
+        line = Text("  ")
+        line.append(f"{n} ", style="bright_black")
+        title = item.title if len(item.title) <= 29 else item.title[:28] + "…"
+        line.append(f"{title:<30}", style="bold" if item.is_review else "")
+        line.append(
+            f"{(item.difficulty or '?')[:1].upper():<3}",
+            style=DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
+        )
+        line.append(f"{(item.pattern or '—'):<20}", style="bright_black")
+        if item.is_review:
+            when = f"review · {item.overdue_days}d overdue" if item.overdue_days else "review · due"
+            line.append(when, style="yellow")
+        else:
+            line.append("new", style="bright_black")
+        rows.append(line)
+
+    rows.append(rule())
+    counts = Text("  ")
+    counts.append(f"{queue.due_count} review", style="yellow")
+    counts.append(" · ", style="bright_black")
+    counts.append(f"{queue.new_count} new", style="bright_black")
+    counts.append(f"   {queue.generated_by}", style="bright_black")
+    rows.append(counts)
+
+    if show_rationale and queue.rationale:
+        rows.append(Text(""))
+        for chunk in _wrap(queue.rationale, WIDTH - 6):
+            rows.append(Text("  " + chunk, style="bright_black italic"))
+    return Group(*rows)
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        if current and len(current) + 1 + len(word) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}".strip()
+    if current:
+        lines.append(current)
+    return lines
+
+
 # --- history ---------------------------------------------------------------
 
 

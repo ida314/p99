@@ -7,9 +7,11 @@ you're trying to become. It's also a real feature: solve times are reported as
 distributions, not averages, because the interview is a single sample and the
 tail is what kills you.
 
-**This repo is Phase 1** of [the design spec](#spec): the pathetic MVP. No LLM,
-no FSRS, no workers. What it does do is record everything, permanently, in a
-form later phases can read.
+**This repo is Phases 1 and 2** of [the design spec](#spec). Phase 1 was the
+pathetic MVP: record everything, permanently, in a form later phases can read.
+Phase 2 is scheduling — problems come back on an FSRS schedule derived from your
+own history, and a queue screen tells you what to do today and why. Still no
+LLM and no workers; those are Phase 3.
 
 ## Install
 
@@ -30,6 +32,7 @@ change to `pyproject.toml` does.
 
 ```sh
 p99                 # the TUI — start a run
+p99 queue           # what to do today, and why
 p99 stats           # percentile distributions, sliceable
 p99 history         # run rankings, you vs. your past self
 p99 replay          # rebuild every projection from the event log
@@ -44,6 +47,28 @@ p99 stats --difficulty medium --days 30
 p99 stats --by pattern            # every pattern, ranked by volume
 p99 stats --tag graph
 ```
+
+## The queue
+
+`d` from home. Every problem you finish gets an [FSRS](https://github.com/open-spaced-repetition/py-fsrs)
+card, graded from what actually happened — the verdict, the hint tier, and your
+time against par, with the confidence you reported only breaking the tie at the
+top. Giving up and reading the editorial both score zero and both still schedule
+a review; that is the whole bargain.
+
+The queue puts due reviews first but never lets them take more than ~40% of it,
+because falling behind on new coverage is how you end up excellent at fifteen
+problems. Nothing you attempted in the last three days comes back unless it is
+due, the difficulty mix targets 20/60/20, and **no pattern ever runs three deep**
+— interleaving beats blocking for transfer, and it is the highest-value
+scheduling rule in here. `enter` starts a run over it, `ctrl+r` rebuilds it.
+
+Reviews score 1.25×. Retention is the thing being trained.
+
+The cards are a projection, like everything else derived: `p99 replay` rebuilds
+every one of them from the event log, so the schedule seeds itself retroactively
+from history you logged before any of this existed. Swapping the parameter file
+in settings and replaying reschedules all of it.
 
 ## A run
 
@@ -81,6 +106,7 @@ real points.
 | | |
 |---|---|
 | `n` | new run (home) |
+| `d` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
@@ -104,6 +130,13 @@ appends. Any bug in projection logic is therefore fixable retroactively — fix
 Scores are never stored. `attempts` holds measured facts only, and the scalar is
 a pure function over a versioned weights file (`src/core/data/scoring/v1.toml`),
 computed at read time. Editing the weights rescores all history instantly.
+
+`fsrs_cards` and `queues` are projections too. A card is a fold over the ratings
+your finished attempts imply, so replaying the log rebuilds every one of them —
+which is also why the FSRS scheduler is constructed with fuzzing **off**. It is
+on by default in `py-fsrs`, and it randomizes intervals, which would make two
+replays of one log disagree. `src/core/data/srs/v1.toml` holds the parameters,
+versioned the same way the weights are.
 
 Code and notes live on disk, not in SQLite, so you can `grep`, `diff`, and open
 them in vim:
@@ -130,10 +163,10 @@ directory names are both derived from one constant — see [Renaming](#renaming)
 **No problem content is ever stored.** The catalog holds title, slug, URL,
 difficulty, tags and pattern — nothing else.
 
-## Two places this deviates from the spec
+## Three places this deviates from the spec
 
-Both are cases where the spec contradicts itself; the resolution is documented
-in the code at the point of the decision.
+Each is a case where the spec contradicts itself or contradicts this design's
+own rules; the resolution is documented in the code at the point of the decision.
 
 1. **Submission penalty.** §5 gives `submit_pen = 2 * max(0, submissions - 1)`,
    written as if `submissions` were the total number of submits. §4's schema
@@ -150,6 +183,17 @@ in the code at the point of the decision.
    text renders, and tier 4 ending the attempt. Only the hint text is a
    placeholder, so `max_hint_tier` is honest in history from day one.
 
+3. **Tag mastery is computed, not stored.** §4 gives `tag_mastery` a table with
+   an `ema_score` column. But that score is a function of the scoring weights,
+   and this design's first rule is that scores are never stored — swap
+   `v1.toml` for `v2.toml` and a projected mastery table would quietly disagree
+   with every screen that recomputes. The table is gone; `stats.tag_mastery`
+   computes it at read time like everything else derived.
+
+   One thing the spec is right about and worth restating: tags get a score and
+   not an FSRS card, because every problem review is already a review of all
+   its tags, and scheduling on both double-counts.
+
 ## Write the notes
 
 Notes are collected from day one even though nothing reads them until Phase 3.
@@ -161,10 +205,19 @@ Two sentences is plenty.
 
 ## The gate
 
-**20 logged sessions before Phase 2.** Not negotiable. It exists to catch the
-dominant failure mode — building the tool becoming the procrastination — and
-`p99 history` counts down to it. If you can't hit 20 sessions with Phase 1, more
-features won't fix that.
+**20 logged sessions before Phase 2.** It exists to catch the dominant failure
+mode — building the tool becoming the procrastination — and `p99 history` still
+counts down to it.
+
+Phase 2 was built at 5. That was a deliberate call and it is recorded here
+rather than quietly dropped, because the gate was the honest part of the plan
+and the countdown is still on the screen. Nothing about the timing was load
+bearing: cards are derived from the event log, so the schedule seeded itself
+from the sessions that already existed the moment `p99 replay` ran, and it will
+keep doing that for sessions logged from here.
+
+The thing the gate was actually protecting is still true. If you can't hit 20
+sessions, more features won't fix that.
 
 ## Renaming
 
@@ -217,5 +270,7 @@ touches attempt history.
 
 The full design lives in `~/Documents/Obsidian/personal/specs/`. Phase 1 covers
 §4 (data model), §5 (scoring), §6 (percentiles), §7 (post-solve capture), and
-§15.1 (build order). §8–§13 — FSRS, coach memory, the nightly coach, the review
-pipeline, real hints — are deliberately absent.
+§15.1 (build order). Phase 2 adds §8 (FSRS) and §10 stage 1 (deterministic queue
+generation, no LLM). §9 and §11–§13 — coach memory, the nightly coach, the
+review pipeline, real hints — are deliberately absent, and the `coach_memory`
+and `jobs` tables sit empty waiting for them.

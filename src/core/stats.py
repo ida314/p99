@@ -405,6 +405,82 @@ def standing(runs: Sequence[Run], session_id: int) -> RunStanding | None:
 PHASE_2_GATE = 20
 
 
+@dataclass(frozen=True)
+class TagMastery:
+    """How well one tag is going. Spec §4 gives this a table; it does not get one.
+
+    `ema_score` is a function of the score, and the score is a function of a
+    versioned weights file that you are expected to edit (see the note at the
+    top of `scoring`). Storing it would be the one denormalization this design
+    does not allow -- swap `v1.toml` for `v2.toml` and a projected mastery table
+    would quietly disagree with every screen that recomputes. So it is computed
+    here, at read time, like everything else derived.
+    """
+
+    tag: str
+    attempts: int
+    solved_clean: int
+    ema_score: float
+    last_seen: str | None
+
+    @property
+    def clean_rate(self) -> float:
+        return self.solved_clean / self.attempts if self.attempts else 0.0
+
+
+#: Weight of the newest attempt in the mastery EMA. 0.3 puts roughly half the
+#: signal in the last two attempts, which is the point: mastery is meant to
+#: track where you are now, not average away a bad month six months ago.
+MASTERY_ALPHA = 0.3
+
+
+def tag_mastery(
+    conn: sqlite3.Connection,
+    weights: Weights | None = None,
+    *,
+    min_attempts: int = 1,
+    days: int | None = None,
+) -> list[TagMastery]:
+    """Per-tag mastery, weakest first. Spec §10 stage 1's `weak_tags`.
+
+    One attempt feeds every tag its problem carries -- that is the reason tags
+    get a score and not an FSRS card (spec §8): every problem review is also a
+    review of all its tags, and scheduling on both would double-count.
+    """
+    w = weights or scoring.load_weights()
+    attempts = load_attempts(conn, days=days)  # oldest first, which the EMA needs
+
+    ema: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    clean: dict[str, int] = {}
+    seen: dict[str, str] = {}
+
+    for a in attempts:
+        score = scoring.score_attempt(a, a.get("difficulty") or "medium", w).total
+        is_clean = scoring.is_clean_solve(a)
+        for tag in a.get("tags") or ():  # already decoded by `load_attempts`
+            counts[tag] = counts.get(tag, 0) + 1
+            clean[tag] = clean.get(tag, 0) + (1 if is_clean else 0)
+            ema[tag] = score if tag not in ema else MASTERY_ALPHA * score + (1 - MASTERY_ALPHA) * ema[tag]
+            if a.get("ended_at"):
+                seen[tag] = a["ended_at"]
+
+    out = [
+        TagMastery(
+            tag=tag,
+            attempts=counts[tag],
+            solved_clean=clean.get(tag, 0),
+            ema_score=ema[tag],
+            last_seen=seen.get(tag),
+        )
+        for tag in counts
+        if counts[tag] >= min_attempts
+    ]
+    # Ties broken by tag so the ordering is stable — a queue built from this has
+    # to be reproducible.
+    return sorted(out, key=lambda m: (m.ema_score, m.tag))
+
+
 def gate_note(total_runs: int) -> str:
     remaining = PHASE_2_GATE - total_runs
     return f"{remaining} to the Phase 2 gate" if remaining > 0 else "Phase 2 gate cleared"

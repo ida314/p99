@@ -35,6 +35,14 @@ is one attempt and not a statistic.
 .B history
 Every run, ranked against every other run.
 .TP
+.B queue
+Today's queue: which problems to do, in what order, and why. Reviews are
+scheduled by FSRS from your own history and lead the queue, but never take more
+than about 40% of it, so new coverage does not stall. No problem attempted in
+the last three days appears unless it has come due, the difficulty mix is
+targeted at roughly 20/60/20, and no pattern ever runs three problems deep:
+interleaving beats blocking for transfer. Generated on first use each day.
+.TP
 .B replay
 Rebuild all projections from the event log. Safe to run at any time; it changes
 no history, only the tables derived from it.
@@ -71,6 +79,16 @@ Maximum number of groups to print with
 .TP
 .BI \-\-min\-samples " N"
 Sample count below which the 99th percentile is greyed out.
+.SS queue
+.TP
+.BI \-n " N"
+Problems in the queue. Defaults to
+.I session.planned_n
+from the configuration.
+.TP
+.B \-\-regenerate
+Rebuild today's queue from the current cards, replacing the one already stored
+for today.
 .SS history
 .TP
 .BI \-\-limit " N"
@@ -109,6 +127,8 @@ Because those keys are motions everywhere, no screen binds them to an action.
 On the home screen:
 .B n
 starts a run,
+.B d
+opens today's queue,
 .B r
 opens the runs,
 .B t
@@ -119,6 +139,16 @@ opens the settings,
 quits. The menu is also a list, so
 .BR j / k
 and Enter reach the same places.
+.PP
+On the queue screen:
+.B Enter
+(or
+.BR ^s )
+starts a run over the queue as it stands,
+.B ^r
+rebuilds it from the current cards, and
+.B q
+goes back.
 .PP
 On the setup screen:
 .B /

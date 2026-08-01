@@ -12,6 +12,7 @@ from ..engine import RunEngine
 from .screens import (
     HistoryScreen,
     HomeScreen,
+    QueueScreen,
     SettingsScreen,
     SetupScreen,
     SolveScreen,
@@ -69,8 +70,14 @@ class CoreApp(App):
             return
         self.push_screen(
             SetupScreen(self.config.session.active_list, self.config.session.planned_n),
-            self._start_run,
+            self.start_run,
         )
+
+    def action_queue(self) -> None:
+        if self.engine.session is not None:
+            self.bell()
+            return
+        self.push_screen(QueueScreen())
 
     def reload_config(self) -> None:
         """Re-read both config layers. Called after the settings screen writes.
@@ -81,7 +88,8 @@ class CoreApp(App):
         self.config = config_module.load(self.conn)
         self.weights = scoring.load_weights(self.config.scoring.weights)
 
-    def _start_run(self, slugs: list[str] | None) -> None:
+    def start_run(self, slugs: list[str] | None) -> None:
+        """Begin a run over `slugs`. The one way in, from setup or the queue."""
         if not slugs:
             return
         self.reload_config()

@@ -17,7 +17,10 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 1
+# 2: `fsrs_cards` gained `step` and lost nothing; `tag_mastery` was dropped.
+# Bumping this is cheap precisely because everything it touches is a projection
+# -- see `migrate`.
+SCHEMA_VERSION = 2
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -110,21 +113,22 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-# Tables Phase 2/3 fill in. Created now so the schema is stable and a replay
-# has somewhere to put things later; nothing in Phase 1 writes to them.
+# Phase 2 fills `fsrs_cards` and `queues`; the rest waits for Phase 3. All of
+# them are created now so the schema is stable and a replay has somewhere to put
+# things later.
+#
+# `tag_mastery` used to live here. It is gone on purpose: its `ema_score` is a
+# function of the score, and this project does not store scores (see the note at
+# the top of `scoring`). It is computed at read time by `stats.tag_mastery`
+# instead -- the third deviation from the spec, documented in the README.
 FUTURE_DDL = """
 CREATE TABLE IF NOT EXISTS fsrs_cards (
   slug         TEXT PRIMARY KEY REFERENCES problems(slug),
   stability    REAL, difficulty REAL,
   due          TEXT, last_review TEXT,
   reps         INTEGER, lapses INTEGER,
-  state        TEXT                       -- new|learning|review|relearning
-);
-
-CREATE TABLE IF NOT EXISTS tag_mastery (
-  tag          TEXT PRIMARY KEY,
-  attempts     INTEGER, solved_clean INTEGER,
-  ema_score    REAL, last_seen TEXT
+  state        TEXT,                      -- learning|review|relearning
+  step         INTEGER                    -- learning/relearning step; null in review
 );
 
 CREATE TABLE IF NOT EXISTS coach_memory (
@@ -162,14 +166,28 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 """
 
 # Projection tables that `replay` truncates. `problems` is deliberately absent.
+#
+# `queues` belongs here even though a Phase 3 queue is chosen by an LLM and
+# could never be recomputed: the `queue_generated` payload carries the finished
+# slug list, so replaying the log reproduces the queue exactly rather than
+# regenerating it.
 PROJECTION_TABLES = (
     "submissions",  # references attempts: children first, see the docstring
     "attempts",
     "sessions",
     "settings",
     "fsrs_cards",
-    "tag_mastery",
+    "queues",
 )
+
+# Projections whose *shape* changed in a given schema version. Bumping
+# `SCHEMA_VERSION` and listing the affected tables here is the entire migration
+# story, and it is this short only because projections are disposable: drop
+# them, recreate them from the DDL, and the next replay refills them from the
+# log. Nothing a user typed is ever in one of these tables.
+SHAPE_CHANGED_IN = {
+    2: ("fsrs_cards", "tag_mastery"),
+}
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
@@ -184,21 +202,70 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def init(conn: sqlite3.Connection) -> None:
-    """Create every table. Idempotent."""
-    for ddl in (META_DDL, EVENT_LOG_DDL, CATALOG_DDL, PROJECTION_DDL, FUTURE_DDL):
+def stored_version(conn: sqlite3.Connection) -> int:
+    """The schema version on disk. 0 for a database that predates the stamp."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:  # schema_meta itself not created yet
+        return 0
+    return int(row["value"]) if row else 0
+
+
+def migrate(conn: sqlite3.Connection) -> bool:
+    """Drop projections whose shape changed since the stored version.
+
+    Returns True if anything was dropped, meaning the caller owes a replay.
+
+    This is the whole migration mechanism, and it can be this small because the
+    only tables that ever change shape are projections: there is nothing in one
+    of them that is not also in the event log. `ALTER TABLE` gymnastics would be
+    strictly more code and strictly more risk.
+
+    `db` cannot call `events.replay` -- `events` imports `db`, not the other way
+    round -- so the signal goes back to the caller instead.
+    """
+    from_version = stored_version(conn)
+    if from_version >= SCHEMA_VERSION:
+        return False
+
+    dropped = False
+    for version, tables in sorted(SHAPE_CHANGED_IN.items()):
+        if from_version < version <= SCHEMA_VERSION:
+            for table in tables:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+                dropped = True
+    return dropped
+
+
+def init(conn: sqlite3.Connection) -> bool:
+    """Create every table, migrating first. Idempotent.
+
+    Returns True if a projection was dropped and the caller owes a replay.
+    """
+    conn.executescript(META_DDL)
+    needs_replay = migrate(conn)
+    for ddl in (EVENT_LOG_DDL, CATALOG_DDL, PROJECTION_DDL, FUTURE_DDL):
         conn.executescript(ddl)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (str(SCHEMA_VERSION),),
     )
+    return needs_replay
 
 
 def open_db(path: Path | None = None) -> sqlite3.Connection:
-    """`connect` + `init` — the normal entry point."""
+    """`connect` + `init` — the normal entry point.
+
+    Performs the replay a schema bump asks for, so no caller has to remember to.
+    """
     conn = connect(path)
-    init(conn)
+    if init(conn):
+        from . import events  # deferred: `events` imports this module
+
+        events.replay(conn)
     return conn
 
 

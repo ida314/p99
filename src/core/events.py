@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from . import scoring, srs
 from .db import SCHEMA_VERSION, truncate_projections
 
 # --- event types (spec §4) -------------------------------------------------
@@ -148,6 +149,38 @@ def _attempt_id(conn: sqlite3.Connection, attempt_uuid: str) -> int | None:
     return row["id"] if row else None
 
 
+def _setting(conn: sqlite3.Connection, key: str, default: str) -> str:
+    """Read one in-app override straight from the projection.
+
+    Deliberately not via `config`: `config.set_option` appends events, so this
+    module cannot import it. Only the two keys the card projection depends on
+    are read this way, and both are plain strings.
+    """
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return default
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return default
+    return value if isinstance(value, str) else default
+
+
+def srs_context(conn: sqlite3.Connection) -> tuple[srs.Params, scoring.Weights]:
+    """The parameters the card projection grades with.
+
+    `replay` resolves this *before* truncating, so a rebuild grades all of
+    history with the settings in force now rather than replaying each
+    `settings_changed` event as it goes. Switching `srs.params` from v1 to v2
+    and replaying is meant to reschedule everything, not to leave the first half
+    of your history on the old model.
+    """
+    return (
+        srs.load_params(_setting(conn, "srs.params", srs.DEFAULT_PARAMS)),
+        scoring.load_weights(_setting(conn, "scoring.weights", scoring.DEFAULT_WEIGHTS)),
+    )
+
+
 def _update_attempt(conn: sqlite3.Connection, attempt_uuid: str, **fields: Any) -> None:
     fields = {k: v for k, v in fields.items() if v is not None}
     if not fields:
@@ -159,11 +192,38 @@ def _update_attempt(conn: sqlite3.Connection, attempt_uuid: str, **fields: Any) 
     )
 
 
-def apply(conn: sqlite3.Connection, event: Event) -> None:
+def _grade(
+    conn: sqlite3.Connection,
+    attempt_uuid: str,
+    event: Event,
+    context: tuple[srs.Params, scoring.Weights] | None,
+) -> None:
+    """Fold a finished attempt into its FSRS card (spec §8).
+
+    No new event type carries this: the rating is a pure function of facts the
+    attempt already records, so deriving it here is what lets `replay` rebuild
+    every card from a log written before any of this existed. `review_completed`
+    stays reserved for the Phase 3 review pipeline, which is a different thing
+    that happens to share a word.
+    """
+    params, weights = context or srs_context(conn)
+    srs.grade_attempt(conn, attempt_uuid, at=event.ts, params=params, weights=weights)
+
+
+def apply(
+    conn: sqlite3.Connection,
+    event: Event,
+    *,
+    context: tuple[srs.Params, scoring.Weights] | None = None,
+) -> None:
     """Fold one event into the projection tables.
 
     Unknown or not-yet-implemented event types are ignored on purpose: the log
     may legitimately contain events from a later phase (or another device).
+
+    `context` is the (params, weights) the card projection grades with; it is
+    resolved from the settings overlay when not supplied, so a caller applying
+    one event in isolation still gets the right answer.
     """
     p = event.payload
 
@@ -237,6 +297,9 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
             wall_seconds=p.get("wall_seconds"),
             paused_seconds=p.get("paused_seconds"),
         )
+        # Giving up scores zero but still schedules a review (spec §5). Zero is
+        # the point: it costs you the run, not the record.
+        _grade(conn, p["attempt_uuid"], event, context)
 
     elif event.type == PROBLEM_FINISHED:
         _update_attempt(
@@ -252,6 +315,9 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
             lc_memory_pct=p.get("lc_memory_pct"),
             language=p.get("language"),
         )
+        # Every rating input is on the row by now: verdict and timing from this
+        # event, the hint tier from earlier `hint_revealed` events.
+        _grade(conn, p["attempt_uuid"], event, context)
 
     elif event.type == CODE_ARCHIVED:
         _update_attempt(
@@ -281,6 +347,25 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
             ),
         )
 
+    elif event.type == QUEUE_GENERATED:
+        # The payload carries the finished list, so this replays rather than
+        # regenerates — which is what keeps a Phase 3 LLM-chosen queue
+        # reproducible even though the model that chose it is long gone.
+        conn.execute(
+            "INSERT INTO queues(date, slugs, rationale, generated_by, created_at) "
+            "VALUES(?,?,?,?,?) "
+            "ON CONFLICT(date) DO UPDATE SET "
+            "  slugs = excluded.slugs, rationale = excluded.rationale, "
+            "  generated_by = excluded.generated_by, created_at = excluded.created_at",
+            (
+                p["date"],
+                json.dumps(p["slugs"]),
+                p.get("rationale", ""),
+                p.get("generated_by", "unknown"),
+                p.get("created_at", event.ts),
+            ),
+        )
+
     elif event.type == SETTINGS_CHANGED:
         # A null value clears the override rather than storing one, which is
         # how the settings screen hands a knob back to config.toml. No setting
@@ -298,11 +383,14 @@ def apply(conn: sqlite3.Connection, event: Event) -> None:
 def replay(conn: sqlite3.Connection) -> int:
     """Drop every projection and rebuild it from the log. Returns event count."""
     events = read_all(conn)
+    # Resolved before the truncate, while the settings projection still holds
+    # the current overrides — see `srs_context`.
+    context = srs_context(conn)
     conn.execute("BEGIN")
     try:
         truncate_projections(conn)
         for event in events:
-            apply(conn, event)
+            apply(conn, event, context=context)
     except Exception:
         conn.execute("ROLLBACK")
         raise

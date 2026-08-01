@@ -16,6 +16,7 @@ from core.tui.screens import (
     FinishModal,
     HistoryScreen,
     HomeScreen,
+    QueueScreen,
     SettingsScreen,
     SetupScreen,
     SolveScreen,
@@ -534,3 +535,70 @@ async def test_a_skipped_second_note_edit_keeps_the_first(capturing_app, monkeyp
         await pilot.pause()
 
     assert app.conn.execute("SELECT session_note FROM sessions").fetchone()["session_note"] == first
+
+
+# --- the queue screen (spec §15 Phase 2, item 9) ---------------------------
+
+
+async def test_d_opens_the_queue_and_it_is_never_empty(app):
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        # Generated on open: a morning queue that asks you to press a key first
+        # is a morning queue you stop opening (spec §10).
+        assert app.screen.queue is not None
+        assert app.screen.queue.items
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_the_queue_starts_a_run(app):
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        slugs = app.screen.queue.slugs
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.session is not None
+        # The queue's list, in the queue's order — not a re-roll.
+        assert app.engine.session.slugs == slugs
+
+
+async def test_regenerating_keeps_one_row_per_day(app):
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        rows = app.conn.execute("SELECT COUNT(*) AS n FROM queues").fetchone()["n"]
+        assert rows == 1
+
+
+async def test_the_queue_does_not_open_mid_run(app):
+    """Same guard `n` has: one run at a time."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+
+
+async def test_motions_do_not_start_a_run_from_the_queue(app):
+    """`j`/`k`/`g`/`G` are motions on every screen, this one included."""
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        for key in ("j", "k", "g", "G", "ctrl+d", "ctrl+u"):
+            await pilot.press(key)
+            await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        assert app.engine.session is None

@@ -14,6 +14,7 @@ from textual.widgets import Input, OptionList, SelectionList
 from core import db, paths
 from core.tui.app import CoreApp
 from core.tui.screens import HistoryScreen, HomeScreen, SetupScreen, SolveScreen
+from core.tui.screens.home import MENU
 
 NO_CAPTURE_CONFIG = """
 [session]
@@ -163,12 +164,18 @@ async def test_escape_leaves_the_filter_before_it_leaves_the_screen(app):
 
 
 async def test_the_home_menu_is_navigable(app):
+    """`j` moves and enter opens whatever it landed on, whatever that is.
+
+    Indexed off `MENU` rather than hard-coded, so adding an entry moves the
+    menu without silently changing what this asserts.
+    """
     async with app.run_test() as pilot:
         menu = app.screen.query_one("#menu", OptionList)
         assert menu.highlighted == 0
 
-        await pilot.press("j")  # new run -> runs
-        assert menu.highlighted == 1
+        target = [action for _, action, _ in MENU].index("history")
+        await pilot.press(*["j"] * target)
+        assert menu.highlighted == target
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, HistoryScreen)

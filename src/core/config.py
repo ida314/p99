@@ -57,6 +57,12 @@ on_failed_submit = true
 # which weights file in the package's data/scoring/ to compute scores with
 weights = "v1"
 
+[srs]
+# which FSRS parameter file in the package's data/srs/ schedules reviews.
+# `fsrs_cards` is a projection, so changing this and running
+# `{branding.COMMAND} replay` re-derives every card and reschedules all history.
+params = "v1"
+
 [stats]
 # below this many samples in a slice, p99 is one data point and is greyed out
 min_samples = 20
@@ -107,6 +113,11 @@ class ScoringConfig:
 
 
 @dataclass(frozen=True)
+class SrsConfig:
+    params: str = "v1"
+
+
+@dataclass(frozen=True)
 class StatsConfig:
     min_samples: int = 20
     window_days: int = 60
@@ -117,6 +128,7 @@ class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    srs: SrsConfig = field(default_factory=SrsConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
 
 
@@ -134,6 +146,7 @@ def _build(raw: dict[str, Any]) -> Config:
         session=pick(SessionConfig, "session"),
         capture=pick(CaptureConfig, "capture"),
         scoring=pick(ScoringConfig, "scoring"),
+        srs=pick(SrsConfig, "srs"),
         stats=pick(StatsConfig, "stats"),
     )
 
@@ -208,7 +221,8 @@ def options() -> tuple[Option, ...]:
     Deliberately not every field on `Config`: this is the set worth changing
     between runs. Anything else stays a config-file edit.
     """
-    from . import scoring  # local: scoring reads package data at call time
+    # Local: both read package data at call time, and `srs` imports `scoring`.
+    from . import scoring, srs
 
     return (
         Option(
@@ -246,6 +260,12 @@ def options() -> tuple[Option, ...]:
             "scoring weights",
             "which weights file scores are computed with — history rescores itself",
             tuple(scoring.available_weights()),
+        ),
+        Option(
+            "srs.params",
+            "review schedule",
+            "which FSRS parameter file schedules reviews — replay reschedules everything",
+            tuple(srs.available_params()),
         ),
     )
 

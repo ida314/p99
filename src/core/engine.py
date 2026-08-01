@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import catalog, events
+from . import catalog, events, srs
 from .catalog import Problem
 
 MAX_HINT_TIER = 4
@@ -199,7 +199,19 @@ class RunEngine:
 
     # --- attempt ----------------------------------------------------------
 
-    def start_problem(self, slug: str, is_review: bool = False) -> Attempt:
+    def start_problem(self, slug: str, is_review: bool | None = None) -> Attempt:
+        """Begin an attempt. `is_review=None` asks the scheduler (spec §8).
+
+        A problem with an FSRS card in a review state is a review, and reviews
+        are worth `review_mult` because retention is the thing being trained.
+        Passing an explicit True/False still wins, which is what keeps the
+        callers that already knew the answer — and the tests — unaffected.
+
+        The answer is resolved here, at write time, and travels in the
+        `problem_started` payload. `events.apply` reads it back out rather than
+        recomputing it, so replaying an old log cannot relabel history with
+        today's cards.
+        """
         if self.session is None:
             raise SessionError("no session in progress")
         if self.attempt is not None and not self.attempt.finished:
@@ -207,6 +219,8 @@ class RunEngine:
         problem = catalog.get(self.conn, slug)
         if problem is None:
             raise SessionError(f"unknown problem: {slug}")
+        if is_review is None:
+            is_review = srs.is_due_review(self.conn, slug)
 
         attempt_uuid = events.new_uuid()
         events.append(

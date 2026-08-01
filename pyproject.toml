@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.80",
+    # The reference FSRS implementation. Its only runtime dependency is
+    # typing-extensions; torch/numpy/pandas sit behind the `optimizer` extra and
+    # are not pulled in. See `core.srs` for the one option that must not change.
+    "fsrs>=6.3",
 ]
 
 [project.scripts]

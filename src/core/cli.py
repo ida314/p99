@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -21,8 +22,10 @@ from . import (
     db,
     events,
     paths,
+    queues,
     render,
     scoring,
+    srs,
     stats,
 )
 
@@ -132,9 +135,30 @@ def cmd_replay(args: argparse.Namespace) -> int:
     n = events.replay(conn)
     sessions = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
     attempts = conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"]
+    cards = conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"]
     console.print(
-        f"replayed [bold]{n}[/bold] events → {sessions} sessions, {attempts} attempts"
+        f"replayed [bold]{n}[/bold] events → {sessions} sessions, "
+        f"{attempts} attempts, {cards} cards"
     )
+    return 0
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    """Today's queue (spec §10). Generated on demand until Phase 3's cron."""
+    conn = db.open_db()
+    cfg = config_module.load(conn)
+    weights = scoring.load_weights(cfg.scoring.weights)
+    queue = queues.ensure(
+        conn,
+        n=args.n or cfg.session.planned_n,
+        active_list=cfg.session.active_list,
+        weights=weights,
+        regenerate=args.regenerate,
+    )
+    console.print()
+    console.print(f"  [bold]today's queue[/bold]  ·  {queue.date}")
+    console.print(render.queue_panel(queue))
+    console.print()
     return 0
 
 
@@ -155,6 +179,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ov = stats.overview(conn)
     editor = " ".join(config_module.editor())
 
+    now = datetime.now(timezone.utc)
+    card_count, due_now = srs.counts(conn, now)
+    if card_count:
+        nxt = srs.next_due(conn)
+        cards_state = f"{card_count} scheduled, {due_now} due now"
+        if nxt:
+            cards_state += f", next {nxt[:10]}"
+    else:
+        cards_state = "none yet — finish a problem and one appears"
+
     changed = config_module.overrides(conn)
     capture_state = "on" if cfg.capture.enabled else "off"
     if cfg.capture.enabled:
@@ -174,6 +208,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ),
         ("catalog", f"{ov.catalog_size} problems ({cfg.session.active_list})", ov.catalog_size > 0),
         ("weights", f"{cfg.scoring.weights} ({', '.join(scoring.available_weights())})", True),
+        ("schedule", f"{cfg.srs.params} ({', '.join(srs.available_params())})", True),
+        ("cards", cards_state, card_count > 0),
         ("events", str(conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]), True),
         ("runs", f"{ov.total_runs} — {stats.gate_note(ov.total_runs)}", True),
     ]
@@ -214,6 +250,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_history.add_argument("--limit", type=int)
     p_history.add_argument("--run", type=int, help="show one run's stat lines, by run number")
     p_history.set_defaults(func=cmd_history)
+
+    p_queue = sub.add_parser("queue", help="today's queue and why it looks like that")
+    p_queue.add_argument("-n", type=int, help="problems in the queue (default: config)")
+    p_queue.add_argument(
+        "--regenerate", action="store_true", help="rebuild today's queue from current cards"
+    )
+    p_queue.set_defaults(func=cmd_queue)
 
     p_replay = sub.add_parser("replay", help="rebuild projections from the event log")
     p_replay.set_defaults(func=cmd_replay)
