@@ -94,7 +94,7 @@ class HomeScreen(VimMotion, Screen):
 
         rows = [
             rule(),
-            row("runs logged", str(ov.total_runs), stats.gate_note(ov.total_runs)),
+            row("runs logged", str(ov.total_runs)),
             row("attempts", str(ov.total_attempts), coverage),
             row("scheduled", f"{cards} cards", scheduled),
             row("clean solves", f"{ov.clean_solves}", f"{clean_pct} of attempts"),

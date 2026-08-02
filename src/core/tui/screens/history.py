@@ -61,7 +61,7 @@ class HistoryScreen(VimMotion, Screen[None]):
             self.query_one("#run-detail", Static).update(
                 empty_state(
                     "No runs logged yet.",
-                    "Press n on the home screen. The gate is 20 sessions.",
+                    "Press n on the home screen to start one.",
                 )
             )
             return

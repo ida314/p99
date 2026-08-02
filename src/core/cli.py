@@ -319,7 +319,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ("schedule", f"{cfg.srs.params} ({', '.join(srs.available_params())})", True),
         ("cards", cards_state, card_count > 0),
         ("events", str(conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]), True),
-        ("runs", f"{ov.total_runs} — {stats.gate_note(ov.total_runs)}", True),
+        ("runs", str(ov.total_runs), True),
     ]
     console.print()
     for label, value, ok in rows:

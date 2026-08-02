@@ -401,12 +401,6 @@ def standing(runs: Sequence[Run], session_id: int) -> RunStanding | None:
     )
 
 
-# The gate: 20 logged sessions before Phase 2. Not negotiable, and specifically
-# designed to catch the dominant failure mode -- building the tool becoming the
-# procrastination (spec §2.1, §15).
-PHASE_2_GATE = 20
-
-
 @dataclass(frozen=True)
 class TagMastery:
     """How well one tag is going. Spec §4 gives this a table; it does not get one.
@@ -481,11 +475,6 @@ def tag_mastery(
     # Ties broken by tag so the ordering is stable — a queue built from this has
     # to be reproducible.
     return sorted(out, key=lambda m: (m.ema_score, m.tag))
-
-
-def gate_note(total_runs: int) -> str:
-    remaining = PHASE_2_GATE - total_runs
-    return f"{remaining} to the Phase 2 gate" if remaining > 0 else "Phase 2 gate cleared"
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ from rich.console import Group, RenderableType
 from rich.text import Text
 
 from .scoring import Score, fmt_duration, ordinal
-from .stats import PHASE_2_GATE, Distribution, Run, RunStanding
+from .stats import Distribution, Run, RunStanding
 
 WIDTH = 62
 
@@ -311,7 +311,7 @@ def history_table(runs: Sequence[Run], limit: int | None = None) -> RenderableTy
     if not runs:
         return empty_state(
             "No runs logged yet.",
-            f"Start one with `{branding.COMMAND}` — the gate is 20 sessions before Phase 2.",
+            f"Start one with `{branding.COMMAND}` — the first run is the baseline for every one after it.",
         )
 
     ranked = sorted(runs, key=lambda r: r.score, reverse=True)
@@ -346,8 +346,5 @@ def history_table(runs: Sequence[Run], limit: int | None = None) -> RenderableTy
     footer.append(f"{len(runs)} runs", style="bright_black")
     footer.append(f"   total {total}", style="bright_black")
     footer.append(f"   best {max(r.score for r in runs)}", style="bright_black")
-    gate = PHASE_2_GATE - len(runs)
-    if gate > 0:
-        footer.append(f"   ·  {gate} more session{'s' if gate != 1 else ''} to the Phase 2 gate", style="yellow")
     rows.append(footer)
     return Group(*rows)
