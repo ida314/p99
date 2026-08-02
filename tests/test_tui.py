@@ -15,6 +15,7 @@ from textual.widgets import Input
 from core import branding, db, paths
 from core.tui.app import CoreApp
 from core.tui.screens import (
+    FetchScreen,
     FinishModal,
     HistoryScreen,
     HomeScreen,
@@ -661,3 +662,128 @@ async def test_the_finish_prompt_defaults_to_not_graded_when_offline(app):
         "SELECT verdict FROM attempts ORDER BY id LIMIT 1"
     ).fetchone()["verdict"]
     assert verdict == "ungraded"
+
+
+# --- offline cache ----------------------------------------------------------
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Both of the cache's doors out, stubbed. Returns the slugs requested."""
+    from core import cache
+
+    requested: list[str] = []
+
+    def fake_question(slug, **kw):
+        requested.append(slug)
+        if slug.startswith("meeting-rooms"):
+            raise cache.FetchError("premium only — no session cookie")
+        return {
+            "title": slug,
+            "difficulty": "Easy",
+            "isPaidOnly": False,
+            "content": f"<p>statement for {slug}</p>",
+            "hints": ["a hint"],
+            "exampleTestcases": "[]",
+            "codeSnippets": [{"lang": "Python3", "langSlug": "python3", "code": "pass"}],
+        }
+
+    monkeypatch.setattr(cache, "fetch_question", fake_question)
+    monkeypatch.setattr(cache, "_fetch_bytes", lambda url, **kw: b"png")
+    monkeypatch.setattr(cache, "PAUSE_SECONDS", 0)
+    return requested
+
+
+async def test_f_warms_the_offline_cache_from_home(app, no_network):
+    """The whole feature through the keyboard: the night before the flight."""
+    async with app.run_test() as pilot:
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FetchScreen)
+        assert not list(paths.cache_dir().glob("*.html"))
+
+        # Opening the screen fetches nothing — it waits to be told.
+        assert no_network == []
+
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        # The whole active list, minus the ones that cannot be fetched at all.
+        on_disk = {p.stem for p in paths.cache_dir().glob("*.html")}
+        assert len(on_disk) == 150 - 2
+        assert "two-sum" in on_disk
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_a_failed_problem_is_named_not_swallowed(app, no_network):
+    async with app.run_test() as pilot:
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        panel = app.screen.query_one("#fetch-failures").render()
+        assert "meeting-rooms" in str(panel)
+        assert "premium only" in str(panel)
+
+
+async def test_escape_stops_a_sweep_before_it_leaves_the_screen(app, no_network, monkeypatch):
+    """Escape mid-sweep cancels; it does not abandon a thread behind a screen."""
+    import threading
+
+    from core import cache
+
+    # Park the worker inside its first request, so escape lands during the
+    # sweep rather than after a stubbed one has already raced to the end.
+    gate = threading.Event()
+    request = cache.fetch_question
+
+    def gated(slug, **kw):
+        gate.wait(5)
+        return request(slug, **kw)
+
+    monkeypatch.setattr(cache, "fetch_question", gated)
+
+    async with app.run_test() as pilot:
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("enter")
+
+        screen = app.screen
+        await pilot.press("escape")
+        assert screen._stop_requested is True
+        assert isinstance(app.screen, FetchScreen)  # still here, still stopping
+
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        # It stopped early, and what landed is a real cache: no half-written
+        # page, and nothing pruned on the way out.
+        assert screen._sweeping is False
+        on_disk = list(paths.cache_dir().glob("*.html"))
+        assert 0 < len(on_disk) < 150
+        assert all(p.read_text().endswith("</html>") for p in on_disk)
+
+        # Only now does escape mean leave.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_the_cache_screen_does_not_open_mid_run(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+
+        app.action_fetch()
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)

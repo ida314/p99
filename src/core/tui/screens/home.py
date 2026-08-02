@@ -27,6 +27,10 @@ MENU = [
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
     ("s", "settings", "settings"),
+    # Below settings because it is packing, not practice — and next to the
+    # switch it serves, since turning offline mode on without warming the cache
+    # first is the one way to reach a plane with nothing to open.
+    ("f", "fetch", "offline cache"),
     ("q", "quit", "quit"),
 ]
 
@@ -44,6 +48,7 @@ class HomeScreen(VimMotion, Screen):
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
         Binding("s", "settings", "settings"),
+        Binding("f", "fetch", "offline cache"),
         Binding("q", "quit", "quit"),
         Binding("l", "select", "open", show=False),
     ]
@@ -135,3 +140,6 @@ class HomeScreen(VimMotion, Screen):
 
     def action_settings(self) -> None:
         self.app.action_settings()  # type: ignore[attr-defined]
+
+    def action_fetch(self) -> None:
+        self.app.action_fetch()  # type: ignore[attr-defined]

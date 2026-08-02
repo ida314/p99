@@ -1,3 +1,4 @@
+from .fetch import FetchScreen
 from .finish import ConfirmModal, FinishModal
 from .history import HistoryScreen
 from .home import HomeScreen
@@ -10,6 +11,7 @@ from .summary import SummaryScreen
 
 __all__ = [
     "ConfirmModal",
+    "FetchScreen",
     "FinishModal",
     "HistoryScreen",
     "HomeScreen",

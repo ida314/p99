@@ -476,6 +476,7 @@ class SyncReport:
     failures: dict[str, str] = field(default_factory=dict)
     total_bytes: int = 0
     budget_bytes: int = 0
+    cancelled: bool = False
 
     @property
     def over_budget(self) -> bool:
@@ -490,18 +491,60 @@ def sync(
     language: str = "python",
     refresh: bool = False,
     on_progress: Callable[[str, str], None] | None = None,
-    pause: float = PAUSE_SECONDS,
+    stop: Callable[[], bool] | None = None,
+    pause: float | None = None,
     now: datetime | None = None,
 ) -> SyncReport:
     """Bring the cache in line with the active lists. Idempotent and resumable.
 
-    A problem already on disk is kept without a request unless `refresh`. A
-    problem that will not download is recorded and the sweep continues -- one
-    dead slug must not cost you the other 149. A problem that would breach the
-    budget is skipped rather than ending the walk, so smaller problems further
-    down the priority order still land.
+    Thin wrapper: the database is read once, here, and everything after it is
+    network and disk. That split is what lets the TUI compute the order on the
+    thread that owns the connection and run the sweep itself on another --
+    see `sync_problems`.
     """
     now = now or datetime.now(timezone.utc)
+    return sync_problems(
+        priority(conn, lists, now=now),
+        lists=lists,
+        budget_bytes=budget_bytes,
+        language=language,
+        refresh=refresh,
+        on_progress=on_progress,
+        stop=stop,
+        pause=pause,
+        now=now,
+    )
+
+
+def sync_problems(
+    problems: Sequence[Problem],
+    *,
+    lists: Sequence[str],
+    budget_bytes: int,
+    language: str = "python",
+    refresh: bool = False,
+    on_progress: Callable[[str, str], None] | None = None,
+    stop: Callable[[], bool] | None = None,
+    pause: float | None = None,
+    now: datetime | None = None,
+) -> SyncReport:
+    """The sweep itself, over an order someone else computed. No database.
+
+    Idempotent and resumable. A problem already on disk is kept without a
+    request unless `refresh`. A problem that will not download is recorded and
+    the sweep continues -- one dead slug must not cost you the other 149. A
+    problem that would breach the budget is skipped rather than ending the walk,
+    so smaller problems further down the priority order still land.
+
+    `stop` is polled once per problem and is how the TUI's escape key gets out
+    of a sweep it cannot interrupt mid-request. A cancelled sweep keeps every
+    page it managed to write and prunes nothing -- see the walk below.
+
+    `pause` resolves at call time rather than in the signature, so a test can
+    set `PAUSE_SECONDS` to zero and have it mean something.
+    """
+    now = now or datetime.now(timezone.utc)
+    pause = PAUSE_SECONDS if pause is None else pause
     stamp = now.isoformat(timespec="seconds")
     report = SyncReport(budget_bytes=budget_bytes)
     manifest = load_manifest()
@@ -514,7 +557,11 @@ def sync(
         if on_progress is not None:
             on_progress(slug, state)
 
-    for problem in priority(conn, lists, now=now):
+    for problem in problems:
+        if stop is not None and stop():
+            report.cancelled = True
+            break
+
         slug = problem.slug
         path = paths.cache_path(slug)
 
@@ -570,14 +617,21 @@ def sync(
     # Anything on disk we are no longer keeping: a shrunk budget, a changed
     # list, a problem dropped from the catalog. The cache tracks the target set
     # rather than accumulating every problem ever fetched.
-    for stale in sorted(on_disk - keeping):
-        paths.cache_path(stale).unlink(missing_ok=True)
-        manifest.problems.pop(stale, None)
-        report.pruned.append(stale)
-
-    manifest.lists = tuple(lists)
-    manifest.fetched_at = stamp
-    manifest.failures = dict(report.failures)
+    #
+    # Never after a cancel: `keeping` then holds only the problems the walk got
+    # to, so pruning against it would read a stopped sweep as "the rest are
+    # stale" and delete a cache the user was in the middle of filling. Same
+    # reason the manifest keeps its old `fetched_at` and failures below --
+    # a partial sweep is not a sweep, and only the pages actually written are
+    # news.
+    if not report.cancelled:
+        for stale in sorted(on_disk - keeping):
+            paths.cache_path(stale).unlink(missing_ok=True)
+            manifest.problems.pop(stale, None)
+            report.pruned.append(stale)
+        manifest.lists = tuple(lists)
+        manifest.fetched_at = stamp
+        manifest.failures = dict(report.failures)
     save_manifest(manifest)
     return report
 

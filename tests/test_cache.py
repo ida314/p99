@@ -280,6 +280,45 @@ def test_a_shrunk_budget_prunes_rather_than_accumulates(conn, offline):
     assert on_disk == set(report.kept) | set(report.fetched)
 
 
+def test_stopping_a_sweep_keeps_what_it_already_wrote(conn, offline):
+    """Escape in the TUI. The half it got to is a usable cache, not a mess.
+
+    The prune is the dangerous half: `keeping` only holds problems the walk
+    reached, so pruning against it after a stop would delete a cache the user
+    was in the middle of filling.
+    """
+    _sync(conn)
+    before = {p.stem for p in paths.cache_dir().glob("*.html")}
+    stamp = cache.load_manifest().fetched_at
+
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    report = _sync(conn, refresh=True, stop=stop)
+
+    assert report.cancelled
+    assert len(report.fetched) == 3
+    # Nothing lost, nothing pruned — and the timestamp still belongs to the
+    # last sweep that actually finished.
+    assert {p.stem for p in paths.cache_dir().glob("*.html")} == before
+    assert not report.pruned
+    assert cache.load_manifest().fetched_at == stamp
+
+
+def test_a_stopped_sweep_picks_up_where_it_left_off(conn, offline):
+    report = _sync(conn, stop=lambda: len(offline) >= 5)
+    assert report.cancelled
+    fetched_first = len(report.fetched)
+
+    second = _sync(conn)
+    assert not second.cancelled
+    assert len(second.kept) == fetched_first  # no re-download of what landed
+    assert cache.status(conn, lists=LISTS, budget_bytes=50 * 1024 * 1024).complete
+
+
 def test_the_cache_is_disposable(conn, offline):
     """Deleting the directory is a complete reset: no stale rows anywhere."""
     _sync(conn)

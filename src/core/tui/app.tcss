@@ -159,6 +159,24 @@ Screen {
     display: block;
 }
 
+/* --- offline cache ------------------------------------------------------ */
+
+#fetch-body {
+    height: 1fr;
+}
+
+/* The progress line replaces itself in place, so it holds its height rather
+   than making the panel below it jump on every problem. */
+#fetch-progress {
+    height: 3;
+    margin: 1 0 0 0;
+}
+
+#fetch-failures {
+    height: auto;
+    margin: 1 0 0 0;
+}
+
 /* --- modals ------------------------------------------------------------ */
 
 FinishModal {

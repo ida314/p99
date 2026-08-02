@@ -10,6 +10,7 @@ from textual.app import App
 from .. import branding, catalog, config as config_module, db, paths, scoring
 from ..engine import RunEngine
 from .screens import (
+    FetchScreen,
     HistoryScreen,
     HomeScreen,
     QueueScreen,
@@ -112,6 +113,15 @@ class CoreApp(App):
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen())
+
+    def action_fetch(self) -> None:
+        # Guarded like the queue rather than left open like stats: this one goes
+        # to the network for minutes at a time, and a run is the one thing it
+        # must never happen behind.
+        if self.engine.session is not None:
+            self.bell()
+            return
+        self.push_screen(FetchScreen())
 
 
 def run(conn: sqlite3.Connection | None = None) -> None:
