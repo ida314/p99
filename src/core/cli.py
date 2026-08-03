@@ -233,6 +233,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     bits = [f"[bold]{len(report.fetched)}[/bold] fetched"]
     if report.kept:
         bits.append(f"{len(report.kept)} already cached")
+    if report.upgraded:
+        bits.append(f"{len(report.upgraded)} re-rendered")
     if report.pruned:
         bits.append(f"{len(report.pruned)} pruned")
     if report.skipped:

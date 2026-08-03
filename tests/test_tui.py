@@ -12,7 +12,7 @@ import pytest
 
 from textual.widgets import Input
 
-from core import branding, db, paths
+from core import branding, db, paths, stats
 from core.tui.app import CoreApp
 from core.tui.screens import (
     FetchScreen,
@@ -109,7 +109,10 @@ async def test_a_full_run_is_recorded_end_to_end(app):
 
     attempts = conn.execute("SELECT * FROM attempts ORDER BY id").fetchall()
     assert len(attempts) == 2
-    assert all(a["verdict"] == "accepted" for a in attempts)
+    # Both took the modal's default. The first revealed a hint, so the cursor
+    # started one rung down the ladder; the second did not.
+    assert attempts[0]["verdict"] == "solved_with_hints"
+    assert attempts[1]["verdict"] == "solved_unaided"
     assert all(a["active_seconds"] is not None for a in attempts)
     assert attempts[0]["max_hint_tier"] == 1
     assert attempts[0]["submissions"] == 1
@@ -288,7 +291,7 @@ async def test_a_broken_terminal_handoff_never_costs_the_attempt(isolated_home):
         await pilot.pause()
 
     attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
-    assert attempt["verdict"] == "accepted"
+    assert attempt["verdict"] == "solved_unaided"
     assert attempt["active_seconds"] is not None
     # Capture failed — loudly on screen, but harmlessly to the record.
     assert attempt["code_path"] is None
@@ -787,3 +790,184 @@ async def test_the_cache_screen_does_not_open_mid_run(app):
         app.action_fetch()
         await pilot.pause()
         assert isinstance(app.screen, SolveScreen)
+
+
+# --- categories, throw-away, deletion --------------------------------------
+
+
+async def test_categories_are_hidden_until_you_ask(app):
+    """The pattern and the tags are an approach hint you never asked for."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        meta = app.screen.query_one("#problem-meta")
+        assert not meta.has_class("visible")
+        assert not meta.display
+        # The text is rendered all along — only the widget is hidden.
+        assert str(meta.render()).strip()
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert meta.has_class("visible")
+        assert meta.display
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert not meta.has_class("visible")
+
+
+async def test_the_categories_toggle_resets_on_the_next_problem(app):
+    """A decision made once per problem, not a mode left on for the run."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.screen.query_one("#problem-meta").has_class("visible")
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SolveScreen)
+        assert not app.screen.query_one("#problem-meta").has_class("visible")
+
+
+async def test_throwing_an_attempt_away_records_nothing(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("question_mark")   # a hint, to prove it goes too
+        await pilot.pause()
+        thrown = app.engine.attempt.uuid
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FinishModal)
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+        # Straight on to the second problem, with nothing behind us. The one
+        # attempt row left is the new problem's, already open.
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.session.index == 1
+        rows = app.conn.execute("SELECT uuid, slug FROM attempts").fetchall()
+        assert [r["uuid"] for r in rows] == [app.engine.attempt.uuid]
+        assert thrown not in [r["uuid"] for r in rows]
+        assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+
+
+async def test_declining_the_throw_away_keeps_the_attempt_running(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        uuid = app.engine.attempt.uuid
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.press("n")           # keep it
+        await pilot.pause()
+
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt is not None
+        assert app.engine.attempt.uuid == uuid
+        assert not app.engine.attempt.finished
+
+
+async def _play_one_run(pilot, app):
+    """n → solve both problems on the defaults → back to home."""
+    await pilot.press("n")
+    await pilot.pause()
+    await pilot.press("ctrl+s")
+    await pilot.pause()
+    for _ in range(2):
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def test_deleting_a_run_closes_the_gap_in_the_numbering(app):
+    async with app.run_test() as pilot:
+        await _play_one_run(pilot, app)
+        await _play_one_run(pilot, app)
+        await _play_one_run(pilot, app)
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, HistoryScreen)
+        assert len(app.screen.runs) == 3
+        middle = app.screen.runs[1].session_uuid
+
+        # The list is newest-first, so index 1 is run #2.
+        app.screen.query_one("#run-list").highlighted = 1
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert len(app.screen.runs) == 2
+        assert middle not in [r.session_uuid for r in app.screen.runs]
+        # What was #3 is now #2: the numbers are positional and close up.
+        assert [stats.run_number(app.screen.runs, r.session_id) for r in app.screen.runs] == [1, 2]
+        assert app.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 2
+
+
+async def test_declining_a_run_deletion_changes_nothing(app):
+    async with app.run_test() as pilot:
+        await _play_one_run(pilot, app)
+        await pilot.press("r")
+        await pilot.pause()
+
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert len(app.screen.runs) == 1
+        assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 2
+
+
+async def test_the_finish_buttons_stay_on_screen_on_a_short_terminal(isolated_home):
+    """The verdict ladder makes this the tallest thing in the app.
+
+    Unbounded, the button row lands below the fold on an 80x24 terminal and
+    "throw away" is invisible — a destructive action you cannot see is worse
+    than one that does not exist.
+    """
+    paths.ensure_dirs()
+    paths.config_file().write_text(NO_CAPTURE_CONFIG)
+    app = CoreApp(db.open_db())
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FinishModal)
+        box = app.screen.query_one("#finish-box")
+        assert box.region.bottom <= 24
+        for button in app.screen.query("Button"):
+            assert button.region.bottom <= 24, f"{button.id} is below the fold"
+            assert button.region.right <= box.region.right, f"{button.id} overflows"

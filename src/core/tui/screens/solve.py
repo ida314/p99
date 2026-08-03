@@ -34,6 +34,7 @@ class SolveScreen(VimMotion, Screen[None]):
         *MOTIONS,
         Binding("o", "open_url", "open"),
         Binding("p", "pause", "pause"),
+        Binding("c", "toggle_categories", "categories"),
         Binding("question_mark", "hint", "hint"),
         Binding("s", "submit", "failed submit"),
         Binding("f", "finish", "finish"),
@@ -97,9 +98,12 @@ class SolveScreen(VimMotion, Screen[None]):
         title.append("   ")
         title.append(f"[{p.difficulty_label}]", style=DIFFICULTY_STYLE.get(p.difficulty, "white"))
         self.query_one("#problem-title", Static).update(title)
-        self.query_one("#problem-meta", Static).update(
-            f"{p.pattern or '—'}  ·  {', '.join(p.tags)}"
-        )
+        # Rendered but hidden: `c` reveals it. Reset on every problem, the same
+        # way the hint panel is below — the toggle is a decision you make once
+        # per problem, not a mode you leave on for the rest of the run.
+        meta = self.query_one("#problem-meta", Static)
+        meta.update(f"{p.pattern or '—'}  ·  {', '.join(p.tags)}")
+        meta.remove_class("visible")
         self.query_one("#problem-url", Static).update(self._where_line(p))
 
         panel = self.query_one("#hint-panel", Static)
@@ -215,6 +219,17 @@ class SolveScreen(VimMotion, Screen[None]):
                 "yellow",
             )
         self._tick()
+
+    def action_toggle_categories(self) -> None:
+        """Show or hide the pattern and tags.
+
+        Free to look at, on purpose: the point is that you have to decide to,
+        not that you can't. Nothing is logged either way — unlike a hint, this
+        tells you what kind of problem it is, not how to solve it.
+        """
+        meta = self.query_one("#problem-meta", Static)
+        meta.toggle_class("visible")
+        self._toast("categories shown" if meta.has_class("visible") else "categories hidden")
 
     def action_submit(self) -> None:
         attempt = self.engine.attempt
@@ -333,6 +348,10 @@ class SolveScreen(VimMotion, Screen[None]):
                 self._toast("back to the problem")
                 return
 
+            if result.get("discard"):
+                await self._do_throw_away()
+                return
+
             cfg = self.app.config  # type: ignore[attr-defined]
             self.engine.finish(
                 result["verdict"],
@@ -345,6 +364,31 @@ class SolveScreen(VimMotion, Screen[None]):
             await self._capture_flow()
         finally:
             self._busy = False
+
+    async def _do_throw_away(self) -> None:
+        """Drop the attempt entirely, then move on. Confirmed, because it is final.
+
+        No capture step: there is nothing to archive against an attempt that
+        will not exist. Declining leaves the problem exactly as it was, still
+        running — `f` reopens the verdict prompt.
+        """
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Throw this attempt away?",
+                "It is not recorded at all — no score, no review scheduled, "
+                "nothing in your history.",
+                yes_label="throw it away",
+                no_label="keep it",
+            )
+        )
+        if not ok:
+            self._toast("back to the problem")
+            return
+        self.engine.discard()
+        self.engine.advance()
+        # No toast: `_next_problem` writes its own, and the problem counter
+        # moving on is the feedback that the attempt is gone.
+        self._next_problem()
 
     def _give_up_flow(self) -> Worker:
         return self.run_worker(self._do_give_up(), exclusive=True)

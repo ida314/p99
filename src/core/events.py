@@ -38,6 +38,12 @@ MEMORY_UPDATED = "memory_updated"       # Phase 3
 QUEUE_GENERATED = "queue_generated"     # Phase 2
 SETTINGS_CHANGED = "settings_changed"
 
+# Tombstones. The log stays append-only -- these do not erase anything that was
+# written, they record a decision that what was written should not count. The
+# projections then forget it, and `replay` skips every event addressed to it.
+ATTEMPT_DISCARDED = "attempt_discarded"
+RUN_DELETED = "run_deleted"
+
 EVENT_TYPES = frozenset(
     {
         SESSION_STARTED,
@@ -54,6 +60,8 @@ EVENT_TYPES = frozenset(
         MEMORY_UPDATED,
         QUEUE_GENERATED,
         SETTINGS_CHANGED,
+        ATTEMPT_DISCARDED,
+        RUN_DELETED,
     }
 )
 
@@ -210,6 +218,18 @@ def _grade(
     srs.grade_attempt(conn, attempt_uuid, at=event.ts, params=params, weights=weights)
 
 
+def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None:
+    """Drop attempts and their submissions from the projections.
+
+    Archived code and notes on disk are deliberately left alone. They are your
+    writing, and the point of a discard is that the attempt should not count --
+    not that the afternoon should be destroyed.
+    """
+    for attempt_uuid in attempt_uuids:
+        conn.execute("DELETE FROM submissions WHERE attempt_uuid = ?", (attempt_uuid,))
+        conn.execute("DELETE FROM attempts WHERE uuid = ?", (attempt_uuid,))
+
+
 def apply(
     conn: sqlite3.Connection,
     event: Event,
@@ -259,6 +279,9 @@ def apply(
 
     elif event.type == PROBLEM_SUBMITTED:
         # `submissions` counts failed submits, so an accepted one does not add.
+        # This is the *submission* verdict — what the judge said about one
+        # submit — not the attempt verdict in `scoring.VERDICTS`. Different
+        # column, different vocabulary; the ladder does not reach here.
         if p.get("verdict") != "accepted":
             conn.execute(
                 "UPDATE attempts SET submissions = COALESCE(submissions, 0) + 1 WHERE uuid = ?",
@@ -366,6 +389,21 @@ def apply(
             ),
         )
 
+    elif event.type == ATTEMPT_DISCARDED:
+        _forget_attempts(conn, [p["attempt_uuid"]])
+
+    elif event.type == RUN_DELETED:
+        session_id = _session_id(conn, p["session_uuid"])
+        if session_id is not None:
+            rows = conn.execute(
+                "SELECT uuid FROM attempts WHERE session_id = ?", (session_id,)
+            ).fetchall()
+            _forget_attempts(conn, [r["uuid"] for r in rows])
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        # `fsrs_cards` is not repaired here: this event cannot know which
+        # reviews the deleted attempts caused. The caller runs `replay`, which
+        # skips them from the start and rebuilds the cards without them.
+
     elif event.type == SETTINGS_CHANGED:
         # A null value clears the override rather than storing one, which is
         # how the settings screen hands a knob back to config.toml. No setting
@@ -380,9 +418,44 @@ def apply(
             )
 
 
+def tombstoned(events: list[Event]) -> tuple[set[str], set[str]]:
+    """The session and attempt uuids a replay must pretend it never saw.
+
+    Two passes, because a tombstone is written *after* the thing it kills: the
+    first collects the deleted sessions and discarded attempts, the second walks
+    `problem_started` to find the attempts belonging to a deleted session. An
+    attempt is addressed by uuid in every later event, so those two sets are
+    enough to skip the whole history of a run.
+    """
+    sessions = {
+        e.payload["session_uuid"]
+        for e in events
+        if e.type == RUN_DELETED and e.payload.get("session_uuid")
+    }
+    attempts = {
+        e.payload["attempt_uuid"]
+        for e in events
+        if e.type == ATTEMPT_DISCARDED and e.payload.get("attempt_uuid")
+    }
+    attempts |= {
+        e.payload["attempt_uuid"]
+        for e in events
+        if e.type == PROBLEM_STARTED and e.payload.get("session_uuid") in sessions
+    }
+    return sessions, attempts
+
+
 def replay(conn: sqlite3.Connection) -> int:
-    """Drop every projection and rebuild it from the log. Returns event count."""
+    """Drop every projection and rebuild it from the log. Returns event count.
+
+    Tombstoned events are skipped rather than applied-then-deleted. That
+    distinction is the whole reason `fsrs_cards` survives a run deletion: a
+    `run_deleted` sits at the end of the log, so applying its run's attempts
+    first would grade their cards, and deleting the rows afterwards would leave
+    the schedule shaped by a run that no longer exists.
+    """
     events = read_all(conn)
+    dead_sessions, dead_attempts = tombstoned(events)
     # Resolved before the truncate, while the settings projection still holds
     # the current overrides — see `srs_context`.
     context = srs_context(conn)
@@ -390,6 +463,9 @@ def replay(conn: sqlite3.Connection) -> int:
     try:
         truncate_projections(conn)
         for event in events:
+            p = event.payload
+            if p.get("session_uuid") in dead_sessions or p.get("attempt_uuid") in dead_attempts:
+                continue
             apply(conn, event, context=context)
     except Exception:
         conn.execute("ROLLBACK")

@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS attempts (
   active_seconds     INTEGER,             -- excludes paused time
   wall_seconds       INTEGER,
   paused_seconds     INTEGER DEFAULT 0,
-  verdict            TEXT,                -- accepted|wrong_answer|tle|used_editorial|gave_up|ungraded
+  -- how much help you needed, not what the judge said. See scoring.VERDICTS:
+  --   solved_unaided|solved_with_hints|solved_after_description
+  --   |solved_after_pseudocode|solved_after_implementation|gave_up|ungraded
+  -- legacy, still in the log: accepted|wrong_answer|tle|used_editorial
+  verdict            TEXT,
   max_hint_tier      INTEGER DEFAULT 0,   -- 0..4
   submissions        INTEGER DEFAULT 0,   -- failed submits before accept
   self_confidence    INTEGER,             -- 1..4, asked at end

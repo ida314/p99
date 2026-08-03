@@ -23,8 +23,23 @@ from .data import scoring as _weights_pkg
 
 DEFAULT_WEIGHTS = "v1"
 
-# Verdicts that mean "the problem is solved".
-CLEAN_VERDICTS = frozenset({"accepted"})
+# The verdict records how much of the answer you needed handed to you, not what
+# the judge said. `accepted` describes LeetCode; `solved_after_pseudocode`
+# describes the thing that actually predicts whether you'll have it in a month.
+SOLVED_VERDICTS = (
+    "solved_unaided",
+    "solved_with_hints",
+    "solved_after_description",
+    "solved_after_pseudocode",
+    "solved_after_implementation",
+)
+# Selectable in the finish modal, in radio order. Index 0 is the default.
+VERDICTS = (*SOLVED_VERDICTS, "gave_up", "ungraded")
+
+# Verdicts that mean "the problem is solved". Every rung of the ladder counts --
+# the price of the help is paid through `help_tier` and the hint multipliers,
+# not by withholding credit twice.
+CLEAN_VERDICTS = frozenset(SOLVED_VERDICTS) | {"accepted"}
 # Verdicts where the answer came from somewhere other than you: the attempt is
 # worth nothing regardless of how it went, penalties included.
 ZERO_VERDICTS = frozenset({"gave_up", "used_editorial"})
@@ -33,15 +48,56 @@ ZERO_VERDICTS = frozenset({"gave_up", "used_editorial"})
 # schedule no review at all -- see `srs.grade_attempt`. Rating a card on an
 # outcome nobody established is worse than having no card.
 UNSCHEDULED_VERDICTS = frozenset({"ungraded"})
-VERDICTS = ("accepted", "wrong_answer", "tle", "used_editorial", "gave_up", "ungraded")
+
+# Written by earlier versions and still in the log. Renderable and scorable,
+# never selectable: `VERDICTS` is the only thing the radio set reads. Rewriting
+# them would have been a lie about what was actually recorded at the time.
+LEGACY_VERDICTS = frozenset({"accepted", "wrong_answer", "tle", "used_editorial"})
+
+# How much of the answer the verdict admits to, on the same 0..4 scale as the
+# hint tiers -- so one multiplier table prices both, and the two ways of getting
+# help can never be double-charged.
+#
+# `solved_with_hints` is a floor, not a rung: revealing tier 3 in the app and
+# then picking it does not launder the attempt back down to 1. The floor exists
+# because hints read on LeetCode itself never touch `max_hint_tier`, and without
+# it "solved with hints" would score a flawless solve.
+VERDICT_HELP_TIER = {
+    "solved_unaided": 0,
+    "solved_with_hints": 1,
+    "solved_after_description": 2,
+    "solved_after_pseudocode": 3,
+    "solved_after_implementation": 4,
+}
+
 VERDICT_LABELS = {
+    "solved_unaided": "SOLVED, NO HELP",
+    "solved_with_hints": "SOLVED WITH HINTS",
+    "solved_after_description": "SOLVED AFTER DESCRIPTION",
+    "solved_after_pseudocode": "SOLVED AFTER PSEUDOCODE",
+    "solved_after_implementation": "SOLVED AFTER IMPLEMENTATION",
+    "gave_up": "GAVE UP",
+    "ungraded": "NOT GRADED",
+    # legacy
     "accepted": "ACCEPTED",
     "wrong_answer": "WRONG ANSWER",
     "tle": "TIME LIMIT EXCEEDED",
     "used_editorial": "USED EDITORIAL",
-    "gave_up": "GAVE UP",
-    "ungraded": "NOT GRADED",
 }
+
+
+def help_tier(attempt: Mapping[str, Any]) -> int:
+    """How much of the answer you had, 0..4: hints revealed or help confessed to.
+
+    Whichever is worse wins. Revealing a tier-1 nudge and then reading the
+    implementation anyway is a tier-4 attempt, and claiming `solved_unaided`
+    after three hints does not undo the hints -- they were logged as they
+    happened, and that log is the part you cannot argue with.
+    """
+    return max(
+        int(attempt.get("max_hint_tier") or 0),
+        VERDICT_HELP_TIER.get(attempt.get("verdict") or "", 0),
+    )
 
 
 @dataclass(frozen=True)
@@ -134,7 +190,11 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
     verdict = attempt.get("verdict")
     active = attempt.get("active_seconds")
     active = int(active) if active is not None else 0
-    tier = int(attempt.get("max_hint_tier") or 0)
+    # The effective tier, not the raw column: a verdict that admits to reading
+    # the pseudocode is priced exactly like the tier-3 hint that would have
+    # shown it to you.
+    tier = help_tier(attempt)
+    help_label = _help_label(attempt)
     submissions = int(attempt.get("submissions") or 0)
     runtime_pct = attempt.get("lc_runtime_pct")
     is_review = bool(attempt.get("is_review"))
@@ -170,7 +230,7 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
             total=0,
             components=(
                 time_line,
-                Component("hints", _hint_label(tier), 0),
+                Component("hints", help_label,0),
                 Component("verdict", VERDICT_LABELS[verdict], 0),
             ),
             par_seconds=par,
@@ -189,7 +249,7 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
         total = -submit_pen
         components = [
             time_line,
-            Component("hints", _hint_label(tier), 0),
+            Component("hints", help_label,0),
             Component(
                 "submits",
                 str(submissions),
@@ -216,14 +276,14 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
     raw_total = round(after_review) - submit_pen + bonus
 
     components = [
-        Component("verdict", VERDICT_LABELS["accepted"], round(base)),
+        Component("verdict", VERDICT_LABELS.get(verdict or "", "SOLVED"), round(base)),
         Component(
             "time",
             f"{fmt_duration(active)}   (par {fmt_duration(par)})",
             round(after_time) - round(base),
             ratio=_clamp(1 - (active / par if par else 0), 0.0, 1.0),
         ),
-        Component("hints", _hint_label(tier), round(after_hint) - round(after_time)),
+        Component("hints", help_label,round(after_hint) - round(after_time)),
     ]
     if is_review:
         components.append(
@@ -260,6 +320,14 @@ def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights 
 
 HINT_TIER_NAMES = ["none", "nudge", "approach", "pseudocode", "solution"]
 
+# What the stat line says when the verdict, not a revealed hint, set the tier.
+VERDICT_HELP_LABELS = {
+    "solved_with_hints": "used hints",
+    "solved_after_description": "saw the description",
+    "solved_after_pseudocode": "saw the pseudocode",
+    "solved_after_implementation": "read the implementation",
+}
+
 
 def _hint_label(tier: int) -> str:
     if not tier:
@@ -267,11 +335,28 @@ def _hint_label(tier: int) -> str:
     return f"tier {tier}  ({HINT_TIER_NAMES[min(tier, 4)]})"
 
 
+def _help_label(attempt: Mapping[str, Any]) -> str:
+    """The "hints" line of the stat line, naming where the help came from.
+
+    A revealed hint and a confessed one cost the same but are not the same
+    thing, and the line that charges you for it should say which it was.
+    """
+    revealed = int(attempt.get("max_hint_tier") or 0)
+    verdict = attempt.get("verdict") or ""
+    if VERDICT_HELP_TIER.get(verdict, 0) > revealed:
+        return VERDICT_HELP_LABELS.get(verdict, _hint_label(help_tier(attempt)))
+    return _hint_label(revealed)
+
+
 def is_clean_solve(attempt: Mapping[str, Any]) -> bool:
-    """Accepted, no hints, no failed submits — the thing you're training for."""
+    """Solved with no help at all, and no failed submits — what you're training for.
+
+    `help_tier` is what makes this strict: only `solved_unaided` (or a legacy
+    `accepted`) with nothing revealed can reach tier 0.
+    """
     return (
         attempt.get("verdict") in CLEAN_VERDICTS
-        and int(attempt.get("max_hint_tier") or 0) == 0
+        and help_tier(attempt) == 0
         and int(attempt.get("submissions") or 0) == 0
     )
 

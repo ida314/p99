@@ -70,6 +70,21 @@ def test_a_new_card_never_reads_the_clock():
         ({"verdict": "tle"}, "medium", Rating.Again),
         # A tier-3 hint is the solution in all but name.
         ({"verdict": "accepted", "max_hint_tier": 3}, "medium", Rating.Again),
+        # The ladder needs no branch of its own: it lands in `help_tier` and the
+        # tier thresholds do the rest.
+        ({"verdict": "solved_after_implementation"}, "medium", Rating.Again),
+        (
+            {"verdict": "solved_after_pseudocode", "active_seconds": 60, "self_confidence": 4},
+            "medium",
+            Rating.Again,
+        ),
+        ({"verdict": "solved_after_description"}, "medium", Rating.Hard),
+        ({"verdict": "solved_with_hints"}, "medium", Rating.Hard),
+        (
+            {"verdict": "solved_unaided", "active_seconds": 100, "self_confidence": 4},
+            "medium",
+            Rating.Easy,
+        ),
         # Solved, but with help or slowly.
         ({"verdict": "accepted", "max_hint_tier": 1}, "medium", Rating.Hard),
         ({"verdict": "accepted", "active_seconds": PAR_MEDIUM * 2}, "medium", Rating.Hard),

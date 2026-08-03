@@ -54,8 +54,16 @@ p99 stats --tag graph
 `d` from home. Every problem you finish gets an [FSRS](https://github.com/open-spaced-repetition/py-fsrs)
 card, graded from what actually happened — the verdict, the hint tier, and your
 time against par, with the confidence you reported only breaking the tie at the
-top. Giving up and reading the editorial both score zero and both still schedule
-a review; that is the whole bargain.
+top. Giving up scores zero and still schedules a review; that is the whole
+bargain.
+
+The verdict records **how much help you needed**, not what the judge said:
+solved with no help, with hints, after seeing the written description, after
+seeing the pseudocode, after reading the implementation — then gave up, and not
+graded. It is the same 0–4 scale as the hint tiers and is priced by the same
+multipliers, so the two ways of getting help can never be double-charged and the
+worse of the two always wins. Every rung still counts as solved and still earns
+credit: reading the implementation after a real fight beats not logging it.
 
 The queue puts due reviews first but never lets them take more than ~40% of it,
 because falling behind on new coverage is how you end up excellent at fifteen
@@ -116,10 +124,13 @@ real points.
 | `space` | pick a problem (setup) |
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
+| `c` | show / hide the problem's pattern and tags (hidden by default) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
 | `f` | finish — verdict, confidence, then capture |
+| `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
+| `d` | delete the highlighted run (history) |
 | `q` | end the run / back |
 
 ## How it stores things
@@ -128,6 +139,15 @@ Two layers. An **append-only event log** is the source of truth; `sessions` and
 `attempts` are **projections** rebuilt from it by `p99 replay`. The app only ever
 appends. Any bug in projection logic is therefore fixable retroactively — fix
 `events.apply`, replay, and all history is corrected.
+
+Deleting is the same trick. Throwing an attempt away (`ctrl+x` at the finish
+prompt) and deleting a run (`d` in history) append a **tombstone** rather than
+erasing anything: the log still records exactly what happened, and the replay
+skips every event addressed to the dead attempt or session. That skip is load
+bearing — a tombstone sits at the *end* of the log, so applying its events and
+deleting the rows afterwards would leave `fsrs_cards` shaped by a run that no
+longer exists. Archived code and notes stay on disk; run numbers are positional
+and close the gap.
 
 Scores are never stored. `attempts` holds measured facts only, and the scalar is
 a pure function over a versioned weights file (`src/core/data/scoring/v1.toml`),
@@ -205,7 +225,7 @@ Nothing auto-detects. Captive-portal wifi answers DNS and resolves nothing, so a
 guess would be wrong at exactly the moment it mattered; offline is a setting you
 flip when you board.
 
-The catch is that offline there is no judge, so `accepted` would be a claim
+The catch is that offline there is no judge, so a solved verdict would be a claim
 nothing checked. The finish prompt defaults to the `ungraded` verdict instead:
 it scores zero, counts as no kind of solve, and — alone among the verdicts —
 schedules no review at all. Rating a card on an outcome nobody established is

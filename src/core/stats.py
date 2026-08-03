@@ -133,12 +133,15 @@ class Distribution:
 
 def _tail_reason(attempt: dict[str, Any]) -> str:
     bits = []
-    if attempt.get("verdict") == "gave_up":
+    verdict = attempt.get("verdict")
+    if verdict == "gave_up":
         bits.append("gave up")
-    elif attempt.get("verdict") == "used_editorial":
+    elif verdict == "used_editorial":
         bits.append("used editorial")
-    elif attempt.get("verdict") == "ungraded":
+    elif verdict == "ungraded":
         bits.append("not graded")
+    elif verdict in scoring.VERDICT_HELP_LABELS:
+        bits.append(scoring.VERDICT_HELP_LABELS[verdict])
     tier = int(attempt.get("max_hint_tier") or 0)
     if tier:
         bits.append(f"tier-{tier} hint")
@@ -276,6 +279,9 @@ def distributions_by(
 @dataclass
 class Run:
     session_id: int
+    # The log's own name for this run. `session_id` is a projection rowid and is
+    # not stable across a replay; the uuid is what an event can address.
+    session_uuid: str
     started_at: str
     ended_at: str | None
     planned_n: int
@@ -286,7 +292,8 @@ class Run:
 
     @property
     def solved(self) -> int:
-        return sum(1 for a in self.attempts if a.get("verdict") == "accepted")
+        """Reached an answer, at any rung of the help ladder."""
+        return sum(1 for a in self.attempts if a.get("verdict") in scoring.CLEAN_VERDICTS)
 
     @property
     def clean_solves(self) -> int:
@@ -294,7 +301,8 @@ class Run:
 
     @property
     def hints_used(self) -> int:
-        return sum(int(a.get("max_hint_tier") or 0) > 0 for a in self.attempts)
+        """Attempts that needed help — a revealed hint or an admitted one."""
+        return sum(scoring.help_tier(a) > 0 for a in self.attempts)
 
     @property
     def total_active_seconds(self) -> int:
@@ -342,6 +350,7 @@ def load_runs(
             continue
         run = Run(
             session_id=s["id"],
+            session_uuid=s["uuid"],
             started_at=s["started_at"],
             ended_at=s["ended_at"],
             planned_n=s["planned_n"],

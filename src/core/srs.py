@@ -152,6 +152,11 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     models, but it is also the thing you can flatter yourself with; the clock
     and the hint tier cannot be argued with.
 
+    The verdict ladder needs no branch of its own: it lands in `scoring.help_tier`
+    alongside the hints, and the tier thresholds below already say what to do with
+    it. Solving after reading the pseudocode or the implementation is tier 3+ and
+    rates Again; after the description, or with hints, rates Hard.
+
     `used_editorial` postdates the spec, which only names `gave_up`. It sits in
     `ZERO_VERDICTS` beside it, and commit 100efb0's bargain was that reading the
     editorial still schedules a review -- so it rates the same: Again.
@@ -161,13 +166,14 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     something about whether you were right.
     """
     verdict = attempt.get("verdict")
-    tier = int(attempt.get("max_hint_tier") or 0)
+    tier = scoring.help_tier(attempt)
     active = int(attempt.get("active_seconds") or 0)
     confidence = attempt.get("self_confidence")
     par = weights.par_for(difficulty)
 
-    # Anything you did not solve yourself. `wrong_answer`/`tle` are not clean
-    # solves either -- you left without an answer, whatever the reason.
+    # Anything you did not solve at all, or solved only after most of the answer
+    # was in front of you. Legacy `wrong_answer`/`tle` land here too -- you left
+    # without an answer, whatever the reason.
     if verdict not in scoring.CLEAN_VERDICTS or tier >= 3:
         return Rating.Again
 

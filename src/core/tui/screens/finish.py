@@ -36,6 +36,9 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         *MOTIONS,
         Binding("escape", "cancel", "back to the problem"),
         Binding("ctrl+s", "save", "save"),
+        # A chord, not a letter: focus lives in a radio set or in one of the
+        # percentile inputs, where a bare `x` is something you typed.
+        Binding("ctrl+x", "throw_away", "throw away"),
     ]
 
     def __init__(self, title: str, active_seconds: int, submissions: int, hint_tier: int):
@@ -49,13 +52,20 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     def _default_verdict(self) -> int:
         """Which verdict the cursor starts on.
 
-        `accepted` normally. Offline it starts on `ungraded`, because there was
-        no judge to accept anything — and a default of ACCEPTED is precisely how
-        a plane's worth of unverified solves quietly rots the distributions.
+        Offline it starts on `ungraded`, because there was no judge to accept
+        anything — and a default of "solved" is precisely how a plane's worth of
+        unverified solves quietly rots the distributions.
+
+        Otherwise it starts on the worst thing already on the record: if you
+        revealed a hint, the cursor sits on `solved_with_hints`. The hints are
+        logged either way, so this costs nothing to be honest about — it just
+        saves a keystroke on the common case.
         """
         offline = getattr(getattr(self.app, "config", None), "cache", None)
         if offline is not None and offline.offline and "ungraded" in VERDICTS:
             return VERDICTS.index("ungraded")
+        if self.hint_tier > 0 and "solved_with_hints" in VERDICTS:
+            return VERDICTS.index("solved_with_hints")
         return 0
 
     def compose(self) -> ComposeResult:
@@ -82,6 +92,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 yield Input(placeholder="memory %", id="memory", type="number")
             with Horizontal(id="confirm-buttons"):
                 yield Button("save  (ctrl+s)", variant="primary", id="save")
+                yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
                 yield Button("back  (esc)", id="cancel")
 
     def on_mount(self) -> None:
@@ -90,6 +101,8 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
             self.action_save()
+        elif event.button.id == "discard":
+            self.action_throw_away()
         else:
             self.action_cancel()
 
@@ -122,6 +135,14 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_throw_away(self) -> None:
+        """Ask for the attempt to be dropped entirely.
+
+        Only signals the intent — the caller confirms it and does the work, so
+        the destructive step is never one keystroke deep inside a modal.
+        """
+        self.dismiss({"discard": True})
 
 
 class ConfirmModal(ModalScreen[bool]):

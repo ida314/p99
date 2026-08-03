@@ -266,3 +266,110 @@ def test_append_is_atomic_with_its_projection(conn, monkeypatch):
         events.append(conn, events.PROBLEM_STARTED, {"session_uuid": "x", "attempt_uuid": "y", "slug": "two-sum"})
 
     assert conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"] == before
+
+
+# --- tombstones ------------------------------------------------------------
+
+
+def test_a_discarded_attempt_leaves_no_trace_in_the_projections(conn):
+    """Throwing an attempt away must remove it, not merely mark it."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.reveal_hint()
+    eng.record_submission("wrong_answer")
+    attempt_uuid = eng.attempt.uuid
+
+    eng.discard()
+
+    assert eng.attempt is None
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM submissions").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+    # The log still remembers everything that happened. Only the projection forgets.
+    types = [e.type for e in events.read_all(conn) if e.payload.get("attempt_uuid") == attempt_uuid]
+    assert events.HINT_REVEALED in types
+    assert events.ATTEMPT_DISCARDED in types
+
+
+def test_a_discard_survives_replay(conn):
+    _run_a_session(conn, slugs=("two-sum",))
+    eng = RunEngine(conn)
+    eng.start_session(["3sum"])
+    eng.start_problem("3sum")
+    eng.discard()
+
+    before = _snapshot(conn)
+    events.replay(conn)
+
+    assert _snapshot(conn) == before
+    assert [r["slug"] for r in conn.execute("SELECT slug FROM attempts")] == ["two-sum"]
+
+
+def test_a_finished_attempt_cannot_be_discarded(conn):
+    """It has already been graded, and `discard` cannot unwind a card."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    with pytest.raises(RuntimeError):
+        eng.discard()
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 1
+
+
+def test_deleting_a_run_removes_it_and_unwinds_its_reviews(conn):
+    """The card must not survive the run that created it.
+
+    This is the whole reason `replay` skips tombstoned events instead of
+    applying and then deleting them: `run_deleted` sits at the end of the log,
+    so an apply-then-delete would grade the card on the way past.
+    """
+    _run_a_session(conn, slugs=("two-sum",))
+    doomed = RunEngine(conn)
+    doomed.start_session(["3sum"])
+    doomed.start_problem("3sum")
+    doomed.finish("solved_unaided", self_confidence=4)
+    doomed.advance()
+    session_uuid = doomed.session.uuid
+    doomed.end_session()
+
+    assert {r["slug"] for r in conn.execute("SELECT slug FROM fsrs_cards")} == {"two-sum", "3sum"}
+
+    events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
+    events.replay(conn)
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 1
+    assert [r["slug"] for r in conn.execute("SELECT slug FROM attempts")] == ["two-sum"]
+    assert conn.execute("SELECT COUNT(*) AS n FROM submissions").fetchone()["n"] == 1
+    assert {r["slug"] for r in conn.execute("SELECT slug FROM fsrs_cards")} == {"two-sum"}
+
+
+def test_deleting_a_run_leaves_the_other_runs_byte_identical(conn):
+    """A delete is not an excuse to renumber or rescore what is left."""
+    _run_a_session(conn, slugs=("two-sum",))
+    keep = _snapshot(conn)
+
+    doomed = RunEngine(conn)
+    doomed.start_session(["3sum"])
+    doomed.start_problem("3sum")
+    doomed.finish("solved_with_hints")
+    doomed.advance()
+    session_uuid = doomed.session.uuid
+    doomed.end_session()
+
+    events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
+    events.replay(conn)
+
+    assert _snapshot(conn) == keep
+
+
+def test_tombstoned_collects_attempts_of_a_deleted_session(conn):
+    _run_a_session(conn, slugs=("two-sum",))
+    uuid = conn.execute("SELECT uuid FROM sessions").fetchone()["uuid"]
+    attempt_uuid = conn.execute("SELECT uuid FROM attempts").fetchone()["uuid"]
+    events.append(conn, events.RUN_DELETED, {"session_uuid": uuid})
+
+    sessions, attempts = events.tombstoned(events.read_all(conn))
+
+    assert sessions == {uuid}
+    assert attempt_uuid in attempts

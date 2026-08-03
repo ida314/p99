@@ -118,9 +118,16 @@ Screen {
     margin: 0 2;
 }
 
+/* Pattern and tags. Hidden until c: "hash-table, two-pointers" is an approach
+   hint you never asked for and were never charged for. */
 #problem-meta {
     color: $text-muted;
     margin: 0 2;
+    display: none;
+}
+
+#problem-meta.visible {
+    display: block;
 }
 
 #problem-url {
@@ -183,9 +190,15 @@ FinishModal {
     align: center middle;
 }
 
+/* Wide enough for three buttons on one row: save / throw away / back.
+   Bounded and scrollable because the verdict ladder makes this the tallest
+   thing in the app: on a short terminal the button row was landing below the
+   fold, where you cannot see that "throw away" exists. */
 #finish-box {
-    width: 62;
+    width: 74;
     height: auto;
+    max-height: 100%;
+    overflow-y: auto;
     padding: 1 2;
     border: round $accent;
     background: $surface;
@@ -202,6 +215,13 @@ FinishModal {
 
 #optional-row {
     height: auto;
+}
+
+/* Pinned, so the three actions stay on screen while the verdict ladder above
+   them scrolls. Only inside the finish modal — the confirm modal is short. */
+#finish-box #confirm-buttons {
+    dock: bottom;
+    background: $surface;
 }
 
 ConfirmModal {

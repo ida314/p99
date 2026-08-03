@@ -15,10 +15,11 @@ from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ... import scoring, stats
+from ... import events, scoring, stats
 from ...render import death_screen, empty_state, history_table, stat_line
 from ...scoring import fmt_duration
 from ..vim import MOTIONS, VimMotion
+from .finish import ConfirmModal
 
 
 class HistoryScreen(VimMotion, Screen[None]):
@@ -30,6 +31,7 @@ class HistoryScreen(VimMotion, Screen[None]):
         Binding("escape", "back", "back"),
         Binding("q", "back", "back", show=False),
         Binding("t", "toggle_view", "table / detail"),
+        Binding("d", "delete_run", "delete run"),
         Binding("h", "focus_list", "runs", show=False),
         Binding("l", "focus_detail", "detail", show=False),
     ]
@@ -76,7 +78,10 @@ class HistoryScreen(VimMotion, Screen[None]):
 
         option_list.highlighted = 0
         option_list.focus()
-        self._show_run(self.runs[-1].session_id)
+        if self.show_table:
+            self.query_one("#run-detail", Static).update(history_table(self.runs))
+        else:
+            self._show_run(self.runs[-1].session_id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if event.option.id and not self.show_table:
@@ -141,6 +146,52 @@ class HistoryScreen(VimMotion, Screen[None]):
                 option = option_list.get_option_at_index(highlighted)
                 if option.id:
                     self._show_run(int(option.id))
+
+    def action_delete_run(self) -> None:
+        if self.runs:
+            self.run_worker(self._do_delete(), exclusive=True)
+
+    async def _do_delete(self) -> None:
+        """Delete the highlighted run, then rebuild every projection from the log.
+
+        The replay is not optional. `run_deleted` only empties the tables it can
+        see; the review schedule this run's attempts wrote is spread across
+        `fsrs_cards`, and the only way to get cards that never saw the run is to
+        rebuild them from a log that skips it (`events.tombstoned`).
+        """
+        run = self._highlighted_run()
+        if run is None:
+            return
+        number = stats.run_number(self.runs, run.session_id)
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                f"Delete run #{number}?",
+                f"{len(run.attempts)} attempt"
+                f"{'s' if len(run.attempts) != 1 else ''} and their reviews are "
+                "unwound. Archived code and notes stay on disk. Later runs "
+                "renumber to close the gap.",
+                yes_label="delete it",
+                no_label="keep it",
+            )
+        )
+        if not ok:
+            return
+        conn = self.app.conn  # type: ignore[attr-defined]
+        events.append(conn, events.RUN_DELETED, {"session_uuid": run.session_uuid})
+        events.replay(conn)
+        self.load()
+        self.notify(f"run #{number} deleted")
+
+    def _highlighted_run(self) -> stats.Run | None:
+        option_list = self.query_one("#run-list", OptionList)
+        index = option_list.highlighted
+        if index is None:
+            return None
+        option = option_list.get_option_at_index(index)
+        if not option.id:
+            return None
+        session_id = int(option.id)
+        return next((r for r in self.runs if r.session_id == session_id), None)
 
     def action_back(self) -> None:
         self.app.pop_screen()

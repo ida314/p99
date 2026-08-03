@@ -238,3 +238,45 @@ def test_editor_that_writes_nothing_skips_cleanly(monkeypatch, tmp_path, env_edi
     monkeypatch.setenv(env_editor, str(quitter))
 
     assert not capture.capture_note(PROBLEM, 100).saved
+
+
+def test_an_archived_solution_is_never_overwritten(monkeypatch):
+    """Deleting a run renumbers later attempt ids, which can collide.
+
+    `attempts.id` is a projection rowid: remove a run and the attempts after it
+    renumber down into the ids it vacated. Attempt the same problem again and
+    the new attempt can land on an id whose file already exists — and an
+    archived solution is not regenerable, so the filename gives way, not the
+    file.
+    """
+    monkeypatch.setattr(capture, "editor_available", lambda: True)
+
+    def write(text):
+        def paste(path):
+            path.write_text(text)
+            return True
+
+        return paste
+
+    monkeypatch.setattr(capture, "spawn_editor", write("the first solution\n"))
+    first = capture.capture_solution(PROBLEM, {}, 7, "python")
+    assert first.saved
+    assert first.path == paths.code_path(PROBLEM.slug, 7, "py")
+
+    # Same slug, same id, second time round.
+    monkeypatch.setattr(capture, "spawn_editor", write("the second solution\n"))
+    second = capture.capture_solution(PROBLEM, {}, 7, "python")
+
+    assert second.saved
+    assert second.path != first.path
+    assert first.path.read_text() == "the first solution\n"
+    assert second.path.read_text() == "the second solution\n"
+
+
+def test_unclaimed_leaves_a_free_path_alone(isolated_home):
+    paths.ensure_dirs()
+    target = paths.code_path(PROBLEM.slug, 3, "py")
+    assert paths.unclaimed(target) == target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("taken")
+    assert paths.unclaimed(target) == target.with_name("3-2.py")

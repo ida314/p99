@@ -304,6 +304,9 @@ class RunEngine:
                 "n": a.submits_logged,
             },
         )
+        # The submission verdict is the judge's word on one submit — `accepted`
+        # or `wrong_answer`. It is not the attempt verdict (`scoring.VERDICTS`),
+        # which records how much help you needed to get there.
         if verdict != "accepted":
             a.submissions += 1
         return a.submits_logged
@@ -354,6 +357,29 @@ class RunEngine:
         )
         a.finished = True
         return a
+
+    def discard(self) -> None:
+        """Throw the attempt away: it is not recorded at all.
+
+        For the misfire — the wrong problem opened, the timer left running over
+        lunch, the `f` you did not mean. The events stay in the log, because the
+        log is not a lie; the projections forget the attempt, so it never
+        reaches your history, your score, or your review schedule.
+
+        Refuses an attempt that is already finished. A finished attempt has been
+        graded, and its card would need unwinding -- which `discard` cannot do.
+        Nothing can reach this with a finished attempt today: the finish modal
+        is the only caller, and it only opens while the attempt is live.
+        """
+        a = self._require_attempt()
+        if a.finished:
+            raise RuntimeError("cannot discard a finished attempt")
+        events.append(
+            self.conn,
+            events.ATTEMPT_DISCARDED,
+            {"attempt_uuid": a.uuid, "slug": a.problem.slug},
+        )
+        self.attempt = None
 
     def archive_code(self, path: str, language: str | None = None) -> None:
         a = self._require_attempt()

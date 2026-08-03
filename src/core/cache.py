@@ -93,6 +93,12 @@ LEETCODE_LANG = {
 
 MANIFEST_VERSION = 1
 
+# Bumped whenever `render_page` changes the layout of a page. A cached page at
+# an older version is rewritten in place by `upgrade_page` where possible, and
+# only re-downloaded when it isn't — a layout change is not a reason to ask
+# LeetCode for 150 statements that have not changed.
+RENDER_VERSION = 2
+
 
 class FetchError(RuntimeError):
     """One problem could not be downloaded. Never fatal to a sweep."""
@@ -246,6 +252,8 @@ body {
 header { border-bottom: 1px solid #e3e3e8; padding-bottom: 1rem; margin-bottom: 1.75rem; }
 h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
 .meta { font-size: .82rem; color: #6b6b76; display: flex; gap: .6rem; flex-wrap: wrap; }
+.categories { margin-top: .8rem; font-size: .82rem; color: #6b6b76; }
+.categories summary { font-weight: 400; font-size: .82rem; }
 .difficulty { font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .easy { color: #1a7f37; } .medium { color: #9a6700; } .hard { color: #cf222e; }
 pre {
@@ -285,6 +293,68 @@ def _snippet(question: dict[str, Any], language: str) -> tuple[str, str] | None:
     return first.get("lang") or first.get("langSlug") or "", first.get("code") or ""
 
 
+def _header(problem: Problem) -> str:
+    """Title, difficulty, and the categories folded away behind a disclosure.
+
+    Same bargain as the solve screen: the pattern and the tags are an approach
+    hint, so they cost a deliberate click rather than arriving unbidden at the
+    top of the page. `<details>` because it needs no script — these files are
+    opened from disk on a plane.
+    """
+    difficulty = (problem.difficulty or "").lower()
+    return "\n".join(
+        [
+            "<header>",
+            f"<h1>{escape(problem.title)}</h1>",
+            '<div class="meta">',
+            f'<span class="difficulty {escape(difficulty)}">'
+            f"{escape(problem.difficulty_label)}</span>",
+            "</div>",
+            '<details class="categories"><summary>show categories</summary>',
+            f"<div>{escape(problem.pattern or '—')}  ·  "
+            f"{escape(', '.join(problem.tags))}</div>",
+            "</details>",
+            "</header>",
+        ]
+    )
+
+
+def _header_v1(problem: Problem) -> str:
+    """The header this module wrote before `RENDER_VERSION` 2.
+
+    Kept only so `upgrade_page` can recognise a page it already has and fix it
+    in place. Deterministic from the `Problem`, which is what makes the upgrade
+    an exact string swap rather than HTML parsing.
+    """
+    difficulty = (problem.difficulty or "").lower()
+    return "\n".join(
+        [
+            "<header>",
+            f"<h1>{escape(problem.title)}</h1>",
+            '<div class="meta">',
+            f'<span class="difficulty {escape(difficulty)}">'
+            f"{escape(problem.difficulty_label)}</span>",
+            f"<span>{escape(problem.pattern or '—')}</span>",
+            f"<span>{escape(', '.join(problem.tags))}</span>",
+            "</div></header>",
+        ]
+    )
+
+
+def upgrade_page(problem: Problem, html: str) -> str | None:
+    """Bring an already-cached page up to `RENDER_VERSION`, offline.
+
+    Returns the new document, or None if the page does not look like the
+    version we know how to rewrite — in which case the caller re-fetches. The
+    point is that a layout change must not cost 150 network requests for
+    statements that have not changed.
+    """
+    old = _header_v1(problem)
+    if old not in html:
+        return None
+    return html.replace(old, _header(problem), 1)
+
+
 def render_page(problem: Problem, question: dict[str, Any], *, language: str = "python") -> str:
     """One self-contained HTML document. No request left to make.
 
@@ -293,7 +363,6 @@ def render_page(problem: Problem, question: dict[str, Any], *, language: str = "
     read by accident, and the starter snippet for your configured language. The
     only URL is the back-link, which is there for when you land.
     """
-    difficulty = (problem.difficulty or "").lower()
     parts = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
@@ -301,13 +370,7 @@ def render_page(problem: Problem, question: dict[str, Any], *, language: str = "
         f"<title>{escape(problem.title)}</title>",
         f"<style>{PAGE_CSS}</style>",
         "</head><body>",
-        "<header>",
-        f"<h1>{escape(problem.title)}</h1>",
-        '<div class="meta">',
-        f'<span class="difficulty {escape(difficulty)}">{escape(problem.difficulty_label)}</span>',
-        f"<span>{escape(problem.pattern or '—')}</span>",
-        f"<span>{escape(', '.join(problem.tags))}</span>",
-        "</div></header>",
+        _header(problem),
         inline_images(question["content"]),
     ]
 
@@ -350,6 +413,9 @@ class Entry:
     bytes: int
     fetched_at: str
     hints: int = 0
+    # Which `render_page` layout is on disk. Entries written before the field
+    # existed default to 1, which is exactly what they are.
+    render_ver: int = 1
 
 
 @dataclass
@@ -383,6 +449,7 @@ def load_manifest() -> Manifest:
                 bytes=int(entry.get("bytes") or 0),
                 fetched_at=str(entry.get("fetched_at") or ""),
                 hints=int(entry.get("hints") or 0),
+                render_ver=int(entry.get("render_ver") or 1),
             )
     return Manifest(
         lists=tuple(raw.get("lists") or ()),
@@ -401,7 +468,12 @@ def save_manifest(manifest: Manifest) -> None:
         "lists": list(manifest.lists),
         "fetched_at": manifest.fetched_at,
         "problems": {
-            slug: {"bytes": e.bytes, "fetched_at": e.fetched_at, "hints": e.hints}
+            slug: {
+                "bytes": e.bytes,
+                "fetched_at": e.fetched_at,
+                "hints": e.hints,
+                "render_ver": e.render_ver,
+            }
             for slug, e in sorted(manifest.problems.items())
         },
         "failures": dict(sorted(manifest.failures.items())),
@@ -471,6 +543,7 @@ def priority(
 class SyncReport:
     fetched: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
+    upgraded: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     failures: dict[str, str] = field(default_factory=dict)
@@ -514,6 +587,27 @@ def sync(
         pause=pause,
         now=now,
     )
+
+
+def _upgrade_on_disk(problem: Problem, path: Path) -> bytes | None:
+    """Rewrite one cached page to `RENDER_VERSION` in place. None if it can't be.
+
+    Never raises: a page that will not upgrade is simply re-fetched, and an
+    unreadable one is not worth ending a sweep over.
+    """
+    try:
+        html = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fixed = upgrade_page(problem, html)
+    if fixed is None:
+        return None
+    data = fixed.encode()
+    try:
+        path.write_bytes(data)
+    except OSError:
+        return None
+    return data
 
 
 def sync_problems(
@@ -566,16 +660,40 @@ def sync_problems(
         path = paths.cache_path(slug)
 
         if not refresh and path.exists():
-            size = path.stat().st_size
-            if report.total_bytes + size > budget_bytes:
-                report.skipped.append(slug)
-                note(slug, "over budget")
+            entry = manifest.problems.get(slug)
+            # An old layout is fixed on disk, not re-downloaded. Only a page we
+            # cannot recognise falls through to the fetch below.
+            if entry is None or entry.render_ver < RENDER_VERSION:
+                upgraded = _upgrade_on_disk(problem, path)
+                if upgraded is not None:
+                    size = len(upgraded)
+                    if report.total_bytes + size > budget_bytes:
+                        report.skipped.append(slug)
+                        note(slug, "over budget")
+                        continue
+                    report.total_bytes += size
+                    keeping.add(slug)
+                    report.upgraded.append(slug)
+                    manifest.problems[slug] = Entry(
+                        slug=slug,
+                        bytes=size,
+                        fetched_at=(entry.fetched_at if entry else stamp),
+                        hints=(entry.hints if entry else 0),
+                        render_ver=RENDER_VERSION,
+                    )
+                    note(slug, "re-rendered")
+                    continue
+            else:
+                size = path.stat().st_size
+                if report.total_bytes + size > budget_bytes:
+                    report.skipped.append(slug)
+                    note(slug, "over budget")
+                    continue
+                report.total_bytes += size
+                keeping.add(slug)
+                report.kept.append(slug)
+                note(slug, "cached")
                 continue
-            report.total_bytes += size
-            keeping.add(slug)
-            report.kept.append(slug)
-            note(slug, "cached")
-            continue
 
         if report.total_bytes >= budget_bytes:
             report.skipped.append(slug)
@@ -609,6 +727,7 @@ def sync_problems(
             bytes=len(page),
             fetched_at=stamp,
             hints=len([h for h in (question.get("hints") or []) if h]),
+            render_ver=RENDER_VERSION,
         )
         note(slug, "fetched")
         if pause:

@@ -15,7 +15,7 @@ def w():
 
 def attempt(**overrides):
     base = {
-        "verdict": "accepted",
+        "verdict": "solved_unaided",
         "active_seconds": 900,
         "max_hint_tier": 0,
         "submissions": 0,
@@ -139,6 +139,73 @@ def test_unsolved_but_not_surrendered_earns_no_base(w):
     score = score_attempt(attempt(verdict="wrong_answer", submissions=3), "medium", w)
     assert score.total < 0
     assert not score.is_clean
+
+
+# --- the solve ladder ------------------------------------------------------
+
+
+def test_the_ladder_costs_more_at_every_rung(w):
+    """More help, less credit — strictly, with nothing else changing."""
+    scores = [
+        score_attempt(attempt(verdict=v), "medium", w).total
+        for v in scoring.SOLVED_VERDICTS
+    ]
+    assert scores == sorted(scores, reverse=True)
+    assert len(set(scores)) == len(scores)
+    assert scores[-1] > 0, "reading the implementation still beats not logging it"
+
+
+def test_help_tier_takes_the_worse_of_the_two_confessions(w):
+    """A revealed hint and an admitted one are the same axis; the worse wins."""
+    # Verdict admits more than the hints revealed.
+    assert scoring.help_tier(attempt(verdict="solved_after_pseudocode", max_hint_tier=1)) == 3
+    # Hints revealed more than the verdict admits: claiming `unaided` afterwards
+    # does not undo them.
+    assert scoring.help_tier(attempt(verdict="solved_unaided", max_hint_tier=2)) == 2
+    assert scoring.help_tier(attempt(verdict="gave_up", max_hint_tier=0)) == 0
+
+
+def test_solved_with_hints_is_floored_even_with_no_hint_revealed(w):
+    """Hints read on LeetCode itself never touch `max_hint_tier`.
+
+    Without the floor, picking "solved with hints" would score — and count as —
+    a flawless solve, which is exactly the self-deception the verdict exists to
+    prevent.
+    """
+    a = attempt(verdict="solved_with_hints", max_hint_tier=0)
+    assert scoring.help_tier(a) == 1
+    assert not scoring.is_clean_solve(a)
+    assert score_attempt(a, "medium", w).total < score_attempt(attempt(), "medium", w).total
+
+
+def test_only_an_unaided_solve_is_clean(w):
+    assert scoring.is_clean_solve(attempt(verdict="solved_unaided"))
+    for v in scoring.SOLVED_VERDICTS[1:]:
+        assert not scoring.is_clean_solve(attempt(verdict=v)), v
+
+
+def test_the_stat_line_says_where_the_help_came_from(w):
+    """A revealed hint and a confessed one cost the same and read differently."""
+
+    def hints_detail(a):
+        return next(c.detail for c in score_attempt(a, "medium", w).components if c.label == "hints")
+
+    assert hints_detail(attempt(max_hint_tier=3)) == "tier 3  (pseudocode)"
+    assert hints_detail(attempt(verdict="solved_after_pseudocode")) == "saw the pseudocode"
+    assert hints_detail(attempt(verdict="solved_unaided")) == "none"
+
+
+def test_legacy_verdicts_still_score_exactly_as_they_did(w):
+    """Old rows are not rewritten, so they must not be re-priced either."""
+    assert score_attempt(attempt(verdict="accepted"), "medium", w).total == (
+        score_attempt(attempt(verdict="solved_unaided"), "medium", w).total
+    )
+    assert scoring.is_clean_solve(attempt(verdict="accepted"))
+    assert score_attempt(attempt(verdict="used_editorial"), "medium", w).total == 0
+    assert score_attempt(attempt(verdict="tle", submissions=2), "medium", w).total == -4
+    for v in scoring.LEGACY_VERDICTS:
+        assert v in scoring.VERDICT_LABELS
+        assert v not in scoring.VERDICTS
 
 
 def test_fmt_duration():

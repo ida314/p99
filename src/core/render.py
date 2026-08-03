@@ -19,16 +19,24 @@ from .stats import Distribution, Run, RunStanding
 WIDTH = 62
 
 DIFFICULTY_STYLE = {"easy": "green", "medium": "yellow", "hard": "red"}
-# keyed by the rendered label, since that is what the stat line carries
+# keyed by the rendered label, since that is what the stat line carries.
+# The solve ladder fades as the help increases — green for the one you want,
+# dimming rung by rung, so a column of stat lines reads at a glance.
 VERDICT_LABEL_STYLE = {
+    "SOLVED, NO HELP": "bold green",
+    "SOLVED WITH HINTS": "green",
+    "SOLVED AFTER DESCRIPTION": "yellow",
+    "SOLVED AFTER PSEUDOCODE": "bright_black",
+    "SOLVED AFTER IMPLEMENTATION": "bright_black",
+    "GAVE UP": "bright_black",
+    # Yellow, not the grey the surrenders get: this one is an open loop, not a
+    # closed one. You still owe this problem a verdict.
+    "NOT GRADED": "yellow",
+    # legacy labels, still in the log — see scoring.LEGACY_VERDICTS
     "ACCEPTED": "bold green",
     "WRONG ANSWER": "red",
     "TIME LIMIT EXCEEDED": "red",
     "USED EDITORIAL": "bright_black",
-    "GAVE UP": "bright_black",
-    # Yellow, not the grey the two surrenders get: this one is an open loop,
-    # not a closed one. You still owe this problem a verdict.
-    "NOT GRADED": "yellow",
 }
 
 BANNER = branding.BANNER

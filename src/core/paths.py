@@ -85,6 +85,32 @@ def cache_dir() -> Path:
     return data_dir() / "cache"
 
 
+def unclaimed(path: Path) -> Path:
+    """`path`, or the first `name-2`, `name-3`, ... that nothing has taken.
+
+    For write sites only — the `*_path` builders above stay pure, because they
+    are also how you *find* a file that already exists.
+
+    Archive filenames are keyed on `attempts.id`, which is a projection rowid --
+    stable across a replay of an unchanged log, but *not* across a run deletion,
+    which removes rows and lets later attempts renumber down into the ids they
+    vacated. Attempt the same problem again afterwards and the new attempt can
+    land on an id whose file already exists.
+
+    An archived solution is the most instructive artifact this system collects
+    and it is never regenerable, so the naming loses to it: the new file steps
+    aside rather than overwriting one. Rare enough that the suffix will almost
+    never be seen, and cheap enough not to care.
+    """
+    if not path.exists():
+        return path
+    for n in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path
+
+
 def code_path(slug: str, attempt_id: int, ext: str) -> Path:
     ext = ext.lstrip(".")
     return code_dir() / slug / f"{attempt_id}.{ext}"

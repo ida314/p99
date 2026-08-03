@@ -210,7 +210,7 @@ def capture_solution(
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = solution_header(problem, attempt, ext)
-    dest = paths.code_path(problem.slug, attempt_id, ext)
+    dest = paths.unclaimed(paths.code_path(problem.slug, attempt_id, ext))
     return _run_capture(
         f"{problem.slug}.{ext}",
         header,
@@ -239,7 +239,7 @@ def capture_submission(
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = submission_header(problem, attempt, ext, n)
-    dest = paths.submission_path(problem.slug, attempt_id, n, ext)
+    dest = paths.unclaimed(paths.submission_path(problem.slug, attempt_id, n, ext))
     return _run_capture(
         f"{problem.slug}-wrong{n}.{ext}",
         header,
@@ -251,7 +251,7 @@ def capture_submission(
 def capture_note(problem: Problem, attempt_id: int) -> CaptureResult:
     """Step 2 — the reflection note, `notes/<slug>/<attempt_id>.md`."""
     template = note_template(problem.slug)
-    dest = paths.note_path(problem.slug, attempt_id)
+    dest = paths.unclaimed(paths.note_path(problem.slug, attempt_id))
     return _run_capture(
         f"{problem.slug}.md",
         template,

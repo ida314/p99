@@ -6,6 +6,7 @@ are the only two doors out, and every test closes both.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -363,3 +364,68 @@ def test_offline_o_opens_the_cached_file(conn, offline):
 def test_offline_with_nothing_cached_falls_back_to_the_url(conn):
     problem = catalog.get(conn, "two-sum")
     assert cache.target_for(problem, offline=True) == (problem.url, False)
+
+
+# --- categories on the page -------------------------------------------------
+
+
+def test_the_categories_are_folded_away_on_the_page(conn, offline):
+    """Same bargain as the solve screen: a click, not an ambush."""
+    problem = catalog.get(conn, "two-sum")
+    page = cache.render_page(problem, _question("two-sum"))
+
+    header, _, _ = page.partition("</header>")
+    assert "show categories" in header
+    assert problem.difficulty_label in header
+    # Inside the disclosure, not the visible meta line.
+    meta, _, disclosure = header.partition("<details")
+    for tag in problem.tags:
+        assert tag not in meta
+        assert tag in disclosure
+    assert problem.pattern in disclosure
+
+
+def test_an_old_page_is_re_rendered_without_a_download(conn, offline):
+    """A layout change must not cost 150 requests for statements that did not change."""
+    problem = catalog.get(conn, "two-sum")
+    old = cache._header_v1(problem)
+    page = f"<!doctype html>\n{old}\n<p>the statement</p>\n"
+
+    fixed = cache.upgrade_page(problem, page)
+
+    assert fixed is not None
+    assert "show categories" in fixed
+    assert old not in fixed
+    assert "<p>the statement</p>" in fixed
+    for tag in problem.tags:
+        assert tag in fixed
+
+
+def test_a_page_we_do_not_recognise_is_left_for_a_refetch(conn, offline):
+    problem = catalog.get(conn, "two-sum")
+    assert cache.upgrade_page(problem, "<html><body>something else</body></html>") is None
+    # Already current: there is no v1 header left to swap.
+    current = cache.render_page(problem, _question("two-sum"))
+    assert cache.upgrade_page(problem, current) is None
+
+
+def test_a_stale_render_version_upgrades_in_place_on_the_next_sweep(conn, offline):
+    """Downgrade a synced cache to v1, then sweep: rewritten, not re-fetched."""
+    _sync(conn)
+    manifest = cache.load_manifest()
+    assert all(e.render_ver == cache.RENDER_VERSION for e in manifest.problems.values())
+
+    slug = "two-sum"
+    problem = catalog.get(conn, slug)
+    path = paths.cache_path(slug)
+    path.write_text(f"<!doctype html>\n{cache._header_v1(problem)}\n<p>old</p>\n")
+    manifest.problems[slug] = replace(manifest.problems[slug], render_ver=1)
+    cache.save_manifest(manifest)
+
+    # `offline` makes any network call an error, so this proves no request ran.
+    report = _sync(conn)
+
+    assert slug in report.upgraded
+    assert slug not in report.fetched
+    assert "show categories" in path.read_text()
+    assert cache.load_manifest().problems[slug].render_ver == cache.RENDER_VERSION
