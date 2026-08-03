@@ -18,11 +18,19 @@ from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 from ...scoring import VERDICTS, VERDICT_LABELS, fmt_duration
 from ..vim import MOTIONS, VimMotion
 
+# Still 1..4, still worst-to-best, still stored in `attempts.self_confidence` --
+# the numbers mean what they always meant, so old attempts read the same way.
+#
+# What changed is the question. "How well will this stick?" is a prediction made
+# with the solution still in front of you, which is the condition under which
+# self-assessment is least reliable; you are rating how clear it feels now, not
+# how it will go cold. Naming the retrieval condition -- a month, no warning --
+# is the standard correction, and it costs nothing to ask it this way instead.
 CONFIDENCE_OPTIONS = [
-    "1  gone in a week",
-    "2  shaky",
-    "3  good",
-    "4  solid",
+    "1  no idea",
+    "2  I'd struggle",
+    "3  I'd get there",
+    "4  I'd nail it",
 ]
 
 
@@ -82,7 +90,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             with RadioSet(id="verdict"):
                 for i, v in enumerate(VERDICTS):
                     yield RadioButton(VERDICT_LABELS[v], value=(i == default))
-            yield Static("how well will this stick?", classes="field-label")
+            yield Static("if this came up cold in a month?", classes="field-label")
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
                     yield RadioButton(label, value=(i == 2))

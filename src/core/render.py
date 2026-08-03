@@ -104,11 +104,14 @@ def stat_line(title: str, difficulty: str, score: Score, confidence: int | None 
     return Group(*rows)
 
 
+# The finish modal's four answers, short enough to sit in a stat line. Same 1..4
+# the log has always stored, so an attempt recorded under the old wording still
+# renders at the rung it was given.
 CONFIDENCE_LABELS = {
-    1: '"gone in a week"',
-    2: '"shaky"',
-    3: '"good"',
-    4: '"solid"',
+    1: '"no idea"',
+    2: '"I\'d struggle"',
+    3: '"I\'d get there"',
+    4: '"I\'d nail it"',
 }
 
 

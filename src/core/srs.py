@@ -19,7 +19,8 @@ and all three are defaults, so all three are overridden here:
 clock: every timestamp arrives from the event being applied.
 
 Parameters live in `data/srs/*.toml`, versioned the way scoring weights are, so
-editing them and replaying reschedules all of history.
+editing them and replaying reschedules all of history. `docs/spaced-repetition.md`
+explains what each one is set to and why, and what v2 changed about v1.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from . import scoring
 # this is `core.data.srs`, not the third-party `fsrs` imported above.
 from .data import srs as _params_pkg
 
-DEFAULT_PARAMS = "v1"
+DEFAULT_PARAMS = "v2"
 
 #: `fsrs.State` has no "new" -- a problem you have never finished simply has no
 #: row in `fsrs_cards`. Absence is the new state.
@@ -58,19 +59,49 @@ class Params:
     name: str
     version: int
     weights: tuple[float, ...]
+    #: The retention aimed for when a difficulty has nothing more specific to say.
     desired_retention: float
+    #: Per-difficulty overrides, as pairs rather than a mapping: `Params` is an
+    #: `lru_cache` key on `scheduler` below, so every field has to stay hashable.
+    #: Three entries at most, so the scan in `retention_for` is free.
+    retention: tuple[tuple[str, float], ...]
     learning_steps: tuple[int, ...]  # minutes
     relearning_steps: tuple[int, ...]  # minutes
     maximum_interval: int
     hard_interval_mult: float
 
+    def retention_for(self, difficulty: str) -> float:
+        """The recall probability to aim for on a problem of this difficulty.
+
+        Mirrors `scoring.Weights.par_for`: the difficulty is advisory, and an
+        unrecognised one falls back rather than raising in the middle of a replay.
+        """
+        wanted = (difficulty or "medium").lower()
+        for name, value in self.retention:
+            if name == wanted:
+                return value
+        return self.desired_retention
+
 
 def _parse(raw: dict[str, Any]) -> Params:
+    # `desired_retention` is either a scalar for everything (v1) or a table
+    # keyed by difficulty (v2). The scalar is kept in both cases as the fallback
+    # for a difficulty the table does not name.
+    raw_retention = raw.get("desired_retention", 0.9)
+    if isinstance(raw_retention, dict):
+        retention = tuple((k.lower(), float(v)) for k, v in raw_retention.items())
+        # A table with no `medium` still needs something to fall back to.
+        default = float(raw_retention.get("medium", next(iter(raw_retention.values()), 0.9)))
+    else:
+        retention = ()
+        default = float(raw_retention)
+
     return Params(
         name=raw.get("name", "?"),
         version=int(raw.get("version", 0)),
         weights=tuple(float(x) for x in raw["weights"]),
-        desired_retention=float(raw.get("desired_retention", 0.9)),
+        desired_retention=default,
+        retention=retention,
         learning_steps=tuple(int(x) for x in raw.get("learning_steps", [])),
         relearning_steps=tuple(int(x) for x in raw.get("relearning_steps", [])),
         maximum_interval=int(raw.get("maximum_interval", 36500)),
@@ -92,16 +123,21 @@ def available_params() -> list[str]:
     )
 
 
-@functools.lru_cache(maxsize=8)
-def scheduler(params: Params) -> Scheduler:
+@functools.lru_cache(maxsize=16)
+def scheduler(params: Params, retention: float | None = None) -> Scheduler:
     """The one construction site for a `Scheduler`.
 
     `enable_fuzzing=False` is not a preference. See the module docstring: it is
     what makes `p99 replay` reproducible, and `tests/test_srs.py` asserts it.
+
+    `retention` overrides the file's default, which is how a hard problem gets a
+    tighter schedule than an easy one -- a scheduler per difficulty, all of them
+    cached. `None` means "whatever the file says", so a bare `scheduler(params)`
+    still answers questions about the parameters themselves.
     """
     return Scheduler(
         parameters=params.weights,
-        desired_retention=params.desired_retention,
+        desired_retention=params.desired_retention if retention is None else retention,
         learning_steps=[timedelta(minutes=m) for m in params.learning_steps],
         relearning_steps=[timedelta(minutes=m) for m in params.relearning_steps],
         maximum_interval=params.maximum_interval,
@@ -147,10 +183,15 @@ def new_card(slug: str, at: datetime) -> Card:
 def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) -> Rating:
     """Grade one finished attempt as an FSRS rating.
 
-    Spec §8, with performance owning the decision and `self_confidence` only
-    breaking the tie at the top. The self-report is the thing FSRS actually
-    models, but it is also the thing you can flatter yourself with; the clock
-    and the hint tier cannot be argued with.
+    Spec §8, with performance owning the decision and `self_confidence` able to
+    lower the result but never to raise it. The self-report is the thing FSRS
+    actually models, but it is also the thing you can flatter yourself with; the
+    clock and the hint tier cannot be argued with. See the branch below for why
+    that asymmetry is the whole of how the self-report is read.
+
+    This map is code, not parameters, so it applies whichever `data/srs/*.toml`
+    is selected -- the same way `scoring.help_tier` applies to every weights
+    file. Switching to v1 changes the model's constants, not this.
 
     The verdict ladder needs no branch of its own: it lands in `scoring.help_tier`
     alongside the hints, and the tier thresholds below already say what to do with
@@ -180,7 +221,21 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     if tier >= 1 or active > 1.5 * par:
         return Rating.Hard
 
-    if active <= 0.6 * par and tier == 0 and confidence is not None and int(confidence) == 4:
+    # The self-report is used in one direction only, and that asymmetry is the
+    # point. A judgement made seconds after solving is inflated -- the solution
+    # is still in working memory, so it feels more durable than it is, and the
+    # metamemory literature measures immediate judgements of learning as only
+    # weakly predictive next to delayed ones. A *high* rating therefore runs with
+    # the bias and earns nothing: it no longer promotes anything to Easy, which
+    # is a change from v1, where it was the only way to reach Easy at all.
+    #
+    # A *low* rating runs against the bias. Saying a solve will not stick, right
+    # after producing one, is the one self-report the bias does not explain --
+    # so it is the one worth acting on.
+    if confidence is not None and int(confidence) <= 2:
+        return Rating.Hard
+
+    if active <= 0.6 * par and tier == 0:
         return Rating.Easy
 
     return Rating.Good
@@ -277,17 +332,33 @@ def grade_attempt(
     ).fetchone()
     reps = (prior["reps"] or 0) + 1 if prior else 1
     lapses = (prior["lapses"] or 0) if prior else 0
-    if rating == Rating.Again:
+    # A lapse is forgetting something you knew, which is what FSRS's Again means
+    # on a card that already exists. A problem you have never finished has no
+    # card, and failing it is not forgetting -- it is not knowing yet. It still
+    # rates Again, because a day-scale interval is the right answer either way;
+    # it just does not go in the column that counts how often you have lost
+    # something. Without this the count reads as a forgetting rate while mostly
+    # measuring first contact.
+    if rating == Rating.Again and prior is not None:
         lapses += 1
 
     duration_ms = int(facts["active_seconds"] or 0) * 1000
-    card, _ = scheduler(params).review_card(
+    card, _ = scheduler(params, params.retention_for(difficulty)).review_card(
         card, rating, review_datetime=reviewed_at, review_duration=duration_ms or None
     )
 
-    # Spec §8 mitigation (a): the published constants are fitted on flashcards
-    # and run too aggressive for a hard problem. Shrink the interval, never the
-    # stability -- the model's state stays the model's, only the date moves.
+    # Spec §8 mitigation (a) as v1 implemented it: shrink the computed interval
+    # for hard problems. v2 does not set the multiplier and never enters here,
+    # because the approach is unsound -- and the comment this replaces claimed
+    # otherwise. Moving `due` back does not leave the model's state alone: the
+    # next review then lands above the target retrievability, FSRS grants less
+    # stability for an early review, and the shortfall compounds. Six on-time
+    # Good reviews under v1's 0.8 end at 48.9% of the stability the model asked
+    # for. v2 reaches for the same shorter intervals through `desired_retention`
+    # instead, which moves `due` by moving what the model is aiming at.
+    #
+    # Kept, and kept working, because v1 is still selectable: choosing it has to
+    # get you v1's model rather than a file that quietly no longer does anything.
     if difficulty.lower() == "hard" and params.hard_interval_mult != 1.0:
         interval = card.due - reviewed_at
         if interval > timedelta(0):

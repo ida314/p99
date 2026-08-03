@@ -1,0 +1,82 @@
+# FSRS parameters — v2 (spec §8)
+#
+# Same bargain as `v1.toml`: nothing here is denormalized into the event log.
+# `fsrs_cards` is a projection, so editing this file and running `p99 replay`
+# re-derives every card from scratch. `v1.toml` is left exactly as it was and
+# stays selectable.
+#
+# What that does *not* buy you: this file holds parameters, and the rating map
+# that decides Again/Hard/Good/Easy is code, in `srs.rate`. Selecting v1 replays
+# with v1's weights, cap and multiplier, but with today's map -- the same way
+# `scoring/v1.toml` holds weights while `help_tier` stays in `scoring.py`.
+#
+# What changed from v1, and why: `docs/spaced-repetition.md`. In short, v1 shrank
+# the due date of hard problems after the fact, which quietly compounded into the
+# model's own stability, and it left the interval tail uncapped.
+
+version = 2
+name = "v2"
+
+# The 21 published FSRS-6 weights, verbatim from py-fsrs's DEFAULT_PARAMETERS.
+# Index 20 is the decay term. A fitted model, not an algorithm worth improving
+# by hand: change these only by running the optimizer. Unchanged from v1 — with
+# 18 graded attempts on record there is nothing to fit against yet, and the
+# threshold for trying is in the doc.
+weights = [
+  0.212,  1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001,
+  1.8722, 0.1666, 0.796,  1.4835, 0.0614, 0.2629, 1.6483, 0.6014,
+  1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+]
+
+# Minutes. **Deliberately empty**, unchanged from v1, and better supported than
+# v1's comment claimed: FSRS's own tutorial recommends against any step longer
+# than 12-14 hours. For a 30-minute constructive problem that leaves day-scale
+# steps (which the tutorial discourages) or no steps at all (which hands the
+# short-term schedule to FSRS). This is the second.
+#
+# Empty steps put every graded attempt straight into the review state on a
+# day-scale interval: Again -> 1d, Hard -> 1d, Good -> 2d, Easy -> 8d on a
+# first encounter. That is a schedule you can actually keep.
+learning_steps = []
+relearning_steps = []
+
+# Days. v1 carried py-fsrs's default of 36500 -- a hundred years, which is the
+# library declining to have an opinion rather than an opinion worth keeping.
+# Six clean solves reviewed on time reach a 1346-day interval under it, and rep
+# eight reaches 7398; a problem that far out has left the rotation for good.
+#
+# This is a coverage guarantee, not a workload lever, and the distinction is
+# load-bearing: simulated over the whole 150-problem list, moving this cap
+# changes review demand by a fraction of a review per day, while the rate at
+# which attempts rate Again changes it by two orders of magnitude. See the doc.
+# So the number answers one question only -- how long may a problem you have
+# nailed go unseen? A year.
+maximum_interval = 365
+
+# `hard_interval_mult` is deliberately absent. It defaults to 1.0, which turns
+# off the post-hoc date surgery in `srs.grade_attempt`. v1 still sets it, and
+# still behaves the way it always did.
+
+# Probability of recall the scheduler aims for at the moment a card comes due,
+# per difficulty. A bare float works too and applies to everything -- that is
+# what v1 is. **Keep this table last in the file**: everything below a TOML
+# `[table]` header belongs to it, so a scalar written after this one silently
+# stops being a top-level setting.
+#
+# This is FSRS's own documented lever for shortening intervals, and the mechanism
+# Anki uses when one deck needs a tighter schedule than another. It replaces v1's
+# `hard_interval_mult`, which scaled the computed due date after the model had
+# already spoken. That looked like it only moved the date, but a card that comes
+# due early is reviewed above its target retrievability, and FSRS grants less
+# stability for an early review -- so the shrink compounded. Measured over six
+# on-time reviews rated Good, v1's 0.8 multiplier left stability at 48.9% of what
+# the model asked for. Retention buys the same shorter intervals with `due` and
+# `stability` still agreeing with each other.
+#
+# 0.92 gives hard problems roughly 0.73x the interval of 0.90 -- close to what
+# the 0.8 multiplier was reaching for on a first review. Tune it by feel; it is
+# a guess in the same way the scoring weights are guesses.
+[desired_retention]
+easy = 0.90
+medium = 0.90
+hard = 0.92

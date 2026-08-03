@@ -1057,7 +1057,7 @@ async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
         shown = _plain(panel)
         assert "SOLVED WITH HINTS" in shown
         assert "09:12" in shown  # 552 seconds, the time it took
-        assert '"good"' in shown  # how well you thought you knew it
+        assert "\"I'd get there\"" in shown  # self_confidence 3, as you rated it
         # The whole point of the panel: it can never hand you the answer back.
         assert code_path not in shown
         assert "only-you-know" not in shown
@@ -1099,3 +1099,33 @@ async def test_the_past_attempts_panel_is_refolded_for_the_next_problem(app):
         assert isinstance(app.screen, SolveScreen)
         assert app.screen._past_attempts == []
         assert not app.screen.query_one("#past-attempts", Static).has_class("visible")
+
+
+async def test_the_confidence_knob_asks_about_recall_not_about_now(app):
+    """The reworded post-solve knob, on screen.
+
+    Same four values it always stored, so history keeps its reading — but asked
+    as a question about a month from now rather than about how it feels while
+    the answer is still up, which is when self-assessment is least reliable.
+    """
+    from textual.widgets import RadioButton, RadioSet
+
+    from core.tui.screens.finish import CONFIDENCE_OPTIONS
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FinishModal)
+
+        labels = [_plain(s) for s in screen.query(Static)]
+        assert "if this came up cold in a month?" in labels
+        assert "how well will this stick?" not in labels
+
+        buttons = screen.query_one("#confidence", RadioSet).query(RadioButton)
+        shown = [b.label.plain for b in buttons]
+        assert shown == list(CONFIDENCE_OPTIONS)
+        # Apostrophes survive the trip; nothing was swallowed as markup.
+        assert "I'd nail it" in shown[3]

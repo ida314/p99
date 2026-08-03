@@ -88,20 +88,25 @@ def test_a_new_card_never_reads_the_clock():
         # Solved, but with help or slowly.
         ({"verdict": "accepted", "max_hint_tier": 1}, "medium", Rating.Hard),
         ({"verdict": "accepted", "active_seconds": PAR_MEDIUM * 2}, "medium", Rating.Hard),
-        # Solved clean, at or under par.
+        # Solved clean, at or under par — but not fast enough for Easy.
         ({"verdict": "accepted", "active_seconds": PAR_MEDIUM}, "medium", Rating.Good),
-        # Fast and clean, but confidence withheld — the tiebreak did not fire.
+        # Fast and clean. The self-report is no longer what unlocks this.
         (
             {"verdict": "accepted", "active_seconds": 100, "self_confidence": 3},
             "medium",
-            Rating.Good,
+            Rating.Easy,
         ),
-        ({"verdict": "accepted", "active_seconds": 100}, "medium", Rating.Good),
-        # Fast, clean, hintless and you say it stuck.
+        ({"verdict": "accepted", "active_seconds": 100}, "medium", Rating.Easy),
         (
             {"verdict": "accepted", "active_seconds": 100, "self_confidence": 4},
             "medium",
             Rating.Easy,
+        ),
+        # ...and a low self-report pulls a fast clean solve back down.
+        (
+            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 2},
+            "medium",
+            Rating.Hard,
         ),
     ],
 )
@@ -114,6 +119,30 @@ def test_used_editorial_rates_like_gave_up():
     editorial = {"verdict": "used_editorial", "active_seconds": 60, "self_confidence": 4}
     assert srs.rate(editorial, "easy", WEIGHTS) == Rating.Again
     assert "used_editorial" in scoring.ZERO_VERDICTS
+
+
+def test_the_self_report_only_ever_costs_you():
+    """It is read in one direction, because it is only trustworthy in one.
+
+    Confidence is claimed seconds after solving, with the answer still on screen,
+    which is when self-assessment is at its least reliable and its most flattering.
+    So a high claim buys nothing -- it has to agree with the clock, and the clock
+    decides. A low one is the case the flattery does not explain, so it is allowed
+    to demote.
+    """
+    fast = {"verdict": "accepted", "active_seconds": 100}
+    # Nothing the self-report says can promote a solve the clock does not rate.
+    at_par = {"verdict": "accepted", "active_seconds": PAR_MEDIUM}
+    assert srs.rate({**at_par, "self_confidence": 4}, "medium", WEIGHTS) == Rating.Good
+    assert srs.rate({**at_par}, "medium", WEIGHTS) == Rating.Good
+    # A high claim adds nothing to a fast solve that already earned Easy.
+    assert srs.rate(fast, "medium", WEIGHTS) == Rating.Easy
+    assert srs.rate({**fast, "self_confidence": 4}, "medium", WEIGHTS) == Rating.Easy
+    assert srs.rate({**fast, "self_confidence": 3}, "medium", WEIGHTS) == Rating.Easy
+    # A low one takes it away.
+    for shaky in (1, 2):
+        assert srs.rate({**fast, "self_confidence": shaky}, "medium", WEIGHTS) == Rating.Hard
+        assert srs.rate({**at_par, "self_confidence": shaky}, "medium", WEIGHTS) == Rating.Hard
 
 
 def test_par_is_difficulty_relative():
@@ -161,8 +190,23 @@ def test_giving_up_still_schedules_a_review(conn):
     """Spec §5: zero costs you the run, not the record."""
     _solve(conn, "two-sum", verdict="gave_up")
     card = _cards(conn)["two-sum"]
-    assert card["lapses"] == 1
     assert card["due"]
+
+
+def test_failing_a_problem_you_have_never_seen_is_not_a_lapse(conn):
+    """A lapse is losing something. There was nothing there to lose.
+
+    It still rates Again and still comes back tomorrow -- only the count that
+    says how often you forget stays out of it.
+    """
+    _solve(conn, "two-sum", verdict="gave_up")
+    first = _cards(conn)["two-sum"]
+    assert first["lapses"] == 0
+    assert first["reps"] == 1 and first["due"]
+
+    # Now there is a card, so the next failure is forgetting.
+    _solve(conn, "two-sum", verdict="gave_up")
+    assert _cards(conn)["two-sum"]["lapses"] == 1
 
 
 def test_an_ungraded_attempt_schedules_nothing(conn):
@@ -216,7 +260,9 @@ def test_repeated_attempts_accumulate_reps_and_lapses(conn):
     _solve(conn, "two-sum", verdict="gave_up")
     card = _cards(conn)["two-sum"]
     assert card["reps"] == 3
-    assert card["lapses"] == 2
+    # Three attempts, two of them failures — but the first failure was first
+    # contact, so only the last one counts as forgetting.
+    assert card["lapses"] == 1
 
 
 def test_an_unfinished_attempt_has_no_card(conn):
@@ -274,11 +320,122 @@ def test_an_explicit_flag_still_wins(conn):
 # --- parameters ------------------------------------------------------------
 
 
-def test_v1_params_load_and_are_the_published_ones():
-    assert PARAMS.name == "v1"
+def test_the_default_params_load_and_are_the_published_ones():
+    assert PARAMS.name == srs.DEFAULT_PARAMS == "v2"
     assert len(PARAMS.weights) == 21  # FSRS-6; index 20 is decay
     assert 0 < PARAMS.desired_retention <= 1
-    assert "v1" in srs.available_params()
+    assert {"v1", "v2"} <= set(srs.available_params())
+
+
+def test_v1_still_loads_and_still_behaves_the_way_it_was_recorded():
+    """v2 is a new file, not an edit. History replayed under v1 comes back intact.
+
+    The shape of `Params` changed to carry per-difficulty retention, and v1 does
+    not use it -- so this is the guard that the old file still parses, and that
+    the multiplier v2 abandoned is still there and still applied for anyone who
+    switches back.
+    """
+    v1 = srs.load_params("v1")
+    assert v1.name == "v1" and v1.version == 1
+    assert v1.hard_interval_mult == 0.8
+    assert v1.maximum_interval == 36500
+    # A scalar `desired_retention` means every difficulty gets the same target.
+    assert v1.retention == ()
+    assert {v1.retention_for(d) for d in ("easy", "medium", "hard")} == {0.9}
+
+
+def test_retention_is_per_difficulty_and_hard_aims_higher():
+    assert PARAMS.retention_for("easy") == PARAMS.retention_for("medium") == 0.90
+    assert PARAMS.retention_for("hard") > PARAMS.retention_for("medium")
+    # Unknown difficulties fall back rather than raising mid-replay.
+    assert PARAMS.retention_for("") == PARAMS.desired_retention
+    assert PARAMS.retention_for("insane") == PARAMS.desired_retention
+    # `Params` is an lru_cache key on `scheduler`, so it has to stay hashable.
+    assert hash(PARAMS)
+
+
+def _fold_hard(params, *, apply_mult, reps=6):
+    """Re-solve one hard problem `reps` times, rated Good, always exactly on time.
+
+    Mirrors what `grade_attempt` does, including v1's post-hoc shrink, so the two
+    parameter files can be compared on the thing that actually differs.
+    """
+    at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    card, t = srs.new_card("x", at), at
+    sched = srs.scheduler(params, params.retention_for("hard"))
+    moved = False
+    for _ in range(reps):
+        card, _ = sched.review_card(card, Rating.Good, review_datetime=t)
+        asked_for = card.due
+        if apply_mult and params.hard_interval_mult != 1.0:
+            interval = card.due - t
+            if interval > timedelta(0):
+                card.due = t + interval * params.hard_interval_mult
+        moved = moved or card.due != asked_for
+        t = card.due
+    return card, moved
+
+
+def test_v2_never_moves_due_behind_the_models_back():
+    """The invariant v1's multiplier broke: `due` is the model's own answer.
+
+    v1 shrank it afterwards, which reads as touching only the date. It is not:
+    the next review then lands above the target retrievability, FSRS grants less
+    stability for an early review, and the shortfall compounds every rep.
+    """
+    assert PARAMS.hard_interval_mult == 1.0
+    _, moved = _fold_hard(PARAMS, apply_mult=True)
+    assert moved is False  # nothing to apply, so nothing is overridden
+
+    # v1, same fold, with and without its shrink. The stability the model ends
+    # up holding is roughly half of what it asked for — measured at ~0.49.
+    v1 = srs.load_params("v1")
+    asked, _ = _fold_hard(v1, apply_mult=False)
+    shrunk, moved = _fold_hard(v1, apply_mult=True)
+    assert moved is True
+    assert shrunk.stability < 0.6 * asked.stability
+
+
+def test_a_hard_problem_comes_back_sooner_than_a_medium_one(conn):
+    """Spec §8 mitigation (a), now bought with retention rather than date surgery.
+
+    The property v1's multiplier was reaching for and failed to hold: a shorter
+    interval, with the model's own state left exactly where the model put it.
+    """
+    at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    cards, intervals = {}, {}
+    for difficulty in ("medium", "hard"):
+        sched = srs.scheduler(PARAMS, PARAMS.retention_for(difficulty))
+        card, t = srs.new_card("x", at), at
+        # Two reps, not one: intervals are whole days, and on a first encounter
+        # both difficulties round to 2. The split resolves from the second
+        # review on (medium 11d against hard 8d) and widens from there.
+        for _ in range(2):
+            card, _ = sched.review_card(card, Rating.Good, review_datetime=t)
+            intervals[difficulty] = card.due - t
+            t = card.due
+        cards[difficulty] = card
+
+    assert intervals["hard"] < intervals["medium"]
+    # Same rating, same history, so the model's state is identical — only the
+    # date it asks for differs. This is what `hard_interval_mult` broke.
+    assert cards["hard"].stability == cards["medium"].stability
+    assert cards["hard"].difficulty == cards["medium"].difficulty
+
+
+def test_no_interval_ever_runs_past_the_horizon():
+    """v1 inherited py-fsrs's 100-year default; nothing bounded the tail.
+
+    Eight clean solves reached 7398 days under it. The cap is a coverage
+    guarantee: a problem you have nailed still comes back within the year.
+    """
+    assert PARAMS.maximum_interval == 365
+    at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    card, t = srs.new_card("two-sum", at), at
+    for _ in range(12):
+        card, _ = srs.scheduler(PARAMS).review_card(card, Rating.Easy, review_datetime=t)
+        assert card.due - t <= timedelta(days=365)
+        t = card.due
 
 
 def test_learning_steps_are_empty_on_purpose():
@@ -293,22 +450,27 @@ def test_learning_steps_are_empty_on_purpose():
     assert card.due - at >= timedelta(days=1)
 
 
-def test_hard_problems_get_a_shorter_interval(conn):
-    """Spec §8 mitigation (a): the published constants run too aggressive."""
-    assert PARAMS.hard_interval_mult < 1.0
+def test_the_retention_table_reaches_the_projection(conn):
+    """End to end: a hard problem's card really is scheduled tighter.
+
+    The unit test above proves the scheduler does it; this proves `grade_attempt`
+    asks for the right one, which is the wiring that actually decides your queue.
+    """
     _solve(conn, "trapping-rain-water", self_confidence=3)  # hard
-    _solve(conn, "two-sum", self_confidence=3)  # easy
+    _solve(conn, "3sum", self_confidence=3)  # medium
 
     cards = _cards(conn)
-    hard_due = srs.parse_ts(cards["trapping-rain-water"]["due"])
-    started = conn.execute(
-        "SELECT ended_at FROM attempts WHERE slug = 'trapping-rain-water'"
-    ).fetchone()["ended_at"]
-    interval = hard_due - srs.parse_ts(started)
-    # Whatever the model wanted, it was shrunk — the multiplier is applied to
-    # the date, never to the stability.
-    assert interval.total_seconds() > 0
-    assert cards["trapping-rain-water"]["stability"] is not None
+
+    def interval(slug):
+        ended = conn.execute(
+            "SELECT ended_at FROM attempts WHERE slug = ?", (slug,)
+        ).fetchone()["ended_at"]
+        return srs.parse_ts(cards[slug]["due"]) - srs.parse_ts(ended)
+
+    assert interval("trapping-rain-water") > timedelta(0)
+    assert interval("trapping-rain-water") < interval("3sum")
+    # Same rating either way, so the stability is the model's untouched answer.
+    assert cards["trapping-rain-water"]["stability"] == cards["3sum"]["stability"]
 
 
 def test_parse_ts_always_returns_utc():

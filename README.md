@@ -336,6 +336,12 @@ make clean    # caches and the rendered man page
 approximate — correct it in place and re-run `p99 seed`, which upserts and never
 touches attempt history.
 
+## Reviews
+
+Problems come back on an FSRS-6 schedule, folded out of the event log. What each
+setting is set to, why the finish prompt asks what it asks, and what was measured
+to decide: [`docs/spaced-repetition.md`](docs/spaced-repetition.md).
+
 ## Spec
 
 The full design lives in `~/Documents/Obsidian/personal/specs/`. Phase 1 covers

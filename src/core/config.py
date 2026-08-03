@@ -61,7 +61,7 @@ weights = "v1"
 # which FSRS parameter file in the package's data/srs/ schedules reviews.
 # `fsrs_cards` is a projection, so changing this and running
 # `{branding.COMMAND} replay` re-derives every card and reschedules all history.
-params = "v1"
+params = "v2"
 
 [stats]
 # below this many samples in a slice, p99 is one data point and is greyed out
@@ -124,7 +124,7 @@ class ScoringConfig:
 
 @dataclass(frozen=True)
 class SrsConfig:
-    params: str = "v1"
+    params: str = "v2"
 
 
 @dataclass(frozen=True)
