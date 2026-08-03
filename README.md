@@ -125,6 +125,7 @@ real points.
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
 | `c` | show / hide the problem's pattern and tags (hidden by default) |
+| `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
 | `f` | finish — verdict, confidence, then capture |

@@ -16,10 +16,10 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import branding, cache, capture
+from ... import branding, cache, capture, stats
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
-from ...render import DIFFICULTY_STYLE, bar
+from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
 from ...scoring import HINT_TIER_NAMES, fmt_duration
 from ..vim import MOTIONS, VimMotion
 from .finish import ConfirmModal, FinishModal
@@ -35,6 +35,9 @@ class SolveScreen(VimMotion, Screen[None]):
         Binding("o", "open_url", "open"),
         Binding("p", "pause", "pause"),
         Binding("c", "toggle_categories", "categories"),
+        # `r` for runs, the same mnemonic history has on the home menu — and for
+        # the same reason it isn't `h` there either: `h` is a motion.
+        Binding("r", "toggle_past", "attempts"),
         Binding("question_mark", "hint", "hint"),
         Binding("s", "submit", "failed submit"),
         Binding("f", "finish", "finish"),
@@ -48,6 +51,9 @@ class SolveScreen(VimMotion, Screen[None]):
         super().__init__()
         self.engine = engine
         self._busy = False
+        # Read once per problem rather than on every keypress: it is a database
+        # query, and nothing can add to it while the problem is on screen.
+        self._past_attempts: list[stats.PastAttempt] = []
 
     def compose(self) -> ComposeResult:
         # Scrollable because the hint panel grows: on a short terminal a tier-3
@@ -57,10 +63,14 @@ class SolveScreen(VimMotion, Screen[None]):
             yield Static(id="problem-title")
             yield Static(id="problem-meta")
             yield Static(id="problem-url")
+            yield Static(id="last-attempt")
             yield Static(id="timer")
             yield Static(id="attempt-state")
             yield Static(id="toast")
             yield Static(id="hint-panel")
+            # Last, under the hint panel: `r` must never move the clock or the
+            # hint text you are reading, and this one can be a dozen lines long.
+            yield Static(id="past-attempts")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -105,11 +115,31 @@ class SolveScreen(VimMotion, Screen[None]):
         meta.update(f"{p.pattern or '—'}  ·  {', '.join(p.tags)}")
         meta.remove_class("visible")
         self.query_one("#problem-url", Static).update(self._where_line(p))
+        self._load_past_attempts(p.slug)
 
         panel = self.query_one("#hint-panel", Static)
         panel.remove_class("visible")
         panel.update("")
         self._tick()
+
+    def _load_past_attempts(self, slug: str) -> None:
+        """Your own record on this problem: when, how long, how it ended.
+
+        The summary line stays up; the full table is folded away behind `r` and
+        refolded for every problem, like the categories. Neither shows the code
+        or the note — see `stats.PastAttempt`.
+        """
+        self._past_attempts = stats.problem_history(
+            self.app.conn,  # type: ignore[attr-defined]
+            slug,
+            weights=self.app.weights,  # type: ignore[attr-defined]
+        )
+        self.query_one("#last-attempt", Static).update(
+            last_attempt_line(self._past_attempts)
+        )
+        panel = self.query_one("#past-attempts", Static)
+        panel.remove_class("visible")
+        panel.update(past_attempts_panel(self._past_attempts))
 
     def _tick(self) -> None:
         attempt = self.engine.attempt
@@ -230,6 +260,23 @@ class SolveScreen(VimMotion, Screen[None]):
         meta = self.query_one("#problem-meta", Static)
         meta.toggle_class("visible")
         self._toast("categories shown" if meta.has_class("visible") else "categories hidden")
+
+    def action_toggle_past(self) -> None:
+        """Show or hide every past attempt at this problem.
+
+        Free to look at, like the categories and for a stronger reason: this is
+        your own record, and none of it says anything about the answer.
+        """
+        panel = self.query_one("#past-attempts", Static)
+        if not self._past_attempts:
+            self._toast("first time on this one — no past attempts yet")
+            return
+        panel.toggle_class("visible")
+        if panel.has_class("visible"):
+            self._toast("past attempts — time and result, no code or notes")
+            panel.scroll_visible(animate=False)
+        else:
+            self._toast("past attempts hidden")
 
     def action_submit(self) -> None:
         attempt = self.engine.attempt

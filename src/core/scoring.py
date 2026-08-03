@@ -70,6 +70,12 @@ VERDICT_HELP_TIER = {
     "solved_after_implementation": 4,
 }
 
+# The inverse of `VERDICT_HELP_TIER`, which is a bijection onto 0..4: the rung
+# of the ladder a given effective help tier lands on. Used to report an attempt
+# in the terms it earned rather than the ones it claimed -- a `solved_unaided`
+# with a tier-2 hint revealed reads as the tier-2 rung.
+HELP_TIER_VERDICT = {tier: verdict for verdict, tier in VERDICT_HELP_TIER.items()}
+
 VERDICT_LABELS = {
     "solved_unaided": "SOLVED, NO HELP",
     "solved_with_hints": "SOLVED WITH HINTS",

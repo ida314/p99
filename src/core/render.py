@@ -14,7 +14,7 @@ from rich.console import Group, RenderableType
 from rich.text import Text
 
 from .scoring import Score, fmt_duration, ordinal
-from .stats import Distribution, Run, RunStanding
+from .stats import Distribution, PastAttempt, Run, RunStanding
 
 WIDTH = 62
 
@@ -110,6 +110,84 @@ CONFIDENCE_LABELS = {
     3: '"good"',
     4: '"solid"',
 }
+
+
+# --- what happened last time -----------------------------------------------
+#
+# Both of these render `stats.PastAttempt`, which carries no code path, no note
+# path and no note text — see its docstring. Nothing here may start showing
+# them: the whole point is that you can check your record on a problem without
+# being handed your own old answer to it.
+
+
+def _times(n: int) -> str:
+    return {1: "once", 2: "twice"}.get(n, f"{n} times")
+
+
+def last_attempt_line(past: Sequence[PastAttempt]) -> Text:
+    """One line: have I seen this, when, and how did it go.
+
+    Always rendered, including the "no" — "first time on this one" is the same
+    question answered, and a line that appears and disappears would move the
+    clock underneath it every problem.
+    """
+    line = Text("  ")
+    if not past:
+        line.append("first time on this one", style="bright_black")
+        return line
+
+    last = past[0]
+    line.append(f"seen {_times(len(past))} before", style="bright_black")
+    line.append("  ·  ", style="bright_black")
+    line.append(last.ago)
+    line.append("  ·  ", style="bright_black")
+    line.append(last.result, style=VERDICT_LABEL_STYLE.get(last.style_label, ""))
+    line.append(f" in {fmt_duration(last.active_seconds)}", style="bright_black")
+    return line
+
+
+def past_attempts_panel(past: Sequence[PastAttempt]) -> RenderableType:
+    """Every past attempt at the problem on screen, most recent first."""
+    if not past:
+        return empty_state("First time on this one — no past attempts to show.")
+
+    head = Text("  ")
+    for label, w in (("when", 10), ("result", 29), ("time", 8)):
+        head.append(f"{label:<{w}}", style="bright_black")
+    head.append(f"{'submits':>7}  {'score':>5}", style="bright_black")
+    rows: list[RenderableType] = [head, rule()]
+
+    for attempt in past:
+        line = Text("  ")
+        line.append(f"{attempt.ago:<10}")
+        line.append(
+            f"{attempt.result:<29}", style=VERDICT_LABEL_STYLE.get(attempt.style_label, "")
+        )
+        line.append(f"{fmt_duration(attempt.active_seconds):<8}")
+        submits = str(attempt.submissions) if attempt.submissions else "—"
+        line.append(
+            f"{submits:>7}  ", style="red" if attempt.submissions else "bright_black"
+        )
+        line.append(
+            f"{attempt.score:>5}", style="cyan" if attempt.score > 0 else "bright_black"
+        )
+        # Everything that has no column of its own, in the margin past the
+        # score: the two facts that are worth reading and never worth a header.
+        notes = ["review"] if attempt.is_review else []
+        if attempt.self_confidence:
+            notes.append(CONFIDENCE_LABELS.get(attempt.self_confidence, ""))
+        if notes:
+            line.append(f"  {' · '.join(notes)}", style="bright_black")
+        rows.append(line)
+
+    rows.append(rule())
+    rows.append(
+        Text(
+            "  time and result only — the code and the note are in your history",
+            style="bright_black italic",
+        )
+    )
+    return Group(*rows)
 
 
 # --- death screen (spec §5) ------------------------------------------------

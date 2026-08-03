@@ -40,6 +40,7 @@ def load_attempts(
     tag: str | None = None,
     pattern: str | None = None,
     difficulty: str | None = None,
+    slug: str | None = None,
     session_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Attempts joined with their catalog metadata, newest last."""
@@ -60,6 +61,9 @@ def load_attempts(
     if difficulty:
         where.append("p.difficulty = ?")
         params.append(difficulty)
+    if slug:
+        where.append("a.slug = ?")
+        params.append(slug)
     if session_id is not None:
         where.append("a.session_id = ?")
         params.append(session_id)
@@ -330,6 +334,30 @@ def to_local(iso_ts: str) -> datetime:
     return dt.astimezone()
 
 
+def fmt_ago(iso_ts: str, *, now: datetime | None = None) -> str:
+    """How long ago, in the coarsest unit that still says something.
+
+    "12d ago" is the answer to "when did I last see this"; the exact timestamp
+    is not, and a date makes you do the subtraction yourself.
+    """
+    seconds = ((now or datetime.now(timezone.utc)) - to_local(iso_ts)).total_seconds()
+    minutes = seconds / 60
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{int(minutes)}m ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)}h ago"
+    days = hours / 24
+    if days < 60:
+        return f"{int(days)}d ago"
+    months = days / 30.44
+    if months < 24:
+        return f"{int(months)}mo ago"
+    return f"{int(days / 365.25)}y ago"
+
+
 def load_runs(
     conn: sqlite3.Connection,
     *,
@@ -408,6 +436,103 @@ def standing(runs: Sequence[Run], session_id: int) -> RunStanding | None:
         best_score=best.score,
         best_run_number=numbered[best.session_id],
     )
+
+
+# --- one problem's own history ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class PastAttempt:
+    """A finished attempt at one problem, as the solve screen plays it back.
+
+    When it was, how long it took, how it ended, what it scored — and nothing
+    else. There is deliberately no `code_path`, no `note_path` and no note
+    text on this record: reopening a problem you have seen before is supposed
+    to still be the problem, and your own old solution is the one spoiler this
+    app could hand you for free. `history` shows those, on purpose, after the
+    fact; this is the read model for the screen you sit on while solving.
+    """
+
+    ended_at: str
+    active_seconds: int
+    verdict: str | None
+    max_hint_tier: int
+    submissions: int
+    self_confidence: int | None
+    is_review: bool
+    score: int
+
+    @property
+    def ago(self) -> str:
+        return fmt_ago(self.ended_at)
+
+    @property
+    def label(self) -> str:
+        """The verdict, in the words it was recorded in — legacy ones included."""
+        return scoring.VERDICT_LABELS.get(self.verdict or "", "UNRESOLVED")
+
+    @property
+    def _understated(self) -> bool:
+        """Did the hints go further than the verdict admits to?"""
+        return self.max_hint_tier > scoring.VERDICT_HELP_TIER.get(self.verdict or "", 0)
+
+    @property
+    def result(self) -> str:
+        """The label, plus the hint tier when the hints went past what it admits.
+
+        Same rule as the stat line's help label (`scoring._help_label`): a
+        tier-2 hint followed by a `solved_unaided` verdict is not an unaided
+        solve, and the line that reports it back to you should not say it was.
+        """
+        if self._understated:
+            return f"{self.label} (tier {self.max_hint_tier})"
+        return self.label
+
+    @property
+    def style_label(self) -> str:
+        """The rung this attempt actually landed on, for `VERDICT_LABEL_STYLE`.
+
+        The ladder is colour-coded and fades as the help increases, so an
+        attempt that revealed hints it never confessed to has to fade with
+        them — otherwise "SOLVED, NO HELP (tier 2)" prints in the green
+        reserved for the solve you want, which is the one thing this line is
+        supposed to make you notice.
+        """
+        if self._understated and self.verdict in scoring.CLEAN_VERDICTS:
+            rung = scoring.HELP_TIER_VERDICT[min(self.max_hint_tier, 4)]
+            return scoring.VERDICT_LABELS[rung]
+        return self.label
+
+
+def problem_history(
+    conn: sqlite3.Connection,
+    slug: str,
+    *,
+    weights: Weights | None = None,
+    limit: int | None = None,
+) -> list[PastAttempt]:
+    """Every finished attempt at one problem, most recent first.
+
+    The attempt currently on screen is never in here: it has no `ended_at`
+    yet, and `load_attempts` only returns finished ones.
+    """
+    w = weights or scoring.load_weights()
+    rows = list(reversed(load_attempts(conn, slug=slug)))
+    if limit:
+        rows = rows[:limit]
+    return [
+        PastAttempt(
+            ended_at=row["ended_at"],
+            active_seconds=int(row.get("active_seconds") or 0),
+            verdict=row.get("verdict"),
+            max_hint_tier=int(row.get("max_hint_tier") or 0),
+            submissions=int(row.get("submissions") or 0),
+            self_confidence=row.get("self_confidence"),
+            is_review=bool(row.get("is_review")),
+            score=scoring.score_attempt(row, row["difficulty"], w).total,
+        )
+        for row in rows
+    ]
 
 
 @dataclass(frozen=True)

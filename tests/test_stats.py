@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
 from core import events, stats
@@ -153,3 +154,61 @@ def test_distributions_by_pattern(conn):
     labels = {d.label for d in stats.distributions_by(conn, "pattern", days=60)}
     assert "ARRAYS HASHING" in labels
     assert "SLIDING WINDOW" in labels
+
+
+def test_fmt_ago_uses_the_coarsest_unit_that_still_says_something():
+    now = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
+
+    def ago(**kwargs):
+        return stats.fmt_ago((now - timedelta(**kwargs)).isoformat(), now=now)
+
+    assert ago(seconds=20) == "just now"
+    assert ago(minutes=40) == "40m ago"
+    assert ago(hours=5) == "5h ago"
+    assert ago(days=12) == "12d ago"
+    assert ago(days=59) == "59d ago"
+    assert ago(days=90) == "2mo ago"
+    assert ago(days=800) == "2y ago"
+
+
+def test_problem_history_is_newest_first_and_only_this_problem(conn):
+    s = _session(conn)
+    _log_attempt(conn, s, "two-sum", 1800, verdict="gave_up", days_ago=90)
+    _log_attempt(conn, s, "two-sum", 552, verdict="solved_with_hints", tier=1, days_ago=12)
+    _log_attempt(conn, s, "3sum", 900, days_ago=1)
+    # Still on screen: started, never finished. It is not part of your record.
+    events.append(
+        conn,
+        events.PROBLEM_STARTED,
+        {"session_uuid": s, "attempt_uuid": events.new_uuid(), "slug": "two-sum"},
+    )
+
+    past = stats.problem_history(conn, "two-sum")
+    assert len(past) == 2
+    assert past[0].ago == "12d ago"
+    assert past[0].result == "SOLVED WITH HINTS"
+    assert past[0].active_seconds == 552
+    assert past[0].score > 0
+    assert past[1].result == "GAVE UP"
+    assert past[1].score == 0
+
+    # The one thing this read model must never carry: the answer.
+    assert not any(f.name.endswith("_path") for f in fields(stats.PastAttempt))
+
+
+def test_a_past_attempt_reports_the_help_it_took_not_the_help_it_claimed(conn):
+    """Hints revealed outrank the verdict, and the row fades to match."""
+    s = _session(conn)
+    _log_attempt(conn, s, "two-sum", 400, verdict="solved_unaided", tier=2)
+
+    past = stats.problem_history(conn, "two-sum")[0]
+    assert past.result == "SOLVED, NO HELP (tier 2)"
+    assert past.style_label == "SOLVED AFTER DESCRIPTION"
+
+
+def test_problem_history_limit_keeps_the_most_recent(conn):
+    s = _session(conn)
+    for days in (60, 30, 2):
+        _log_attempt(conn, s, "two-sum", 600, days_ago=days)
+    past = stats.problem_history(conn, "two-sum", limit=2)
+    assert [p.ago for p in past] == ["2d ago", "30d ago"]

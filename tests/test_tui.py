@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from core import branding, db, paths, stats
 from core.tui.app import CoreApp
@@ -971,3 +971,131 @@ async def test_the_finish_buttons_stay_on_screen_on_a_short_terminal(isolated_ho
         for button in app.screen.query("Button"):
             assert button.region.bottom <= 24, f"{button.id} is below the fold"
             assert button.region.right <= box.region.right, f"{button.id} overflows"
+
+
+PAST_ATTEMPT_SLUG = "two-sum"
+
+
+def _plain(widget: Static) -> str:
+    """What a `Static` is actually showing, flattened to plain text."""
+    visual = widget.visual
+    if hasattr(visual, "plain"):  # a rich Text became a Content
+        return visual.plain
+    from rich.console import Console
+
+    console = Console(width=120, no_color=True)
+    with console.capture() as capture:
+        console.print(visual._renderable)
+    return capture.get()
+
+
+def _seed_a_past_attempt(conn, *, days_ago: int) -> str:
+    """A finished attempt at `PAST_ATTEMPT_SLUG`, with its code archived on disk."""
+    from datetime import datetime, timedelta, timezone
+
+    from core import events
+
+    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    session_uuid, attempt_uuid = events.new_uuid(), events.new_uuid()
+    code_path = "/somewhere/only-you-know/two-sum.py"
+    events.append(
+        conn, events.SESSION_STARTED, {"session_uuid": session_uuid, "planned_n": 1}, ts=ts
+    )
+    events.append(
+        conn,
+        events.PROBLEM_STARTED,
+        {"session_uuid": session_uuid, "attempt_uuid": attempt_uuid, "slug": PAST_ATTEMPT_SLUG},
+        ts=ts,
+    )
+    events.append(conn, events.HINT_REVEALED, {"attempt_uuid": attempt_uuid, "tier": 1}, ts=ts)
+    events.append(
+        conn,
+        events.PROBLEM_FINISHED,
+        {
+            "attempt_uuid": attempt_uuid,
+            "verdict": "solved_with_hints",
+            "active_seconds": 552,
+            "wall_seconds": 552,
+            "self_confidence": 3,
+        },
+        ts=ts,
+    )
+    events.append(
+        conn,
+        events.CODE_ARCHIVED,
+        {"attempt_uuid": attempt_uuid, "slug": PAST_ATTEMPT_SLUG, "code_path": code_path},
+        ts=ts,
+    )
+    events.append(
+        conn, events.SESSION_ENDED, {"session_uuid": session_uuid, "outcome": "completed"}, ts=ts
+    )
+    return code_path
+
+
+async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
+    """Your record on the problem, on the problem screen — never your old answer."""
+    async with app.run_test() as pilot:
+        code_path = _seed_a_past_attempt(app.conn, days_ago=12)
+        app.start_run([PAST_ATTEMPT_SLUG])
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SolveScreen)
+        assert len(screen._past_attempts) == 1
+        assert screen._past_attempts[0].ago == "12d ago"
+
+        # The summary line is always up; the table is folded away until r.
+        panel = screen.query_one("#past-attempts", Static)
+        assert not panel.has_class("visible")
+        summary = _plain(screen.query_one("#last-attempt", Static))
+        assert "seen once before" in summary
+        assert "12d ago" in summary
+        assert "SOLVED WITH HINTS" in summary
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert panel.has_class("visible")
+        shown = _plain(panel)
+        assert "SOLVED WITH HINTS" in shown
+        assert "09:12" in shown  # 552 seconds, the time it took
+        assert '"good"' in shown  # how well you thought you knew it
+        # The whole point of the panel: it can never hand you the answer back.
+        assert code_path not in shown
+        assert "only-you-know" not in shown
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert not panel.has_class("visible")
+
+
+async def test_a_problem_you_have_never_seen_says_so(app):
+    async with app.run_test() as pilot:
+        app.start_run([PAST_ATTEMPT_SLUG])
+        await pilot.pause()
+        screen = app.screen
+        assert screen._past_attempts == []
+        assert "first time on this one" in _plain(screen.query_one("#last-attempt", Static))
+
+        # r has nothing to open, and must not leave an empty panel behind.
+        await pilot.press("r")
+        await pilot.pause()
+        assert not screen.query_one("#past-attempts", Static).has_class("visible")
+
+
+async def test_the_past_attempts_panel_is_refolded_for_the_next_problem(app):
+    async with app.run_test() as pilot:
+        _seed_a_past_attempt(app.conn, days_ago=3)
+        app.start_run([PAST_ATTEMPT_SLUG, "3sum"])
+        await pilot.pause()
+        screen = app.screen
+        await pilot.press("r")
+        await pilot.pause()
+        assert screen.query_one("#past-attempts", Static).has_class("visible")
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SolveScreen)
+        assert app.screen._past_attempts == []
+        assert not app.screen.query_one("#past-attempts", Static).has_class("visible")

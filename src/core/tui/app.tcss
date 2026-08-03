@@ -132,7 +132,15 @@ Screen {
 
 #problem-url {
     color: $accent;
-    margin: 0 2 1 2;
+    margin: 0 2;
+}
+
+/* "seen twice before · 12d ago · SOLVED WITH HINTS in 18:42" — always on, so
+   that opening a problem always answers "have I done this before". r opens
+   the rest of the record underneath the hint panel, where it moves nothing. */
+#last-attempt {
+    height: auto;
+    margin: 0 0 1 0;
 }
 
 #timer {
@@ -163,6 +171,18 @@ Screen {
 }
 
 #hint-panel.visible {
+    display: block;
+}
+
+/* Left margin 0: these lines carry render.py's own two-space gutter, so they
+   line up with the widgets above without borrowing a column from the table. */
+#past-attempts {
+    margin: 1 0 1 0;
+    height: auto;
+    display: none;
+}
+
+#past-attempts.visible {
     display: block;
 }
 

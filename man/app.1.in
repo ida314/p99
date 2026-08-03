@@ -211,6 +211,17 @@ Open the problem in a browser.
 .B p
 Pause and resume. Paused time is recorded, not hidden.
 .TP
+.B c
+Show and hide the problem's pattern and tags. Free, and nothing is logged —
+the point is that you have to decide to look.
+.TP
+.B r
+Show and hide your own past attempts at this problem: how long ago each one
+was, how long it took, how it ended and what it scored. Never the archived
+code or the reflection note — those are on the history screen, where they
+cannot spoil the problem in front of you. The line above the clock always
+carries the most recent one.
+.TP
 .B ?
 Reveal the next hint tier. Hints are monotonic and cannot be taken back; the
 last tier is the full solution and ends the attempt.
