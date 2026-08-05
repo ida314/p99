@@ -4,7 +4,7 @@ from .history import HistoryScreen
 from .home import HomeScreen
 from .queue import QueueScreen
 from .settings import SettingsScreen
-from .setup import SetupScreen
+from .setup import RunPlan, SetupScreen
 from .solve import SolveScreen
 from .statsscreen import StatsScreen
 from .summary import SummaryScreen
@@ -16,6 +16,7 @@ __all__ = [
     "HistoryScreen",
     "HomeScreen",
     "QueueScreen",
+    "RunPlan",
     "SettingsScreen",
     "SetupScreen",
     "SolveScreen",

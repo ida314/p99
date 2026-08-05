@@ -6,6 +6,7 @@
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>.<ext>
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-wrong<n>.<ext>
     ~/.local/share/<slug>/notes/<problem-slug>/<attempt_id>.md
+    ~/.local/share/<slug>/audio/<problem-slug>/<attempt_id>.opus
     ~/.local/share/<slug>/cache/<problem-slug>.html
 
 `<slug>` is `branding.SLUG`; nothing here spells the name out. Everything is
@@ -74,6 +75,16 @@ def notes_dir() -> Path:
     return data_dir() / "notes"
 
 
+def audio_dir() -> Path:
+    """Speech-mode recordings, one file per attempt.
+
+    Beside `code` and `notes` rather than under `cache`, because unlike the
+    cached problem statements nothing can regenerate these: they are a recording
+    of a half-hour that happened once.
+    """
+    return data_dir() / "audio"
+
+
 def cache_dir() -> Path:
     """Offline problem statements. Derived, disposable, safe to delete.
 
@@ -126,6 +137,20 @@ def note_path(slug: str, attempt_id: int) -> Path:
     return notes_dir() / slug / f"{attempt_id}.md"
 
 
+def audio_path(slug: str, attempt_id: int) -> Path:
+    return audio_dir() / slug / f"{attempt_id}.opus"
+
+
+def audio_segments(slug: str, attempt_id: int) -> Path:
+    """Where the pieces of an in-progress recording accumulate.
+
+    Hidden, and beside the file they will become rather than in `/tmp`: a crash
+    mid-attempt leaves the segments recoverable by hand, next to the problem
+    they belong to, instead of in a directory the next boot wipes.
+    """
+    return audio_dir() / slug / f".{attempt_id}.part"
+
+
 def cache_path(slug: str) -> Path:
     return cache_dir() / f"{slug}.html"
 
@@ -135,5 +160,5 @@ def cache_manifest() -> Path:
 
 
 def ensure_dirs() -> None:
-    for d in (config_dir(), data_dir(), code_dir(), notes_dir(), cache_dir()):
+    for d in (config_dir(), data_dir(), code_dir(), notes_dir(), audio_dir(), cache_dir()):
         d.mkdir(parents=True, exist_ok=True)

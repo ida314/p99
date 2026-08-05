@@ -21,6 +21,17 @@ are projections rebuilt from that log, and scores are computed when you read
 them rather than stored, so changing the scoring weights re-scores all of your
 history at once. Nothing is ever overwritten.
 .PP
+Speech mode, off by default, additionally records what you say while each
+problem runs — one Opus file per attempt, pausing exactly when the clock does.
+It needs
+.B ffmpeg
+on the path and nothing else; without one, a run says so and carries on
+unrecorded. Turn it on in the settings screen, or with
+.B ^a
+on the setup screen for a single run. The active problem screen shows
+.B "\(bu REC"
+for as long as the microphone is open.
+.PP
 With no command,
 .B @COMMAND@
 starts the terminal interface and lands on the home screen.
@@ -200,6 +211,8 @@ leaves the screen.
 picks a problem,
 .B ^r
 rolls a fresh random set,
+.B ^a
+turns speech mode on or off for this run only, and
 .B ^s
 starts the run.
 .PP
@@ -233,7 +246,11 @@ rejected. Skippable with
 like every capture step, and switchable off in the settings screen.
 .TP
 .B f
-Finish: verdict, self-confidence, then the two editor steps.
+Finish: how much help you needed, how well it would stick cold in a month, the
+time complexity you claim, whether it was the optimal algorithm, and the
+LeetCode percentiles if you have them — then the two editor steps. The last two
+answers are recorded and shown back afterwards; neither is scored and neither
+moves a review.
 .TP
 .B x
 Give up. Scores zero, and is still recorded.
@@ -271,9 +288,13 @@ Archived failed submits, beside the solution they became.
 .TP
 .I ~/.local/share/@SLUG@/notes/<problem>/<attempt-id>.md
 Reflection notes.
+.TP
+.I ~/.local/share/@SLUG@/audio/<problem>/<attempt-id>.opus
+Speech-mode recordings, one per attempt. Only present when speech mode was on
+for the run.
 .PP
-Solutions and notes are kept as ordinary files rather than in the database so
-they can be searched, diffed and opened with the usual tools.
+Solutions, notes and recordings are kept as ordinary files rather than in the
+database so they can be searched, diffed and opened with the usual tools.
 .SH ENVIRONMENT
 .TP
 .B @ENVPFX@_HOME
@@ -291,6 +312,11 @@ and
 .TP
 .B @ENVPFX@_BROWSER
 Command used to open a problem.
+.TP
+.B @ENVPFX@_FFMPEG
+The recorder spawned by speech mode. Defaults to
+.B ffmpeg
+on the path; without one, runs simply go unrecorded.
 .TP
 .B @ENVPFX@_LEETCODE_SESSION
 Your

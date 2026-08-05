@@ -16,7 +16,7 @@ from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ... import events, scoring, stats
-from ...render import death_screen, empty_state, history_table, stat_line
+from ...render import approach_label, death_screen, empty_state, history_table, stat_line
 from ...scoring import fmt_duration
 from ..vim import MOTIONS, VimMotion
 from .finish import ConfirmModal
@@ -105,6 +105,7 @@ class HistoryScreen(VimMotion, Screen[None]):
                     attempt["difficulty"],
                     score,
                     attempt.get("self_confidence"),
+                    approach_label(attempt),
                 )
             )
             blocks.append(self._artifacts(attempt))
@@ -118,10 +119,15 @@ class HistoryScreen(VimMotion, Screen[None]):
 
     @staticmethod
     def _artifacts(attempt: dict) -> Text:
-        """Where the code and the reflection note for this attempt live on disk."""
+        """Where this attempt's code, note and recording live on disk."""
         line = Text("  ")
-        for label, key in (("code", "code_path"), ("note", "note_path")):
+        keys = (("code", "code_path"), ("note", "note_path"), ("audio", "audio_path"))
+        for label, key in keys:
             path = attempt.get(key)
+            # The recording only exists when speech mode was on, and a run of
+            # em-dashes for a feature you don't use is noise on every line.
+            if key == "audio_path" and not path:
+                continue
             line.append(f"{label} ", style="bright_black")
             line.append(f"{path if path else '—'}   ", style="" if path else "bright_black")
         paused = int(attempt.get("paused_seconds") or 0)

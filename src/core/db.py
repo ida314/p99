@@ -18,9 +18,10 @@ from pathlib import Path
 from . import paths
 
 # 2: `fsrs_cards` gained `step` and lost nothing; `tag_mastery` was dropped.
+# 3: `attempts` gained `optimality` and `audio_path`.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -85,8 +86,14 @@ CREATE TABLE IF NOT EXISTS attempts (
   code_path          TEXT,                -- archived source
   language           TEXT,
   note_path          TEXT,                -- reflection note, nullable
-  claimed_complexity TEXT,                -- LLM guess, user-confirmable
+  audio_path         TEXT,                -- speech-mode recording, nullable
+  -- what you said your solution costs, typed at the finish prompt. Free text:
+  -- O(n+m), O(nk) and "amortized O(1)" are the answers worth having, and a
+  -- format that rejects them would only be recording the easy cases.
+  claimed_complexity TEXT,
+  -- reserved for whatever eventually checks the claim against the code.
   confirmed_complexity TEXT,
+  optimality         TEXT,                -- optimal|suboptimal|unsure
   is_review          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS attempts_session_idx ON attempts(session_id);
@@ -189,8 +196,11 @@ PROJECTION_TABLES = (
 # story, and it is this short only because projections are disposable: drop
 # them, recreate them from the DDL, and the next replay refills them from the
 # log. Nothing a user typed is ever in one of these tables.
+# Order within a version matters: `migrate` drops with foreign keys on, so a
+# child table has to go before the parent it references.
 SHAPE_CHANGED_IN = {
     2: ("fsrs_cards", "tag_mastery"),
+    3: ("submissions", "attempts"),
 }
 
 

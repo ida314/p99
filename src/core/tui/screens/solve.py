@@ -16,7 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import branding, cache, capture, stats
+from ... import audio, branding, cache, capture, stats
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
@@ -54,6 +54,9 @@ class SolveScreen(VimMotion, Screen[None]):
         # Read once per problem rather than on every keypress: it is a database
         # query, and nothing can add to it while the problem is on screen.
         self._past_attempts: list[stats.PastAttempt] = []
+        # Speech mode's recorder for the problem on screen. None whenever the
+        # run isn't recording, which is the only check any caller has to make.
+        self._recorder: audio.Recorder | None = None
 
     def compose(self) -> ComposeResult:
         # Scrollable because the hint panel grows: on a short terminal a tier-3
@@ -77,6 +80,24 @@ class SolveScreen(VimMotion, Screen[None]):
         self._next_problem()
         self.set_interval(0.5, self._tick)
 
+    def on_unmount(self) -> None:
+        """A hard quit must never leave ffmpeg holding the microphone.
+
+        Keeps what was recorded and logs it if it still can — the run this
+        interrupted is sealed as an abandonment by `CoreApp.on_unmount`, and an
+        abandoned attempt is exactly the one whose recording is worth having.
+        Everything here is best-effort: the screen is already going away.
+        """
+        recorder, self._recorder = self._recorder, None
+        if recorder is None:
+            return
+        try:
+            path = recorder.stop()
+            if path is not None:
+                self.engine.record_audio(str(path))
+        except Exception:
+            pass
+
     # --- problem lifecycle ------------------------------------------------
 
     def _next_problem(self) -> None:
@@ -90,6 +111,7 @@ class SolveScreen(VimMotion, Screen[None]):
         self.engine.start_problem(remaining[0])
         self._render_problem()
         self._toast("solve it in the browser — o opens it")
+        self._start_recording()
 
     def _show_summary(self) -> None:
         self.app.show_summary()  # type: ignore[attr-defined]
@@ -141,6 +163,66 @@ class SolveScreen(VimMotion, Screen[None]):
         panel.remove_class("visible")
         panel.update(past_attempts_panel(self._past_attempts))
 
+    # --- speech mode ------------------------------------------------------
+    #
+    # The recorder tracks the clock exactly: every place the attempt pauses, it
+    # pauses, and it stops the moment the attempt does. What it must never do is
+    # cost you an attempt — a missing ffmpeg, a dead microphone or a failed join
+    # is a yellow toast and nothing more.
+
+    def _start_recording(self) -> None:
+        attempt = self.engine.attempt
+        self._recorder = None
+        if attempt is None or not self.app.speech_mode:  # type: ignore[attr-defined]
+            return
+        if not audio.available():
+            self._toast("speech mode is on but there's no ffmpeg — not recording", "yellow")
+            return
+        cfg = self.app.config.audio  # type: ignore[attr-defined]
+        recorder = audio.Recorder(
+            attempt.problem.slug,
+            attempt.id,
+            bitrate_kbps=cfg.bitrate_kbps,
+            input_format=cfg.input_format,
+            device=cfg.device,
+        )
+        if not recorder.start():
+            self._toast("couldn't open the microphone — not recording", "yellow")
+            return
+        self._recorder = recorder
+        self._tick()
+
+    def _pause_recording(self, paused: bool) -> None:
+        if self._recorder is None:
+            return
+        if paused:
+            self._recorder.pause()
+        else:
+            self._recorder.resume()
+
+    def _stop_recording(self, keep: bool = True) -> None:
+        """Finalize, and hang the file on the attempt while it is still current.
+
+        Must run before `engine.advance()`: `record_audio` addresses the attempt
+        the engine is holding, and after an advance there isn't one.
+        """
+        recorder, self._recorder = self._recorder, None
+        if recorder is None:
+            return
+        if not keep:
+            recorder.discard()
+            return
+        path = recorder.stop()
+        if path is None:
+            self._toast("the recording couldn't be saved — everything else is logged", "yellow")
+            return
+        try:
+            self.engine.record_audio(str(path))
+        except Exception:
+            # Same rule as the editor handoff: a bookkeeping failure never costs
+            # the attempt, and the file is on disk either way.
+            self._toast("recorded, but couldn't log where — check the audio directory", "yellow")
+
     def _tick(self) -> None:
         attempt = self.engine.attempt
         if attempt is None:
@@ -159,6 +241,14 @@ class SolveScreen(VimMotion, Screen[None]):
             clock.append("   STOPPED", style="bold bright_black")
         elif attempt.paused:
             clock.append("   PAUSED", style="bold yellow")
+        # A microphone that can be on without the screen saying so is not a
+        # thing to ship, so this sits on the clock line rather than anywhere it
+        # could scroll away.
+        if self._recorder is not None:
+            if self._recorder.recording:
+                clock.append("   ● REC", style="bold red")
+            else:
+                clock.append("   ● REC PAUSED", style="bold yellow")
         self.query_one("#timer", Static).update(clock)
 
         state = Text("  ")
@@ -222,6 +312,7 @@ class SolveScreen(VimMotion, Screen[None]):
         if self.engine.attempt is None:
             return
         paused = self.engine.toggle_pause()
+        self._pause_recording(paused)
         self._toast("paused — timer stopped, the pause is logged" if paused else "resumed")
         self._tick()
 
@@ -242,8 +333,11 @@ class SolveScreen(VimMotion, Screen[None]):
         panel.update(header)
         panel.add_class("visible")
         if tier == MAX_HINT_TIER:
-            # The engine has already recorded this as gave_up (spec §13). Read
-            # the solution properly, then f moves on to the capture step.
+            # The engine has already recorded this as gave_up (spec §13), so the
+            # attempt's clock is stopped and the recorder's has to be too —
+            # reading a solution out loud is not part of the solve.
+            self._stop_recording()
+            # Read the solution properly, then f moves on to the capture step.
             self._toast(
                 "recorded as gave_up — read it properly, then f to write it up",
                 "yellow",
@@ -343,6 +437,7 @@ class SolveScreen(VimMotion, Screen[None]):
             was_paused = attempt.paused
             if not was_paused:
                 self.engine.pause()
+                self._pause_recording(True)
             try:
                 with self.app.editor_context():  # type: ignore[attr-defined]
                     result = capture.capture_submission(
@@ -361,6 +456,7 @@ class SolveScreen(VimMotion, Screen[None]):
             finally:
                 if not was_paused:
                     self.engine.resume()
+                    self._pause_recording(False)
                 self._tick()
 
             self._toast(
@@ -383,6 +479,10 @@ class SolveScreen(VimMotion, Screen[None]):
             # Freeze the clock now, not when the modal closes: filling in the
             # verdict is not solve time, and it is not a pause either.
             timing = attempt.timing()
+            # Paused, not stopped. `esc` hands you back a problem that is still
+            # running, and a stopped recorder could not have picked the rest of
+            # it up. Stopping happens once the modal has committed to something.
+            self._pause_recording(True)
             result = await self.app.push_screen_wait(
                 FinishModal(
                     attempt.problem.title,
@@ -392,7 +492,9 @@ class SolveScreen(VimMotion, Screen[None]):
                 )
             )
             if result is None:
+                self._pause_recording(False)
                 self._toast("back to the problem")
+                self._tick()
                 return
 
             if result.get("discard"):
@@ -407,7 +509,10 @@ class SolveScreen(VimMotion, Screen[None]):
                 lc_runtime_pct=result.get("lc_runtime_pct"),
                 lc_memory_pct=result.get("lc_memory_pct"),
                 language=cfg.capture.language,
+                claimed_complexity=result.get("claimed_complexity"),
+                optimality=result.get("optimality"),
             )
+            self._stop_recording()
             await self._capture_flow()
         finally:
             self._busy = False
@@ -429,8 +534,15 @@ class SolveScreen(VimMotion, Screen[None]):
             )
         )
         if not ok:
+            self._pause_recording(False)
             self._toast("back to the problem")
+            self._tick()
             return
+        # Thrown away, so the recording goes with it. The one place this differs
+        # from the archived code and notes a discard deliberately leaves alone:
+        # those are your writing, and this is a microphone left running over the
+        # wrong problem that nothing would ever point at again.
+        self._stop_recording(keep=False)
         self.engine.discard()
         self.engine.advance()
         # No toast: `_next_problem` writes its own, and the problem counter
@@ -447,6 +559,7 @@ class SolveScreen(VimMotion, Screen[None]):
         self._busy = True
         try:
             timing = attempt.timing()
+            self._pause_recording(True)
             ok = await self.app.push_screen_wait(
                 ConfirmModal(
                     "Give up on this one?",
@@ -457,9 +570,12 @@ class SolveScreen(VimMotion, Screen[None]):
                 )
             )
             if not ok:
+                self._pause_recording(False)
                 self._toast("keep going")
+                self._tick()
                 return
             self.engine.abandon(timing=timing)
+            self._stop_recording()
             await self._capture_flow()
         finally:
             self._busy = False
@@ -520,6 +636,7 @@ class SolveScreen(VimMotion, Screen[None]):
         try:
             if attempt is not None and not attempt.finished:
                 timing = attempt.timing()
+                self._pause_recording(True)
                 ok = await self.app.push_screen_wait(
                     ConfirmModal(
                         "End the run here?",
@@ -529,8 +646,11 @@ class SolveScreen(VimMotion, Screen[None]):
                     )
                 )
                 if not ok:
+                    self._pause_recording(False)
+                    self._tick()
                     return
                 self.engine.abandon(timing=timing)
+                self._stop_recording()
                 # Keep partial code on gave_up (spec §16.2): diffing it against
                 # the eventual solution is one of the most instructive artifacts
                 # this system can produce, and it's nearly free.

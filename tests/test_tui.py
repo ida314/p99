@@ -1129,3 +1129,344 @@ async def test_the_confidence_knob_asks_about_recall_not_about_now(app):
         assert shown == list(CONFIDENCE_OPTIONS)
         # Apostrophes survive the trip; nothing was swallowed as markup.
         assert "I'd nail it" in shown[3]
+
+
+async def test_the_finish_prompt_asks_what_the_solution_cost(app):
+    """The typed complexity and the optimality answer, from keystrokes to row."""
+    from textual.widgets import RadioButton, RadioSet
+
+    from core.tui.screens.finish import OPTIMALITY_OPTIONS
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FinishModal)
+
+        labels = [_plain(s) for s in screen.query(Static)]
+        assert "your time complexity — optional" in labels
+        assert "was it the optimal algorithm?" in labels
+
+        buttons = screen.query_one("#optimality", RadioSet).query(RadioButton)
+        assert [b.label.plain for b in buttons] == [label for _, label in OPTIMALITY_OPTIONS]
+
+        screen.query_one("#complexity", Input).value = "O(n log n)"
+        # `k` off the default highlights "not optimal"; `space` presses it. The
+        # motion moves the cursor and nothing else, which is the point of the
+        # rule in `vim.py` — a key that moves must never also commit.
+        screen.query_one("#optimality", RadioSet).focus()
+        await pilot.press("k")
+        await pilot.press("space")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["claimed_complexity"] == "O(n log n)"
+    assert row["optimality"] == "suboptimal"
+
+
+async def test_optimality_defaults_to_not_sure(app):
+    """The flattering answer is never the default — same rule as the verdict."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["optimality"] == "unsure"
+    # An untouched complexity field stores nothing rather than an empty string.
+    assert row["claimed_complexity"] is None
+
+
+async def test_what_you_claimed_is_not_shown_back_on_the_next_attempt(app):
+    """The past-attempts panel must not hand you the target complexity.
+
+    Its whole contract is that checking your record on a problem cannot spoil
+    it, and "last time: O(n log n) · not optimal" is the answer's shape.
+    """
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        app.screen.query_one("#complexity", Input).value = "O(n log n)"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        # Seal the first run before opening a second one on the same problem.
+        await pilot.press("enter")
+        await pilot.pause()
+
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SolveScreen)
+        assert screen._past_attempts, "the earlier attempt should be on the record"
+
+        await pilot.press("r")
+        await pilot.pause()
+        shown = _plain(screen.query_one("#past-attempts", Static))
+        shown += _plain(screen.query_one("#last-attempt", Static))
+        assert "O(n log n)" not in shown
+        assert "optimal" not in shown
+
+
+async def test_history_shows_the_approach_after_the_fact(app):
+    """What the solve screen withholds, history shows — that is the split."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        app.screen.query_one("#complexity", Input).value = "O(n)"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, HistoryScreen)
+        shown = _plain(app.screen.query_one("#run-detail", Static))
+        assert "approach" in shown
+        assert "O(n)" in shown
+        assert "not sure" in shown
+
+
+async def test_the_radio_cursor_starts_on_the_shown_default(app):
+    """Moving off a default must start from the default you can see.
+
+    Textual parks the navigation cursor on the first button regardless of which
+    one is pressed, and every default on this screen is deliberately not the
+    first: one `j` off "not sure" has to land on "not optimal", not on the
+    second entry of a list you were never looking at.
+    """
+    from textual.widgets import RadioSet
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen
+
+        for radio_id in ("#verdict", "#confidence", "#optimality"):
+            radio = screen.query_one(radio_id, RadioSet)
+            assert radio._selected == radio.pressed_index, radio_id
+
+        screen.query_one("#optimality", RadioSet).focus()
+        await pilot.pause()
+        await pilot.press("j")
+        await pilot.press("space")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    # "not sure" is last, so one step down wraps to the top: "optimal".
+    assert app.conn.execute("SELECT * FROM attempts").fetchone()["optimality"] == "optimal"
+
+
+SPEECH_CONFIG = """
+[session]
+planned_n = 1
+
+[capture]
+enabled = false
+language = "python"
+
+[audio]
+speech_mode = true
+bitrate_kbps = 12
+input_format = "lavfi"
+device = "anullsrc"
+"""
+
+# Same fake as tests/test_audio.py: writes to the last argument, then waits for
+# the polite `q`. Keeps the suite off the microphone.
+FAKE_FFMPEG = """#!/bin/sh
+for arg in "$@"; do dest="$arg"; done
+printf 'segment' > "$dest"
+read -r line
+exit 0
+"""
+
+
+@pytest.fixture
+def speaking_app(isolated_home, monkeypatch):
+    """An app with speech mode on and a fake recorder behind it."""
+    paths.ensure_dirs()
+    paths.config_file().write_text(SPEECH_CONFIG)
+
+    recorder = isolated_home / "fake-ffmpeg"
+    recorder.write_text(FAKE_FFMPEG)
+    recorder.chmod(0o755)
+    monkeypatch.setenv(branding.env("FFMPEG"), str(recorder))
+    return CoreApp(db.open_db())
+
+
+async def test_speech_mode_records_a_problem_and_hangs_it_on_the_attempt(speaking_app):
+    from pathlib import Path
+
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        assert isinstance(app.screen, SetupScreen)
+        assert "speech mode: on" in _plain(app.screen.query_one("#setup-status", Static))
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SolveScreen)
+        assert screen._recorder is not None and screen._recorder.recording
+        # Never recording invisibly: the marker sits on the clock line.
+        assert "● REC" in _plain(screen.query_one("#timer", Static))
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["audio_path"]
+    path = Path(attempt["audio_path"])
+    assert path.exists()
+    assert path == paths.audio_path(attempt["slug"], attempt["id"])
+
+
+async def test_pausing_the_problem_pauses_the_recording(speaking_app):
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert app.engine.attempt.paused
+        assert screen._recorder.recording is False
+        assert "● REC PAUSED" in _plain(screen.query_one("#timer", Static))
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert not app.engine.attempt.paused
+        assert screen._recorder.recording is True
+
+
+async def test_escaping_the_finish_prompt_keeps_recording(speaking_app):
+    """`esc` hands back a live problem, so the microphone has to come back too."""
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FinishModal)
+        # Paused while the prompt is up: what you say filling in a verdict is
+        # not part of the solve.
+        assert screen._recorder.recording is False
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert screen._recorder is not None and screen._recorder.recording
+
+
+async def test_throwing_an_attempt_away_takes_its_recording_with_it(speaking_app):
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        slug = app.engine.attempt.problem.slug
+        attempt_id = app.engine.attempt.id
+        segments = screen._recorder.segment_dir
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
+    assert not paths.audio_path(slug, attempt_id).exists()
+    assert not segments.exists()
+
+
+async def test_speech_mode_off_records_nothing(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        assert "speech mode: off" in _plain(app.screen.query_one("#setup-status", Static))
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.screen._recorder is None
+        assert "REC" not in _plain(app.screen.query_one("#timer", Static))
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert app.conn.execute("SELECT * FROM attempts").fetchone()["audio_path"] is None
+    assert not paths.audio_dir().exists() or not any(paths.audio_dir().iterdir())
+
+
+async def test_the_setup_screen_overrides_the_setting_for_one_run(speaking_app):
+    """`ctrl+a` is a decision about tonight, never a new default."""
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert "speech mode: off" in _plain(app.screen.query_one("#setup-status", Static))
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.speech_mode is False
+        assert app.screen._recorder is None
+
+    # The setting itself is untouched — nothing was written back.
+    from core import config as config_module
+
+    assert config_module.overrides(app.conn) == {}
+    assert app.config.audio.speech_mode is True
+
+
+async def test_a_missing_recorder_never_costs_the_attempt(speaking_app, monkeypatch):
+    app = speaking_app
+    monkeypatch.setenv(branding.env("FFMPEG"), "/nonexistent/ffmpeg")
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert screen._recorder is None
+        assert "ffmpeg" in _plain(screen.query_one("#toast", Static))
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["verdict"] == "solved_unaided"
+    assert attempt["audio_path"] is None

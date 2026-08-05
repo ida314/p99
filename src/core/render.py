@@ -6,7 +6,7 @@ and into a widget by the Textual app, so the two can never drift.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from . import branding
 
@@ -72,7 +72,13 @@ def delta_style(n: int) -> str:
 # --- per-problem stat line (spec §5) ---------------------------------------
 
 
-def stat_line(title: str, difficulty: str, score: Score, confidence: int | None = None) -> RenderableType:
+def stat_line(
+    title: str,
+    difficulty: str,
+    score: Score,
+    confidence: int | None = None,
+    approach: str = "",
+) -> RenderableType:
     head = Text("  ")
     head.append(title, style="bold")
     pad = max(1, WIDTH - 2 - len(title) - len(difficulty) - 2)
@@ -86,6 +92,18 @@ def stat_line(title: str, difficulty: str, score: Score, confidence: int | None 
         line.append(f"{c.detail:<26}", style=VERDICT_LABEL_STYLE.get(c.detail, ""))
         line.append(f"{bar(c.ratio):<14}", style="cyan")
         line.append(f"{signed(c.delta):>6}", style=delta_style(c.delta))
+        rows.append(line)
+
+    # Passed in rather than built by `score_attempt`, like `confidence` above it.
+    # Two reasons: nothing here is scored, and `score_attempt`'s component list
+    # ends with a guard that folds the rounding residual into the last entry --
+    # a zero-delta row appended there would silently absorb it.
+    if approach:
+        line = Text("  ")
+        line.append(f"{'approach':<9}", style="bright_black")
+        line.append(f"{approach:<26}")
+        line.append(f"{'':<14}")
+        line.append(f"{'':>6}")
         rows.append(line)
 
     if confidence:
@@ -113,6 +131,26 @@ CONFIDENCE_LABELS = {
     3: '"I\'d get there"',
     4: '"I\'d nail it"',
 }
+
+# The finish modal's optimality answers, short enough to sit beside a complexity.
+OPTIMALITY_LABELS = {
+    "optimal": "optimal",
+    "suboptimal": "not optimal",
+    "unsure": "not sure",
+}
+
+
+def approach_label(attempt: Mapping[str, Any]) -> str:
+    """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one.
+
+    Empty when you answered neither question, which is why the row it feeds is
+    conditional: a stat line should not grow a blank line to say nothing.
+    """
+    parts = [
+        (attempt.get("claimed_complexity") or "").strip(),
+        OPTIMALITY_LABELS.get(attempt.get("optimality") or "", ""),
+    ]
+    return "  ·  ".join(p for p in parts if p)
 
 
 # --- what happened last time -----------------------------------------------

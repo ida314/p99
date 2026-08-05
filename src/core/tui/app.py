@@ -14,6 +14,7 @@ from .screens import (
     HistoryScreen,
     HomeScreen,
     QueueScreen,
+    RunPlan,
     SettingsScreen,
     SetupScreen,
     SolveScreen,
@@ -38,6 +39,10 @@ class CoreApp(App):
         # Set by the summary screen so a hard quit still seals the run with the
         # end-of-run note the user already wrote.
         self.pending_session_note: str | None = None
+        # Whether the run now in progress is recording. Resolved once, when the
+        # run starts, so flipping the setting mid-run cannot start a microphone
+        # under a problem that began without one.
+        self.speech_mode: bool = False
 
     def on_mount(self) -> None:
         paths.ensure_dirs()
@@ -70,9 +75,18 @@ class CoreApp(App):
             self.bell()
             return
         self.push_screen(
-            SetupScreen(self.config.session.active_list, self.config.session.planned_n),
-            self.start_run,
+            SetupScreen(
+                self.config.session.active_list,
+                self.config.session.planned_n,
+                self.config.audio.speech_mode,
+            ),
+            self._start_planned_run,
         )
+
+    def _start_planned_run(self, plan: RunPlan | None) -> None:
+        if plan is None:
+            return
+        self.start_run(plan.slugs, speech_mode=plan.speech_mode)
 
     def action_queue(self) -> None:
         if self.engine.session is not None:
@@ -89,11 +103,19 @@ class CoreApp(App):
         self.config = config_module.load(self.conn)
         self.weights = scoring.load_weights(self.config.scoring.weights)
 
-    def start_run(self, slugs: list[str] | None) -> None:
-        """Begin a run over `slugs`. The one way in, from setup or the queue."""
+    def start_run(self, slugs: list[str] | None, speech_mode: bool | None = None) -> None:
+        """Begin a run over `slugs`. The one way in, from setup or the queue.
+
+        `speech_mode` is the setup screen's per-run override; the queue passes
+        nothing and gets the setting, which is what keeps the settings knob
+        load-bearing rather than decorative.
+        """
         if not slugs:
             return
         self.reload_config()
+        self.speech_mode = (
+            self.config.audio.speech_mode if speech_mode is None else speech_mode
+        )
         self.engine.start_session(slugs, planned_n=len(slugs))
         self.push_screen(SolveScreen(self.engine))
 

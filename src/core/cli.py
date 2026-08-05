@@ -118,6 +118,7 @@ def cmd_history(args: argparse.Namespace) -> int:
                         attempt["difficulty"],
                         score,
                         attempt.get("self_confidence"),
+                        render.approach_label(attempt),
                     )
                 )
                 console.print()
@@ -255,7 +256,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from . import capture
+    from . import audio, capture
 
     conn = db.open_db()
     cfg = config_module.load(conn)
@@ -302,6 +303,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if cfg.capture.enabled:
         capture_state += f", wrong answers {'on' if cfg.capture.on_failed_submit else 'off'}"
 
+    # The recorder is only a problem when it is meant to be running, so this is
+    # green whenever speech mode is off and only complains when it is on.
+    recorder_ok = audio.available()
+    if cfg.audio.speech_mode:
+        speech_state = (
+            f"on, {cfg.audio.bitrate_kbps} kbps from {cfg.audio.input_format}:{cfg.audio.device}"
+        )
+        if not recorder_ok:
+            speech_state += f" — no {audio.ffmpeg()} on PATH, runs won't record"
+    else:
+        speech_state = "off" + ("" if recorder_ok else f" (no {audio.ffmpeg()} on PATH)")
+
     rows = [
         ("config", str(paths.config_file()), paths.config_file().exists()),
         ("database", str(paths.db_file()), paths.db_file().exists()),
@@ -309,6 +322,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ("notes", str(paths.notes_dir()), paths.notes_dir().exists()),
         ("editor", editor, capture.editor_available()),
         ("capture", capture_state, cfg.capture.enabled),
+        ("speech mode", speech_state, recorder_ok or not cfg.audio.speech_mode),
         (
             "settings",
             f"{len(changed)} changed in-app" + (f": {', '.join(sorted(changed))}" if changed else ""),

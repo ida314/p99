@@ -16,9 +16,17 @@ def _run_a_session(conn, slugs=("two-sum", "3sum")):
         eng.reveal_hint()
         n = eng.record_submission("wrong_answer")
         eng.archive_submission(f"/tmp/{slug}-wrong{n}.py", n, "python")
-        eng.finish("accepted", self_confidence=3, lc_runtime_pct=91.0, language="python")
+        eng.finish(
+            "accepted",
+            self_confidence=3,
+            lc_runtime_pct=91.0,
+            language="python",
+            claimed_complexity="O(n log n)",
+            optimality="optimal",
+        )
         eng.archive_code(f"/tmp/{slug}.py", "python")
         eng.record_note(f"/tmp/{slug}.md")
+        eng.record_audio(f"/tmp/{slug}.opus")
         eng.advance()
     eng.end_session(session_note="tired but fine")
     return eng
@@ -162,6 +170,46 @@ def test_a_submission_logged_before_this_feature_still_projects(conn):
     assert [r["n"] for r in conn.execute("SELECT n FROM submissions ORDER BY n")] == [1, 2]
     events.replay(conn)
     assert [r["n"] for r in conn.execute("SELECT n FROM submissions ORDER BY n")] == [1, 2]
+
+
+def test_what_you_claimed_about_the_solution_reaches_the_row(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish(
+        "solved_unaided",
+        claimed_complexity="O(n)",
+        optimality="suboptimal",
+    )
+    eng.record_audio("/tmp/two-sum.opus")
+
+    row = conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["claimed_complexity"] == "O(n)"
+    assert row["optimality"] == "suboptimal"
+    assert row["audio_path"] == "/tmp/two-sum.opus"
+
+
+def test_the_recording_and_the_claim_survive_a_replay(conn):
+    _run_a_session(conn, slugs=("two-sum",))
+    events.replay(conn)
+
+    row = conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["claimed_complexity"] == "O(n log n)"
+    assert row["optimality"] == "optimal"
+    assert row["audio_path"] == "/tmp/two-sum.opus"
+
+
+def test_giving_up_carries_no_claim_about_a_solution(conn):
+    """`finish` routes `gave_up` to `abandon`, which has nothing to claim."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("gave_up", claimed_complexity="O(n)", optimality="optimal")
+
+    row = conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["verdict"] == "gave_up"
+    assert row["claimed_complexity"] is None
+    assert row["optimality"] is None
 
 
 def test_gave_up_is_still_recorded(conn):

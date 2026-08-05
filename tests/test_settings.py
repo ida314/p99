@@ -113,3 +113,45 @@ def test_offline_mode_round_trips_through_the_settings_layer(conn):
 def test_the_cache_budget_is_read_as_bytes(conn):
     _write_file_config(FILE_CONFIG + "\n[cache]\nmax_mb = 2\n")
     assert config.load(conn).cache.budget_bytes == 2 * 1024 * 1024
+
+
+def test_speech_mode_round_trips_through_the_settings_layer(conn):
+    _write_file_config()
+    assert config.load(conn).audio.speech_mode is False
+
+    config.set_option(conn, "audio.speech_mode", True)
+    assert config.load(conn).audio.speech_mode is True
+
+    config.clear_option(conn, "audio.speech_mode")
+    assert config.load(conn).audio.speech_mode is False
+
+
+def test_the_recording_bitrate_is_a_settings_knob(conn):
+    _write_file_config()
+    assert config.load(conn).audio.bitrate_kbps == 24
+
+    config.set_option(conn, "audio.bitrate_kbps", 12)
+    assert config.load(conn).audio.bitrate_kbps == 12
+
+    # A value that is no longer on offer is ignored rather than loaded.
+    config.set_option(conn, "audio.bitrate_kbps", 999)
+    assert config.load(conn).audio.bitrate_kbps == 24
+
+
+def test_the_microphone_is_a_file_only_setting(conn):
+    """Which device to record from is a fact about the machine, not a knob."""
+    _write_file_config(FILE_CONFIG + '\n[audio]\ninput_format = "alsa"\ndevice = "hw:0"\n')
+    cfg = config.load(conn)
+    assert cfg.audio.input_format == "alsa"
+    assert cfg.audio.device == "hw:0"
+    assert not {o.key for o in config.options()} & {"audio.input_format", "audio.device"}
+
+
+def test_new_options_go_on_the_end(conn):
+    """The settings screen is navigated by row index, here and in its tests.
+
+    Inserting a knob above an existing one silently retargets every one of them,
+    so the two newest have to be the last two.
+    """
+    keys = [o.key for o in config.options()]
+    assert keys[-2:] == ["audio.speech_mode", "audio.bitrate_kbps"]

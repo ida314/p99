@@ -19,7 +19,7 @@ from textual.widgets import Footer, Static
 
 from ... import capture, scoring, stats
 from ...engine import RunEngine
-from ...render import death_screen, stat_line
+from ...render import approach_label, death_screen, stat_line
 from ..vim import MOTIONS, VimMotion
 
 
@@ -84,6 +84,7 @@ class SummaryScreen(VimMotion, Screen[None]):
                 attempt["difficulty"],
                 score,
                 attempt.get("self_confidence"),
+                approach_label(attempt),
             ))
             blocks.append(Text(""))
         self.query_one("#stat-lines", Static).update(

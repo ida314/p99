@@ -33,13 +33,28 @@ CONFIDENCE_OPTIONS = [
     "4  I'd nail it",
 ]
 
+# Stored value first, wording second, so the vocabulary that reaches the database
+# and the vocabulary on screen can never drift apart.
+#
+# The cursor starts on "not sure" -- the last entry -- for the same reason the
+# verdict cursor starts on the worst thing already on the record. "Optimal" is
+# the flattering answer, and a default of flattering is how a month of solves
+# you never actually checked quietly claims to have been optimal.
+OPTIMALITY_OPTIONS = (
+    ("optimal", "optimal"),
+    ("suboptimal", "not optimal"),
+    ("unsure", "not sure"),
+)
+OPTIMALITY_DEFAULT = len(OPTIMALITY_OPTIONS) - 1
+
 
 class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
-    """Verdict + self-confidence, plus the optional hand-entered LC percentiles."""
+    """Verdict, self-confidence, what you say the solution costs, the percentiles."""
 
     # No VIM_TARGET: motions here move the focused radio set and nothing else.
-    # With focus in one of the percentile inputs there is nothing sensible for
-    # `j` to move, and guessing would move a radio set you can't see moving.
+    # With focus in the complexity field or one of the percentile inputs there is
+    # nothing sensible for `j` to move, and guessing would move a radio set you
+    # can't see moving.
     BINDINGS = [
         *MOTIONS,
         Binding("escape", "cancel", "back to the problem"),
@@ -94,6 +109,12 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
                     yield RadioButton(label, value=(i == 2))
+            yield Static("your time complexity — optional", classes="field-label")
+            yield Input(placeholder="O(n log n)", id="complexity")
+            yield Static("was it the optimal algorithm?", classes="field-label")
+            with RadioSet(id="optimality"):
+                for i, (_, label) in enumerate(OPTIMALITY_OPTIONS):
+                    yield RadioButton(label, value=(i == OPTIMALITY_DEFAULT))
             yield Static("leetcode percentiles — optional", classes="field-label")
             with Horizontal(id="optional-row"):
                 yield Input(placeholder="runtime %", id="runtime", type="number")
@@ -104,6 +125,15 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 yield Button("back  (esc)", id="cancel")
 
     def on_mount(self) -> None:
+        # Textual parks a RadioSet's navigation cursor on the first button
+        # whichever one is actually pressed, so `j`/`k` would start from the top
+        # of a ladder whose default sits in the middle -- and every default on
+        # this screen is deliberately not the first entry. Line the two up, or
+        # correcting a default moves you somewhere you weren't looking.
+        # `_selected` is the only handle on it; there is no public setter.
+        for radio in self.query(RadioSet):
+            if radio.pressed_index >= 0:
+                radio._selected = radio.pressed_index
         self.query_one("#verdict", RadioSet).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -130,12 +160,17 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     def action_save(self) -> None:
         verdict_index = self.query_one("#verdict", RadioSet).pressed_index
         confidence_index = self.query_one("#confidence", RadioSet).pressed_index
+        optimality_index = self.query_one("#optimality", RadioSet).pressed_index
+        if optimality_index < 0:
+            optimality_index = OPTIMALITY_DEFAULT
         self.dismiss(
             {
                 "verdict": VERDICTS[
                     verdict_index if verdict_index >= 0 else self._default_verdict
                 ],
                 "self_confidence": (confidence_index + 1) if confidence_index >= 0 else None,
+                "claimed_complexity": self.query_one("#complexity", Input).value.strip() or None,
+                "optimality": OPTIMALITY_OPTIONS[optimality_index][0],
                 "lc_runtime_pct": self._pct(self.query_one("#runtime", Input).value),
                 "lc_memory_pct": self._pct(self.query_one("#memory", Input).value),
             }

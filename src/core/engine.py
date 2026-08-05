@@ -320,9 +320,14 @@ class RunEngine:
         lc_runtime_pct: float | None = None,
         lc_memory_pct: float | None = None,
         language: str | None = None,
+        claimed_complexity: str | None = None,
+        optimality: str | None = None,
     ) -> Attempt:
         a = self._require_attempt()
         if verdict == "gave_up":
+            # Nothing you claim about a solution survives not having reached
+            # one, so the complexity and the optimality answer are dropped
+            # rather than carried onto an abandonment.
             return self.abandon(timing=timing)
         a.final_timing = timing or a.timing()
         events.append(
@@ -337,6 +342,8 @@ class RunEngine:
                 "lc_runtime_pct": lc_runtime_pct,
                 "lc_memory_pct": lc_memory_pct,
                 "language": language,
+                "claimed_complexity": claimed_complexity,
+                "optimality": optimality,
             },
         )
         a.finished = True
@@ -415,6 +422,15 @@ class RunEngine:
             self.conn,
             events.NOTE_WRITTEN,
             {"attempt_uuid": a.uuid, "slug": a.problem.slug, "note_path": path},
+        )
+
+    def record_audio(self, path: str) -> None:
+        """Attach a speech-mode recording to the attempt it belongs to."""
+        a = self._require_attempt()
+        events.append(
+            self.conn,
+            events.AUDIO_RECORDED,
+            {"attempt_uuid": a.uuid, "slug": a.problem.slug, "audio_path": path},
         )
 
     def advance(self) -> None:

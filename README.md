@@ -82,17 +82,26 @@ in settings and replaying reschedules all of it.
 ## A run
 
 1. **Start** — pick how many problems. Selection is random-from-list or manual.
+   `ctrl+a` turns [speech mode](#speech-mode) on or off for this run.
 2. **Solve** — timer runs, `o` opens the problem on leetcode.com, `p` pauses,
    `?` reveals the next hint tier, `s` logs a submission, `f` finishes.
    You solve in the browser and self-report the verdict; LeetCode is the judge —
    except [offline](#offline), where there isn't one.
-3. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
+3. **Finish** — how much help you needed, how well it would stick cold in a
+   month, the time complexity you claim your solution has, and whether it was
+   the optimal algorithm. The last two are recorded and shown back in history
+   and on the run summary; neither is scored and neither moves a review, because
+   a bonus set before there is data to set it from is a guess with a number on
+   it. The optimality answer defaults to *not sure* — the flattering answer is
+   never the default here, for the same reason the verdict starts on the worst
+   thing already on the record.
+4. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
    rejected — a wrong answer is the only artifact of an attempt that stops
    existing the moment you fix it, and the diff against what finally passed is
    the lesson. Turn it off in settings if you would rather not be asked.
-4. **Summary** — the run's death screen, scored and ranked against every past run.
+5. **Summary** — the run's death screen, scored and ranked against every past run.
 
 ### Keys
 
@@ -122,13 +131,14 @@ real points.
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |
 | `space` | pick a problem (setup) |
+| `ctrl+a` | speech mode on / off for this run (setup) |
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
 | `c` | show / hide the problem's pattern and tags (hidden by default) |
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, then capture |
+| `f` | finish — verdict, confidence, time complexity, optimality, then capture |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `d` | delete the highlighted run (history) |
@@ -170,6 +180,7 @@ them in vim:
 ~/.local/share/p99/code/<slug>/<attempt_id>.<ext>
 ~/.local/share/p99/code/<slug>/<attempt_id>-wrong<n>.<ext>
 ~/.local/share/p99/notes/<slug>/<attempt_id>.md
+~/.local/share/p99/audio/<slug>/<attempt_id>.opus
 ```
 
 Settings changed in the app are `settings_changed` events layered on top of
@@ -180,8 +191,9 @@ file's answer back.
 Environment: `P99_HOME` relocates all of the above (useful for a throwaway
 profile), `P99_DB` points at a specific database, `P99_EDITOR` overrides
 `$VISUAL`/`$EDITOR` for the capture steps, `P99_BROWSER` overrides how `o`
-opens a problem, and `P99_LEETCODE_SESSION` carries the cookie that unlocks
-premium problems for `p99 fetch`. `p99 doctor` prints what it resolved. The `P99_` prefix and the
+opens a problem, `P99_FFMPEG` points at the recorder speech mode spawns, and
+`P99_LEETCODE_SESSION` carries the cookie that unlocks premium problems for
+`p99 fetch`. `p99 doctor` prints what it resolved. The `P99_` prefix and the
 directory names are both derived from one constant — see [Renaming](#renaming).
 
 **No problem content is ever in the database.** The catalog holds title, slug,
@@ -232,6 +244,44 @@ it scores zero, counts as no kind of solve, and — alone among the verdicts —
 schedules no review at all. Rating a card on an outcome nobody established is
 worse than having no card, so the problem stays in the queue as if unseen, and
 the cooldown still keeps it from coming back tomorrow.
+
+## Speech mode
+
+Off by default. Turn it on in settings, or with `ctrl+a` on the setup screen for
+one run, and the app records what you say while each problem is running — one
+Opus file per attempt, hung on the attempt like the archived code and the note.
+
+```
+~/.local/share/p99/audio/<slug>/<attempt_id>.opus
+```
+
+The recording tracks the clock exactly. It pauses when you press `p`, when the
+`$EDITOR` handoff opens to paste a wrong answer, and while the finish prompt is
+up — so the file is your solve and not the bookkeeping around it. `● REC` sits
+on the clock line the whole time, because a microphone that can be on without
+the screen saying so is not a thing to ship. Throwing an attempt away
+(`ctrl+x`) deletes its recording; that is the one artifact a discard does not
+leave on disk, since nothing would ever point at it again.
+
+Nothing transcribes it and nothing scores it. Two of the four hint tiers already
+tell you to say the answer out loud and the thing an interview actually judges
+is how you talk through a problem — the cadence is the artifact.
+
+It shells out to `ffmpeg`, which is the only requirement; without one on `PATH`
+a run says so once in yellow and carries on unrecorded. `p99 doctor` reports
+what it resolved. A pause stops the current segment and a resume starts a new
+one rather than suspending the encoder — a stopped `ffmpeg` keeps being handed
+samples it never reads, and what comes back after a resume is an overrun rather
+than a continuation. The segments are joined without re-encoding at the end.
+
+Size is set by `[audio] bitrate_kbps`, also a settings knob. Mono Opus at
+constrained VBR, so the number is a ceiling: 24 kbps is 10.8 MB an hour
+(24000 / 8 = 3000 bytes a second), 12 kbps is half that and still perfectly
+intelligible. Constrained rather than plain VBR because the two are
+indistinguishable on real audio — measured over a minute of pink noise both
+landed at 23.4 kbps against a 24k target — but on a sustained tone plain VBR ran
+to 38.3 kbps while constrained held 24.9, and the size you were promised should
+not depend on what the microphone picked up.
 
 ## Three places this deviates from the spec
 

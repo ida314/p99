@@ -69,6 +69,25 @@ min_samples = 20
 # default lookback window for the stats screen
 window_days = 60
 
+[audio]
+# speech mode: while a problem is running, record what you say out loud. The
+# recording pauses exactly when the clock does, so the file is your solve and
+# nothing else. Nothing transcribes it and nothing scores it — the cadence is
+# the artifact. Needs ffmpeg on PATH; without it a run just says so and carries
+# on. This is the default; the setup screen can flip it for one run.
+speech_mode = false
+# mono Opus at constrained VBR, so this is a ceiling rather than an average.
+# 24 kbps is 10.8 MB an hour (24000 / 8 = 3000 bytes a second); 12 is audibly
+# compressed but still perfectly intelligible, 48 is headroom if you ever want
+# to feed these to something that listens to them.
+bitrate_kbps = 24
+# how ffmpeg reaches the microphone. "pulse" / "default" is right on anything
+# running pipewire-pulse; "alsa" / "hw:0" is the fallback on a machine without
+# it. Not in the settings screen: these are facts about the machine, not knobs
+# worth cycling between runs.
+input_format = "pulse"
+device = "default"
+
 [cache]
 # offline mode: `o` on the solve screen opens the cached copy of the problem
 # instead of leetcode.com. Flip it when you board — nothing auto-detects,
@@ -134,6 +153,14 @@ class StatsConfig:
 
 
 @dataclass(frozen=True)
+class AudioConfig:
+    speech_mode: bool = False
+    bitrate_kbps: int = 24
+    input_format: str = "pulse"
+    device: str = "default"
+
+
+@dataclass(frozen=True)
 class CacheConfig:
     offline: bool = False
     max_mb: int = 50
@@ -150,6 +177,7 @@ class Config:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     srs: SrsConfig = field(default_factory=SrsConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
 
     @property
@@ -179,6 +207,7 @@ def _build(raw: dict[str, Any]) -> Config:
         scoring=pick(ScoringConfig, "scoring"),
         srs=pick(SrsConfig, "srs"),
         stats=pick(StatsConfig, "stats"),
+        audio=pick(AudioConfig, "audio"),
         cache=pick(CacheConfig, "cache"),
     )
 
@@ -304,6 +333,21 @@ def options() -> tuple[Option, ...]:
             "offline",
             "`o` opens the cached copy of the problem instead of leetcode.com — for planes",
             (False, True),
+        ),
+        # New options go on the end. The settings screen is an OptionList and
+        # its tests navigate it by row index, so inserting above an existing
+        # knob silently retargets every one of them.
+        Option(
+            "audio.speech_mode",
+            "speech mode",
+            "record what you say while a problem runs — the setup screen can override it per run",
+            (False, True),
+        ),
+        Option(
+            "audio.bitrate_kbps",
+            "recording quality",
+            "mono Opus, as a ceiling — 24 kbps is 10.8 MB an hour, 12 is smaller and still clear",
+            (12, 16, 24, 32, 48),
         ),
     )
 

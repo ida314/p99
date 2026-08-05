@@ -32,6 +32,7 @@ PROBLEM_FINISHED = "problem_finished"
 CODE_ARCHIVED = "code_archived"
 SUBMISSION_ARCHIVED = "submission_archived"
 NOTE_WRITTEN = "note_written"
+AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
 REVIEW_COMPLETED = "review_completed"   # Phase 3
 MEMORY_UPDATED = "memory_updated"       # Phase 3
@@ -55,6 +56,7 @@ EVENT_TYPES = frozenset(
         CODE_ARCHIVED,
         SUBMISSION_ARCHIVED,
         NOTE_WRITTEN,
+        AUDIO_RECORDED,
         SESSION_ENDED,
         REVIEW_COMPLETED,
         MEMORY_UPDATED,
@@ -337,6 +339,8 @@ def apply(
             lc_runtime_pct=p.get("lc_runtime_pct"),
             lc_memory_pct=p.get("lc_memory_pct"),
             language=p.get("language"),
+            claimed_complexity=p.get("claimed_complexity"),
+            optimality=p.get("optimality"),
         )
         # Every rating input is on the row by now: verdict and timing from this
         # event, the hint tier from earlier `hint_revealed` events.
@@ -358,6 +362,9 @@ def apply(
 
     elif event.type == NOTE_WRITTEN:
         _update_attempt(conn, p["attempt_uuid"], note_path=p.get("note_path"))
+
+    elif event.type == AUDIO_RECORDED:
+        _update_attempt(conn, p["attempt_uuid"], audio_path=p.get("audio_path"))
 
     elif event.type == SESSION_ENDED:
         conn.execute(

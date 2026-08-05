@@ -8,6 +8,7 @@ Phase 2 replaces the roll with the FSRS-driven queue; the manual path stays.
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass, field
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -23,8 +24,21 @@ from ..vim import MOTIONS, VimMotion
 DIFFICULTY_MARK = {"easy": "E", "medium": "M", "hard": "H"}
 
 
-class SetupScreen(VimMotion, Screen[list[str] | None]):
-    """Returns the ordered slugs for the run, or None if cancelled."""
+@dataclass(frozen=True)
+class RunPlan:
+    """What this screen decides: which problems, and whether to record.
+
+    A record rather than a widened tuple, because the next thing anyone decides
+    before a run starts belongs here too and a tuple would have to be unpacked
+    at every call site again.
+    """
+
+    slugs: list[str] = field(default_factory=list)
+    speech_mode: bool = False
+
+
+class SetupScreen(VimMotion, Screen[RunPlan | None]):
+    """Returns the plan for the run, or None if cancelled."""
 
     # This is the one screen with a text field, so it is the one screen with
     # modes. `/` or `i` puts you in the filter box, `escape` takes you back out
@@ -38,15 +52,21 @@ class SetupScreen(VimMotion, Screen[list[str] | None]):
         Binding("ctrl+r", "roll", "roll random"),
         Binding("ctrl+x", "clear", "clear"),
         Binding("ctrl+s", "start", "start run"),
+        # A chord, like the other two run-shaping keys: `a` is a character you
+        # type into the filter box, and this one turns a microphone on.
+        Binding("ctrl+a", "toggle_speech", "speech mode"),
         Binding("f5", "roll", "roll random", show=False),
     ]
 
     VIM_TARGET = "#problem-list"
 
-    def __init__(self, active_list: str, planned_n: int):
+    def __init__(self, active_list: str, planned_n: int, speech_mode: bool = False):
         super().__init__()
         self.active_list = active_list
         self.planned_n = planned_n
+        # Seeded from the setting and overridable for this run only. Nothing is
+        # written back: `ctrl+a` is a decision about tonight, not a new default.
+        self.speech_mode = speech_mode
         self.problems: list[Problem] = []
         self.attempted: set[str] = set()
         # The chosen set lives here, not in the widget: SelectionList only knows
@@ -66,7 +86,8 @@ class SetupScreen(VimMotion, Screen[list[str] | None]):
         yield Static(id="setup-status")
         yield Vertical(
             Static(
-                "  / filter    j/k move    space pick    ctrl+r roll    ctrl+s start",
+                "  / filter    j/k move    space pick    ctrl+r roll"
+                "    ctrl+a speech    ctrl+s start",
                 classes="hint-bar",
             )
         )
@@ -127,7 +148,10 @@ class SetupScreen(VimMotion, Screen[list[str] | None]):
             note = f"   ({hidden} hidden by the filter)"
         elif len(self.chosen) != n:
             note = f"   (count says {n} — the run uses what's selected)"
-        self.query_one("#setup-status", Static).update(f"  {len(self.chosen)} selected{note}")
+        speech = "on" if self.speech_mode else "off"
+        self.query_one("#setup-status", Static).update(
+            f"  {len(self.chosen)} selected{note}   ·   speech mode: {speech}"
+        )
 
     def _count(self) -> int:
         try:
@@ -177,6 +201,11 @@ class SetupScreen(VimMotion, Screen[list[str] | None]):
         self.chosen = set()
         self._populate(self.query_one("#filter", Input).value)
 
+    def action_toggle_speech(self) -> None:
+        """Record this run, or don't. Never a surprise: the status line says which."""
+        self.speech_mode = not self.speech_mode
+        self._update_status()
+
     def action_start(self) -> None:
         chosen = self.selected()
         if not chosen:
@@ -188,7 +217,12 @@ class SetupScreen(VimMotion, Screen[list[str] | None]):
         # Preserve catalog order so a run interleaves patterns rather than
         # marching through one group (spec §10 makes this a hard constraint).
         order = {p.slug: i for i, p in enumerate(self.problems)}
-        self.dismiss(sorted(chosen, key=lambda s: order.get(s, 0)))
+        self.dismiss(
+            RunPlan(
+                slugs=sorted(chosen, key=lambda s: order.get(s, 0)),
+                speech_mode=self.speech_mode,
+            )
+        )
 
     def action_filter(self) -> None:
         """`/` — search, in the only place this app has anything to type into."""
