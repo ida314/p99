@@ -190,3 +190,39 @@ def test_the_binary_is_overridable_and_defaults_to_ffmpeg(monkeypatch):
     assert audio.ffmpeg() == "ffmpeg"
     monkeypatch.setenv(branding.env("FFMPEG"), "/opt/ffmpeg")
     assert audio.ffmpeg() == "/opt/ffmpeg"
+
+
+# --- picking a suspended attempt back up -----------------------------------
+
+
+def test_adopt_takes_over_the_segments_a_suspended_attempt_left(fake_ffmpeg):
+    """The run was put down mid-problem; a later process finishes the recording."""
+    before = audio.Recorder("two-sum", 20)
+    assert before.start() is True
+    before.pause()                      # the suspend: closed, deliberately not joined
+    assert not paths.audio_path("two-sum", 20).exists()
+
+    after = audio.Recorder("two-sum", 20)
+    assert after.adopt() == 1
+    # Adopted, not started: a resumed attempt comes back paused, and so does the
+    # microphone.
+    assert after.paused is True
+    assert after.recording is False
+
+    assert after.resume() is True
+    assert [s.name for s in after._segments] == ["001.opus", "002.opus"]
+    path = after.stop()
+    assert path == paths.audio_path("two-sum", 20)
+    assert not after.segment_dir.exists()
+
+
+def test_adopt_finds_nothing_when_the_attempt_was_never_recorded(fake_ffmpeg):
+    assert audio.Recorder("two-sum", 21).adopt() == 0
+
+
+def test_adopt_does_not_disturb_a_recorder_that_is_already_running(fake_ffmpeg):
+    recorder = audio.Recorder("two-sum", 22)
+    recorder.start()
+    assert recorder.adopt() == 1
+    assert recorder.recording is True
+    recorder.discard()

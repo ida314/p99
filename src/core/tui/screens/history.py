@@ -95,6 +95,18 @@ class HistoryScreen(VimMotion, Screen[None]):
         standing = stats.standing(self.runs, session_id)
         blocks = [death_screen(run, standing, self.runs), Text("")]
 
+        if run.suspended:
+            # Said plainly rather than left as a blank end time: the score below
+            # is a partial one, and a run you can still finish should not read
+            # like a run that ended badly.
+            blocks.append(
+                Text(
+                    f"  suspended {stats.fmt_ago(run.suspended_at)}"
+                    " — c on the home screen picks it back up\n",
+                    style="yellow",
+                )
+            )
+
         for attempt in run.attempts:
             if not attempt.get("ended_at"):
                 continue
@@ -132,7 +144,14 @@ class HistoryScreen(VimMotion, Screen[None]):
             line.append(f"{path if path else '—'}   ", style="" if path else "bright_black")
         paused = int(attempt.get("paused_seconds") or 0)
         if paused:
-            line.append(f"paused {fmt_duration(paused)}", style="bright_black")
+            line.append(f"paused {fmt_duration(paused)}   ", style="bright_black")
+        # Kept apart from the pause it is not: four minutes at the kettle and an
+        # overnight break are different facts about how the solve went.
+        away = int(attempt.get("suspended_seconds") or 0)
+        suspends = int(attempt.get("suspends") or 0)
+        if away or suspends:
+            times = f" ({suspends}×)" if suspends > 1 else ""
+            line.append(f"suspended {fmt_duration(away)}{times}", style="bright_black")
         return line
 
     def action_focus_list(self) -> None:

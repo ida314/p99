@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
 
 from core import branding, db, paths, stats
 from core.tui.app import CoreApp
@@ -1470,3 +1470,177 @@ async def test_a_missing_recorder_never_costs_the_attempt(speaking_app, monkeypa
     attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
     assert attempt["verdict"] == "solved_unaided"
     assert attempt["audio_path"] is None
+
+
+# --- suspend and resume ----------------------------------------------------
+
+
+async def test_z_suspends_the_run_without_grading_the_problem(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("question_mark")
+        await pilot.press("s")
+        await pilot.pause()
+
+        await pilot.press("z")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+        assert app.engine.session is None and app.engine.attempt is None
+
+        # The way back in is on screen the moment you land, at the top.
+        menu = app.screen.query_one(OptionList)
+        assert menu.get_option_at_index(0).id == "resume_run"
+        assert "problem 1 of 2" in menu.get_option_at_index(0).prompt.plain
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["verdict"] is None            # not a gave_up
+    assert attempt["ended_at"] is None
+    assert attempt["max_hint_tier"] == 1
+    session = app.conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["ended_at"] is None
+    assert session["suspended_at"] is not None
+
+
+async def test_a_hard_quit_suspends_the_run_rather_than_abandoning_it(app):
+    """ctrl+c mid-problem used to score a 0 for a problem you never gave up on."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        # No key here: leaving the block is the hard quit.
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["verdict"] is None
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+    session = app.conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["suspended_at"] is not None and session["ended_at"] is None
+
+
+async def test_a_suspended_run_is_picked_back_up_by_a_later_process(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.press("s")
+        await pilot.pause()
+        slug = app.engine.attempt.problem.slug
+        await pilot.press("z")
+        await pilot.pause()
+
+    # A different app on the same database — the next time you open it.
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(later.screen, SolveScreen)
+
+        attempt = later.engine.attempt
+        assert attempt is not None
+        assert attempt.problem.slug == slug
+        assert attempt.max_hint_tier == 1
+        assert attempt.submissions == 1
+        # Back on the problem you left, with the clock stopped until you say so.
+        assert attempt.paused
+        assert "PAUSED" in _plain(later.screen.query_one("#timer", Static))
+        assert "resumed" in _plain(later.screen.query_one("#toast", Static))
+
+        # And it is still the same run, not a new one.
+        assert later.engine.session.index == 0
+        assert len(later.engine.session.slugs) == 2
+
+    assert later.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 1
+
+
+async def test_a_resumed_run_can_be_finished_normally(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("z")
+        await pilot.pause()
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        for _ in range(2):
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        assert isinstance(later.screen, SummaryScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(later.screen, HomeScreen)
+        # Nothing left to resume, so the entry is gone again.
+        assert later.screen.query_one(OptionList).get_option_at_index(0).id == "new_run"
+
+    session = later.conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["outcome"] == "completed"
+    assert session["suspended_at"] is None
+    attempts = later.conn.execute("SELECT * FROM attempts ORDER BY id").fetchall()
+    assert len(attempts) == 2
+    assert all(a["verdict"] == "solved_unaided" for a in attempts)
+    assert attempts[0]["suspends"] == 1
+
+
+async def test_resume_bells_when_there_is_nothing_to_pick_up(app):
+    async with app.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_a_suspended_recording_is_continued_rather_than_cut_short(speaking_app):
+    from pathlib import Path
+
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.screen._recorder.recording
+        segments = app.screen._recorder.segment_dir
+
+        await pilot.press("z")
+        await pilot.pause()
+        # Closed, but nothing joined: the attempt is not over.
+        assert len(list(segments.glob("*.opus"))) == 1
+        assert app.conn.execute("SELECT audio_path FROM attempts").fetchone()[0] is None
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        screen = later.screen
+        # Speech mode is read off the run, and the microphone comes back paused
+        # with the clock.
+        assert later.speech_mode is True
+        assert screen._recorder is not None and screen._recorder.paused
+        assert "● REC PAUSED" in _plain(screen.query_one("#timer", Static))
+
+        await pilot.press("p")      # start the clock, and the microphone with it
+        await pilot.pause()
+        assert screen._recorder.recording
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    attempt = later.conn.execute("SELECT * FROM attempts ORDER BY id").fetchone()
+    # One file for the whole solve, both halves of it.
+    assert attempt["audio_path"] is not None
+    assert Path(attempt["audio_path"]).exists()
+    assert not segments.exists()

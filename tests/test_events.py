@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from core import engine as engine_module, events
@@ -421,3 +423,208 @@ def test_tombstoned_collects_attempts_of_a_deleted_session(conn):
 
     assert sessions == {uuid}
     assert attempt_uuid in attempts
+
+
+# --- suspend and resume ----------------------------------------------------
+
+
+def _suspended_mid_problem(conn, clock):
+    """A run put down on the second problem, twelve minutes in, after a hint."""
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.start_session(["two-sum", "3sum"], speech_mode=True)
+    eng.start_problem("two-sum")
+    eng.finish("accepted")
+    eng.advance()
+
+    eng.start_problem("3sum")
+    eng.reveal_hint()
+    eng.record_submission("wrong_answer")
+    clock["t"] += 720           # twelve minutes on the problem
+    eng.pause()
+    clock["t"] += 60            # one minute at the kettle, logged as a pause
+    eng.resume()
+    eng.suspend_session()
+    return eng
+
+
+def _walk_away(conn, hours):
+    """Backdate the suspend, so the away time is a real span to measure.
+
+    The fake clock in these tests is monotonic-only; how long you were gone is
+    wall-clock, and the log is where that is written down.
+    """
+    when = datetime.now(timezone.utc) - timedelta(hours=hours)
+    conn.execute(
+        "UPDATE sessions SET suspended_at = ? WHERE suspended_at IS NOT NULL",
+        (when.isoformat(timespec="seconds"),),
+    )
+
+
+def test_suspending_leaves_the_attempt_ungraded(conn):
+    clock = {"t": 1000.0}
+    eng = _suspended_mid_problem(conn, clock)
+
+    assert eng.session is None and eng.attempt is None
+    live = conn.execute(
+        "SELECT * FROM attempts WHERE slug = '3sum'"
+    ).fetchone()
+    # The whole point: a break is not a verdict.
+    assert live["verdict"] is None
+    assert live["ended_at"] is None
+    assert live["active_seconds"] == 720
+    assert live["paused_seconds"] == 60
+    # Nothing was graded, so nothing was scheduled off it.
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM fsrs_cards WHERE slug = '3sum'"
+    ).fetchone()["n"] == 0
+
+    session = conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["ended_at"] is None
+    assert session["suspended_at"] is not None
+    assert session["resume_index"] == 1
+    assert session["speech_mode"] == 1
+
+
+def test_a_suspended_run_is_found_and_described(conn):
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+
+    run = engine_module.suspended_run(conn)
+
+    assert run is not None
+    assert run.index == 1
+    assert run.slugs == ["two-sum", "3sum"]
+    assert run.speech_mode is True
+    assert run.title == "3Sum"
+    assert "problem 2 of 2" in run.summary
+    assert "12:00 in" in run.summary
+
+
+def test_resuming_restores_the_clock_the_hint_and_the_submits(conn):
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+    _walk_away(conn, hours=6)
+    clock["t"] += 30_000  # a different process, hours later
+
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    run = engine_module.suspended_run(conn)
+    session = eng.resume_session(run.session_uuid)
+
+    assert session.index == 1
+    assert session.remaining == ["3sum"]
+    a = eng.attempt
+    assert a is not None and a.problem.slug == "3sum"
+    assert a.max_hint_tier == 1
+    assert a.submissions == 1
+    assert a.submits_logged == 1
+    # Comes back paused, holding exactly the readings it was put down with.
+    assert a.paused
+    assert a.active_seconds == 720
+    assert a.total_paused_seconds == 60
+    assert a.wall_seconds == 780
+
+    # The away time is its own fact, not folded into the pause.
+    row = conn.execute("SELECT * FROM attempts WHERE slug = '3sum'").fetchone()
+    assert row["suspends"] == 1
+    assert row["suspended_seconds"] == pytest.approx(6 * 3600, abs=5)
+    assert row["paused_seconds"] == 60
+
+
+def test_the_clock_runs_again_once_the_resumed_attempt_is_unpaused(conn):
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+    _walk_away(conn, hours=6)
+
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.resume_session(engine_module.suspended_run(conn).session_uuid)
+    clock["t"] += 90              # ninety seconds reading yourself back in
+    assert eng.attempt.active_seconds == 720   # free, because it is a pause
+    eng.resume()
+    clock["t"] += 60
+    assert eng.attempt.active_seconds == 780
+
+    eng.finish("accepted")
+    row = conn.execute("SELECT * FROM attempts WHERE slug = '3sum'").fetchone()
+    assert row["verdict"] == "accepted"
+    assert row["active_seconds"] == 780
+    assert row["paused_seconds"] == 150        # 60 at the kettle + 90 on return
+    # Six hours away, and not one second of it in `paused_seconds`.
+    assert row["suspended_seconds"] == pytest.approx(6 * 3600, abs=5)
+
+
+def test_a_resumed_submit_does_not_reuse_an_archive_number(conn):
+    """`submits_logged` is what names the file — restarting it would overwrite."""
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.resume_session(engine_module.suspended_run(conn).session_uuid)
+
+    assert eng.record_submission("wrong_answer") == 2
+
+
+def test_suspend_and_resume_survive_replay(conn):
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.resume_session(engine_module.suspended_run(conn).session_uuid)
+    eng.resume()
+    eng.finish("accepted")
+    eng.advance()
+    eng.end_session()
+    before = _snapshot(conn)
+
+    events.replay(conn)
+
+    assert _snapshot(conn) == before
+
+
+def test_resuming_refuses_while_a_run_is_live(conn):
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+    eng = RunEngine(conn)
+    eng.start_session(["merge-two-sorted-lists"])
+
+    with pytest.raises(engine_module.SessionError):
+        eng.resume_session(engine_module.suspended_run(conn).session_uuid)
+
+
+def test_a_suspend_after_finishing_does_not_hand_back_the_solved_problem(conn):
+    """Quit during the capture step: the cursor moves, so the resume goes on."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.finish("accepted")
+    eng.suspend_session()          # before `advance` — the editor handoff died
+
+    run = engine_module.suspended_run(conn)
+    assert run.index == 1
+    assert run.title is None       # nothing left in progress
+
+    resumed = RunEngine(conn)
+    session = resumed.resume_session(run.session_uuid)
+    assert resumed.attempt is None
+    assert session.remaining == ["3sum"]
+
+
+def test_throwing_away_a_resumed_attempt_still_replays_identically(conn):
+    """The tombstone skips events naming the attempt — including its suspend."""
+    clock = {"t": 1000.0}
+    _suspended_mid_problem(conn, clock)
+    _walk_away(conn, hours=2)
+
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.resume_session(engine_module.suspended_run(conn).session_uuid)
+    eng.discard()                  # the wrong problem, or a timer left running
+    eng.advance()
+    eng.end_session()
+    before = _snapshot(conn)
+
+    events.replay(conn)
+
+    assert _snapshot(conn) == before
+    # The run is over and says so, rather than being stuck offering a resume.
+    session = conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["ended_at"] is not None
+    assert session["suspended_at"] is None
+    assert engine_module.suspended_run(conn) is None

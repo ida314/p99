@@ -9,13 +9,16 @@ a negative solve time.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import catalog, events, srs
+from . import catalog, events, srs, stats
 from .catalog import Problem
+from .scoring import fmt_duration
 
 MAX_HINT_TIER = 4
 
@@ -135,6 +138,68 @@ class SessionError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class SuspendedRun:
+    """A run waiting to be picked up, as the home screen needs to describe it.
+
+    Read straight off the `sessions` projection rather than reconstructed by the
+    engine, because the home screen has to answer "is there one?" on every mount
+    without starting anything.
+    """
+
+    session_uuid: str
+    slugs: list[str] = field(default_factory=list)
+    index: int = 0
+    speech_mode: bool = False
+    suspended_at: str = ""
+    #: The problem left on screen, if the break was taken mid-attempt.
+    title: str | None = None
+    active_seconds: int = 0
+
+    @property
+    def summary(self) -> str:
+        """One line: where you were, and how long ago that was."""
+        where = f"problem {min(self.index + 1, len(self.slugs))} of {len(self.slugs)}"
+        bits = [where]
+        if self.title:
+            bits.append(f"{self.title}, {fmt_duration(self.active_seconds)} in")
+        else:
+            bits.append("not started")
+        if self.suspended_at:
+            bits.append(stats.fmt_ago(self.suspended_at))
+        return "  ·  ".join(bits)
+
+
+def suspended_run(conn: sqlite3.Connection) -> SuspendedRun | None:
+    """The run waiting to be resumed, if there is one.
+
+    At most one: starting or resuming a run refuses while a session is live, so
+    two suspended runs cannot both be reachable. The newest wins regardless, so
+    a database that somehow holds two is still openable.
+    """
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE suspended_at IS NOT NULL AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    attempt = conn.execute(
+        "SELECT a.slug, a.active_seconds, p.title FROM attempts a "
+        "JOIN problems p ON p.slug = a.slug "
+        "WHERE a.session_id = ? AND a.ended_at IS NULL ORDER BY a.id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    return SuspendedRun(
+        session_uuid=row["uuid"],
+        slugs=json.loads(row["slugs"] or "[]"),
+        index=int(row["resume_index"] or 0),
+        speech_mode=bool(row["speech_mode"]),
+        suspended_at=row["suspended_at"],
+        title=attempt["title"] if attempt else None,
+        active_seconds=int(attempt["active_seconds"] or 0) if attempt else 0,
+    )
+
+
 class RunEngine:
     """Owns one run. Append-only: every method below writes an event."""
 
@@ -146,7 +211,9 @@ class RunEngine:
 
     # --- session ----------------------------------------------------------
 
-    def start_session(self, slugs: list[str], planned_n: int | None = None) -> Session:
+    def start_session(
+        self, slugs: list[str], planned_n: int | None = None, *, speech_mode: bool = False
+    ) -> Session:
         if self.session is not None:
             raise SessionError("a session is already in progress")
         session_uuid = events.new_uuid()
@@ -157,6 +224,10 @@ class RunEngine:
                 "session_uuid": session_uuid,
                 "planned_n": planned_n if planned_n is not None else len(slugs),
                 "slugs": slugs,
+                # Carried so a resume in a later process turns the microphone
+                # back on exactly when this run did, rather than asking today's
+                # setting what last week's run was doing.
+                "speech_mode": int(speech_mode),
             },
         )
         row = self.conn.execute("SELECT id FROM sessions WHERE uuid = ?", (session_uuid,)).fetchone()
@@ -185,6 +256,119 @@ class RunEngine:
             },
         )
         self.session = None
+
+    def suspend_session(self) -> None:
+        """Put the run down. `resume_session` picks it up, in any later process.
+
+        Deliberately not an ending: the attempt on screen keeps its NULL verdict,
+        so nothing is graded, no card moves, and the problem stays out of the
+        next queue. All that is written down is where the cursor was and what
+        the clock read -- enough for `_rehydrate` to rebuild the attempt, and
+        nothing that pretends the problem is over.
+        """
+        if self.session is None:
+            return
+        a = self.attempt
+        payload: dict[str, Any] = {
+            "session_uuid": self.session.uuid,
+            "index": self.session.index,
+        }
+        if a is not None and not a.finished:
+            # Nested, not a top-level `attempt_uuid`: see the note in
+            # `events.apply`. The cursor above has to survive this attempt being
+            # thrown away later.
+            payload["attempt"] = {"uuid": a.uuid, **a.timing()}
+        elif a is not None:
+            # Finished, but the capture flow was interrupted before `advance`.
+            # There is nothing to resume into and the cursor has not moved yet,
+            # so move it here rather than handing back a solved problem.
+            payload["index"] = self.session.index + 1
+        events.append(self.conn, events.SESSION_SUSPENDED, payload)
+        self.session = None
+        self.attempt = None
+
+    def resume_session(self, session_uuid: str) -> Session:
+        """Reopen a suspended run, live attempt and all.
+
+        The clock comes back **paused**. Reading yourself back into a problem you
+        last saw eight hours ago is not solve time, and starting the timer the
+        instant the screen draws would bill it as if it were.
+        """
+        if self.session is not None:
+            raise SessionError("a session is already in progress")
+        row = self.conn.execute(
+            "SELECT * FROM sessions WHERE uuid = ? AND ended_at IS NULL", (session_uuid,)
+        ).fetchone()
+        if row is None:
+            raise SessionError("no suspended run to resume")
+
+        session = Session(
+            uuid=session_uuid,
+            id=int(row["id"]),
+            planned_n=int(row["planned_n"] or 0),
+            slugs=json.loads(row["slugs"] or "[]"),
+            index=int(row["resume_index"] or 0),
+        )
+        attempt_row = self.conn.execute(
+            "SELECT * FROM attempts WHERE session_id = ? AND ended_at IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (session.id,),
+        ).fetchone()
+        attempt = None
+        if attempt_row is not None:
+            problem = catalog.get(self.conn, attempt_row["slug"])
+            if problem is not None:
+                attempt = self._rehydrate(attempt_row, problem)
+
+        away = 0
+        if row["suspended_at"]:
+            gap = datetime.now(timezone.utc) - srs.parse_ts(row["suspended_at"])
+            away = max(0, int(gap.total_seconds()))
+        events.append(
+            self.conn,
+            events.SESSION_RESUMED,
+            {
+                "session_uuid": session_uuid,
+                "index": session.index,
+                "attempt": (
+                    {"uuid": attempt.uuid, "away_seconds": away} if attempt else None
+                ),
+            },
+        )
+        self.session = session
+        self.attempt = attempt
+        return session
+
+    def _rehydrate(self, row: sqlite3.Row, problem: Problem) -> Attempt:
+        """Rebuild the live attempt from its projection row.
+
+        The monotonic clock died with the last process, so it is reconstructed
+        from the two readings the suspend froze: put `started_monotonic` far
+        enough back that `wall_seconds` reads `active + paused` again, and the
+        properties take care of themselves.
+        """
+        active = int(row["active_seconds"] or 0)
+        paused = int(row["paused_seconds"] or 0)
+        now = self.clock()
+        logged = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM submissions WHERE attempt_uuid = ?", (row["uuid"],)
+        ).fetchone()
+        return Attempt(
+            uuid=row["uuid"],
+            id=int(row["id"]),
+            problem=problem,
+            is_review=bool(row["is_review"]),
+            clock=self.clock,
+            started_monotonic=now - active - paused,
+            paused_at=now,
+            paused_seconds=paused,
+            max_hint_tier=int(row["max_hint_tier"] or 0),
+            submissions=int(row["submissions"] or 0),
+            # Every submit, not just the failures -- this is what names the next
+            # archived wrong answer, so it must not restart at 1 and overwrite
+            # a file the first half of the attempt already wrote.
+            submits_logged=int(logged["n"]),
+        )
 
     def _infer_outcome(self) -> str:
         assert self.session is not None

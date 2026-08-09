@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 
 from textual.app import App
 
-from .. import branding, catalog, config as config_module, db, paths, scoring
+from .. import branding, catalog, config as config_module, db, engine as engine_module, paths, scoring
 from ..engine import RunEngine
 from .screens import (
     FetchScreen,
@@ -52,10 +52,20 @@ class CoreApp(App):
         self.push_screen(HomeScreen())
 
     def on_unmount(self) -> None:
-        # A run left open by a hard quit is still a run: seal it rather than
-        # leaving a session row with no ended_at.
+        """Leave a run recoverable rather than sealing it behind you.
+
+        A hard quit used to abandon whatever was on screen, which recorded a
+        `gave_up` -- score 0 and an FSRS lapse -- for a problem you were in the
+        middle of. Suspending instead costs nothing and offers the run back on
+        the next launch. With no live attempt there is nothing to come back to,
+        so the run is sealed the way it always was, note and all.
+        """
         try:
-            if self.engine.session is not None:
+            if self.engine.session is None:
+                return
+            if self.engine.attempt is not None and not self.engine.attempt.finished:
+                self.engine.suspend_session()
+            else:
                 self.engine.end_session(session_note=self.pending_session_note)
         except Exception:
             pass
@@ -116,8 +126,33 @@ class CoreApp(App):
         self.speech_mode = (
             self.config.audio.speech_mode if speech_mode is None else speech_mode
         )
-        self.engine.start_session(slugs, planned_n=len(slugs))
+        self.engine.start_session(slugs, planned_n=len(slugs), speech_mode=self.speech_mode)
         self.push_screen(SolveScreen(self.engine))
+
+    def suspended_run(self) -> engine_module.SuspendedRun | None:
+        """The run waiting to be picked up, if any. None while one is live."""
+        if self.engine.session is not None:
+            return None
+        return engine_module.suspended_run(self.conn)
+
+    def action_resume_run(self) -> None:
+        """Reopen the suspended run, on the problem it was left on."""
+        run = self.suspended_run()
+        if run is None:
+            self.bell()
+            return
+        self.reload_config()
+        # From the run, not from the setting: whether this run is recording was
+        # decided when it started, and a knob flipped since is not a reason to
+        # start a microphone halfway through a problem that began without one.
+        self.speech_mode = run.speech_mode
+        self.engine.resume_session(run.session_uuid)
+        self.push_screen(SolveScreen(self.engine))
+
+    def suspend_run(self) -> None:
+        """Put the run down and land back on home, where `c` picks it up."""
+        self.engine.suspend_session()
+        self.finish_run()
 
     def show_summary(self) -> None:
         self.push_screen(SummaryScreen(self.engine))

@@ -175,6 +175,8 @@ Because those keys are motions everywhere, no screen binds them to an action.
 On the home screen:
 .B n
 starts a run,
+.B c
+picks up a suspended one where you left it,
 .B d
 opens today's queue,
 .B r
@@ -254,6 +256,17 @@ moves a review.
 .TP
 .B x
 Give up. Scores zero, and is still recorded.
+.TP
+.B z
+Suspend the run. The problem on screen keeps its clock, its hint tier and its
+submits, and keeps no verdict, so nothing is scored and no review is scheduled
+for a problem you are still in the middle of.
+.B c
+on the home screen hands it back, with the clock stopped until
+.B p
+starts it. Quitting hard does the same thing rather than recording a
+.I gave_up
+you never meant. Time spent away is kept separately from paused time.
 .TP
 .B q
 End the run.

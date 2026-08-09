@@ -293,6 +293,14 @@ class Run:
     session_note: str | None
     attempts: list[dict[str, Any]] = field(default_factory=list)
     score: int = 0
+    #: Set while the run is put down mid-flight and waiting to be resumed. Such a
+    #: run is real and its finished problems count -- it just isn't over, which
+    #: is why the history screen says so instead of showing a blank end time.
+    suspended_at: str | None = None
+
+    @property
+    def suspended(self) -> bool:
+        return bool(self.suspended_at)
 
     @property
     def solved(self) -> int:
@@ -385,6 +393,7 @@ def load_runs(
             outcome=s["outcome"],
             session_note=s["session_note"],
             attempts=attempts,
+            suspended_at=s["suspended_at"],
         )
         run.score = sum(
             scoring.score_attempt(a, a["difficulty"], w).total

@@ -103,6 +103,21 @@ in settings and replaying reschedules all of it.
    the lesson. Turn it off in settings if you would rather not be asked.
 5. **Summary** — the run's death screen, scored and ranked against every past run.
 
+A run does not have to end the day it starts. `z` **suspends** it: the problem
+on screen keeps its clock reading, its hint tier and its failed-submit count,
+and keeps no verdict at all, so nothing is scored and no review is scheduled for
+a problem you are still in the middle of. The home screen then offers it back —
+`c`, or the entry at the top of the menu, which says which problem you were on
+and how long ago you put it down. Quitting hard does the same thing: closing the
+terminal mid-problem suspends the run rather than recording a `gave_up` you
+never meant.
+
+Resuming hands the problem back with **the clock stopped**, because reading
+yourself into a problem you last saw eight hours ago is not solve time. `p`
+starts it. The time you were away is kept as its own number, next to the pause
+it is not: an overnight break and four minutes at the kettle are different facts
+about how a solve went, and history shows them separately.
+
 ### Keys
 
 Navigation is vim's, on every screen. Arrows, Home/End and PageUp/PageDown
@@ -125,6 +140,7 @@ real points.
 | | |
 |---|---|
 | `n` | new run (home) |
+| `c` | resume the suspended run, on the problem it was left on (home) |
 | `d` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
@@ -141,6 +157,7 @@ real points.
 | `f` | finish — verdict, confidence, time complexity, optimality, then capture |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
+| `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
 | `d` | delete the highlighted run (history) |
 | `q` | end the run / back |
 
@@ -273,6 +290,9 @@ what it resolved. A pause stops the current segment and a resume starts a new
 one rather than suspending the encoder — a stopped `ffmpeg` keeps being handed
 samples it never reads, and what comes back after a resume is an overrun rather
 than a continuation. The segments are joined without re-encoding at the end.
+Suspending a run leaves those segments on disk unjoined, and resuming it adopts
+them and keeps numbering, so a solve split across two sittings still comes back
+as one recording.
 
 Size is set by `[audio] bitrate_kbps`, also a settings knob. Mono Opus at
 constrained VBR, so the number is a ceiling: 24 kbps is 10.8 MB an hour

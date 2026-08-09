@@ -91,6 +91,26 @@ class Recorder:
             return self.recording
         return self._open_segment()
 
+    def adopt(self) -> int:
+        """Take over the segments an earlier process left behind. Returns how many.
+
+        For resuming a suspended run. The segment directory is keyed on
+        `(slug, attempt_id)` and only `stop`/`discard` ever clear it, so the
+        pieces of the first half are sitting exactly where a fresh recorder for
+        the same attempt would look. Seeding `_segments` is enough: the numbering
+        in `_open_segment` counts off it, so the next segment lands after the
+        last one rather than on top of it.
+
+        Leaves the recorder closed, in the paused state a resume comes back in.
+        """
+        if self._stopped or self.recording:
+            return len(self._segments)
+        try:
+            self._segments = sorted(self.segment_dir.glob("*.opus"))
+        except OSError:
+            self._segments = []
+        return len(self._segments)
+
     def pause(self) -> None:
         self._close_segment()
 

@@ -34,6 +34,11 @@ SUBMISSION_ARCHIVED = "submission_archived"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
+# Put the run down and pick it up in a later process. Not an ending: the attempt
+# on screen keeps its NULL verdict, which is what stops a break from being
+# scored as a `gave_up` it never was.
+SESSION_SUSPENDED = "session_suspended"
+SESSION_RESUMED = "session_resumed"
 REVIEW_COMPLETED = "review_completed"   # Phase 3
 MEMORY_UPDATED = "memory_updated"       # Phase 3
 QUEUE_GENERATED = "queue_generated"     # Phase 2
@@ -58,6 +63,8 @@ EVENT_TYPES = frozenset(
         NOTE_WRITTEN,
         AUDIO_RECORDED,
         SESSION_ENDED,
+        SESSION_SUSPENDED,
+        SESSION_RESUMED,
         REVIEW_COMPLETED,
         MEMORY_UPDATED,
         QUEUE_GENERATED,
@@ -250,9 +257,19 @@ def apply(
     p = event.payload
 
     if event.type == SESSION_STARTED:
+        # `slugs` is stored rather than left in the payload because resuming has
+        # to know the plan, and `speech_mode` because the setup screen's ctrl+a
+        # override is a decision about this run that a restart must not lose.
         conn.execute(
-            "INSERT OR IGNORE INTO sessions(uuid, started_at, planned_n) VALUES(?,?,?)",
-            (p["session_uuid"], p.get("started_at", event.ts), int(p.get("planned_n", 0))),
+            "INSERT OR IGNORE INTO sessions"
+            "(uuid, started_at, planned_n, slugs, speech_mode) VALUES(?,?,?,?,?)",
+            (
+                p["session_uuid"],
+                p.get("started_at", event.ts),
+                int(p.get("planned_n", 0)),
+                json.dumps(p.get("slugs", [])),
+                int(p.get("speech_mode", 0)),
+            ),
         )
 
     elif event.type == PROBLEM_STARTED:
@@ -376,6 +393,52 @@ def apply(
                 p["session_uuid"],
             ),
         )
+
+    # Both of these are addressed to the *session*, and the attempt readings they
+    # carry are nested under `attempt` rather than sitting at the top level as an
+    # `attempt_uuid`. That placement is load-bearing: `replay` skips any event
+    # whose top-level `attempt_uuid` was discarded, and the cursor a suspend
+    # records is a fact about the run that stays true whatever later became of
+    # the problem that was on screen. Nested, the tombstone still does its job --
+    # the UPDATEs below simply match no row once the attempt is forgotten.
+
+    elif event.type == SESSION_SUSPENDED:
+        conn.execute(
+            "UPDATE sessions SET suspended_at = ?, resume_index = ? WHERE uuid = ?",
+            (p.get("suspended_at", event.ts), int(p.get("index", 0)), p["session_uuid"]),
+        )
+        # The clock readings land on the attempt with `ended_at` and `verdict`
+        # left NULL — which is already this schema's word for "in progress", so
+        # `queues._attempted_slugs` keeps the problem out of tomorrow's queue and
+        # nothing grades it. They are what `RunEngine.resume_session` rebuilds
+        # the monotonic clock from in the next process.
+        attempt = p.get("attempt") or {}
+        if attempt.get("uuid"):
+            _update_attempt(
+                conn,
+                attempt["uuid"],
+                active_seconds=attempt.get("active_seconds"),
+                wall_seconds=attempt.get("wall_seconds"),
+                paused_seconds=attempt.get("paused_seconds"),
+            )
+
+    elif event.type == SESSION_RESUMED:
+        conn.execute(
+            "UPDATE sessions SET suspended_at = NULL WHERE uuid = ?", (p["session_uuid"],)
+        )
+        # `away_seconds` is measured once, when you come back, and carried here
+        # rather than recomputed from the two events' timestamps — the same rule
+        # `is_review` follows, and what keeps a replay from quietly rewriting how
+        # long you were gone.
+        attempt = p.get("attempt") or {}
+        if attempt.get("uuid"):
+            conn.execute(
+                "UPDATE attempts SET "
+                "  suspended_seconds = COALESCE(suspended_seconds, 0) + ?, "
+                "  suspends = COALESCE(suspends, 0) + 1 "
+                "WHERE uuid = ?",
+                (int(attempt.get("away_seconds", 0)), attempt["uuid"]),
+            )
 
     elif event.type == QUEUE_GENERATED:
         # The payload carries the finished list, so this replays rather than

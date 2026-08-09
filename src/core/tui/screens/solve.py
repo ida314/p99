@@ -42,6 +42,11 @@ class SolveScreen(VimMotion, Screen[None]):
         Binding("s", "submit", "failed submit"),
         Binding("f", "finish", "finish"),
         Binding("x", "give_up", "give up"),
+        # `z` for the break you come back from, next to `x` for the one you
+        # don't. No confirmation, because unlike everything else on this row it
+        # costs nothing: `c` on the home screen hands the problem back with the
+        # clock reading exactly what it reads now.
+        Binding("z", "suspend", "suspend"),
         Binding("q", "end_run", "end run"),
     ]
 
@@ -77,24 +82,34 @@ class SolveScreen(VimMotion, Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._next_problem()
+        attempt = self.engine.attempt
+        if attempt is not None and not attempt.finished:
+            # Resumed: the engine already holds the attempt, rebuilt from its
+            # row. Starting a problem here would open a second one on top of it.
+            self._render_problem()
+            self._toast("resumed — the clock is paused, p starts it")
+            self._resume_recording()
+        else:
+            self._next_problem()
         self.set_interval(0.5, self._tick)
 
     def on_unmount(self) -> None:
         """A hard quit must never leave ffmpeg holding the microphone.
 
-        Keeps what was recorded and logs it if it still can — the run this
-        interrupted is sealed as an abandonment by `CoreApp.on_unmount`, and an
-        abandoned attempt is exactly the one whose recording is worth having.
-        Everything here is best-effort: the screen is already going away.
+        Closes the open segment and leaves every piece on disk rather than
+        joining them. This screen only ever unmounts holding a live recorder
+        when the run is being suspended — by `z`, or by the hard quit that
+        `CoreApp.on_unmount` now suspends rather than seals — and a resume picks
+        the pieces back up through `Recorder.adopt`. Joining here would end the
+        recording halfway through a problem that isn't over.
+
+        Best-effort throughout: the screen is already going away.
         """
         recorder, self._recorder = self._recorder, None
         if recorder is None:
             return
         try:
-            path = recorder.stop()
-            if path is not None:
-                self.engine.record_audio(str(path))
+            recorder.pause()
         except Exception:
             pass
 
@@ -170,24 +185,51 @@ class SolveScreen(VimMotion, Screen[None]):
     # cost you an attempt — a missing ffmpeg, a dead microphone or a failed join
     # is a yellow toast and nothing more.
 
-    def _start_recording(self) -> None:
+    def _new_recorder(self) -> audio.Recorder | None:
+        """A recorder for the attempt on screen, or None if this run isn't recording."""
         attempt = self.engine.attempt
-        self._recorder = None
         if attempt is None or not self.app.speech_mode:  # type: ignore[attr-defined]
-            return
+            return None
         if not audio.available():
             self._toast("speech mode is on but there's no ffmpeg — not recording", "yellow")
-            return
+            return None
         cfg = self.app.config.audio  # type: ignore[attr-defined]
-        recorder = audio.Recorder(
+        return audio.Recorder(
             attempt.problem.slug,
             attempt.id,
             bitrate_kbps=cfg.bitrate_kbps,
             input_format=cfg.input_format,
             device=cfg.device,
         )
+
+    def _start_recording(self) -> None:
+        self._recorder = None
+        recorder = self._new_recorder()
+        if recorder is None:
+            return
         if not recorder.start():
             self._toast("couldn't open the microphone — not recording", "yellow")
+            return
+        self._recorder = recorder
+        self._tick()
+
+    def _resume_recording(self) -> None:
+        """Pick the suspended attempt's recording back up.
+
+        Adopted rather than started, and left closed: the attempt comes back
+        paused, so the microphone does too. The first `p` opens the next segment
+        through the same path a hand-taken pause uses, and the join at the end
+        of the attempt covers both halves as one recording.
+        """
+        self._recorder = None
+        recorder = self._new_recorder()
+        if recorder is None:
+            return
+        if not recorder.adopt():
+            # Nothing was recorded before the break — either the run started
+            # without a microphone or ffmpeg never opened one. Begin now rather
+            # than silently recording nothing for the rest of the attempt.
+            self._start_recording()
             return
         self._recorder = recorder
         self._tick()
@@ -393,6 +435,21 @@ class SolveScreen(VimMotion, Screen[None]):
         if attempt is None or self._busy or attempt.finished:
             return
         self._give_up_flow()
+
+    def action_suspend(self) -> None:
+        """Put the run down and come back to it later — today, or next week.
+
+        The opposite of `q`: nothing is graded, nothing is abandoned, and the
+        problem keeps its place in the run. The recorder is detached first, while
+        the attempt is still the engine's current one, so its segments are left
+        where a resume will look for them.
+        """
+        if self._busy or self.engine.session is None:
+            return
+        recorder, self._recorder = self._recorder, None
+        if recorder is not None:
+            recorder.pause()
+        self.app.suspend_run()  # type: ignore[attr-defined]
 
     def action_end_run(self) -> None:
         if self._busy:
@@ -640,7 +697,8 @@ class SolveScreen(VimMotion, Screen[None]):
                 ok = await self.app.push_screen_wait(
                     ConfirmModal(
                         "End the run here?",
-                        "The problem in progress is recorded as gave_up.",
+                        "The problem in progress is recorded as gave_up. "
+                        "If you mean to come back to it, z suspends the run instead.",
                         yes_label="end run",
                         no_label="keep going",
                     )

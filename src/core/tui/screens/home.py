@@ -21,6 +21,9 @@ from rich.text import Text
 
 #: (key, action, label). The key is the mnemonic shortcut; the menu is also a
 #: real list, so `j`/`k` and enter get you there without knowing any of them.
+#:
+#: `resume run` is not here: it only exists when there is a run to resume, and
+#: `build_menu` puts it at the top when there is.
 MENU = [
     ("n", "new_run", "new run"),
     ("d", "queue", "queue"),
@@ -42,6 +45,10 @@ class HomeScreen(VimMotion, Screen):
     BINDINGS = [
         *MOTIONS,
         Binding("n", "new_run", "new run"),
+        # `c` for continue. Bound whether or not there is anything to resume, so
+        # the key does not appear and vanish under your fingers; it bells when
+        # there isn't.
+        Binding("c", "resume_run", "resume run"),
         # `d` for due. Not `q` (quit) and not a motion key; the queue is the one
         # screen you are meant to reach without thinking about it.
         Binding("d", "queue", "queue"),
@@ -66,18 +73,31 @@ class HomeScreen(VimMotion, Screen):
         yield Footer()
 
     def on_screen_resume(self) -> None:
+        # Rebuilt, not just refreshed: suspending a run lands here, and the way
+        # back into it has to be on screen the moment you arrive.
+        self.build_menu()
         self.refresh_overview()
 
     def on_mount(self) -> None:
+        self.build_menu()
+        self.query_one("#menu", OptionList).focus()
+        self.refresh_overview()
+
+    def build_menu(self) -> None:
+        """Draw the menu, with the suspended run on top of it if there is one."""
+        suspended = self.app.suspended_run()  # type: ignore[attr-defined]
+        entries = list(MENU)
+        if suspended is not None:
+            entries.insert(0, ("c", "resume_run", f"resume run  ·  {suspended.summary}"))
+
         menu = self.query_one("#menu", OptionList)
-        for key, action, label in MENU:
+        menu.clear_options()
+        for key, action, label in entries:
             entry = Text("  ")
             entry.append(f" {key} ", style="reverse")
-            entry.append(f"  {label}", style="bright_black")
+            entry.append(f"  {label}", style="" if action == "resume_run" else "bright_black")
             menu.add_option(Option(entry, id=action))
         menu.highlighted = 0
-        menu.focus()
-        self.refresh_overview()
 
     def refresh_overview(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
@@ -128,6 +148,9 @@ class HomeScreen(VimMotion, Screen):
 
     def action_new_run(self) -> None:
         self.app.action_new_run()  # type: ignore[attr-defined]
+
+    def action_resume_run(self) -> None:
+        self.app.action_resume_run()  # type: ignore[attr-defined]
 
     def action_queue(self) -> None:
         self.app.action_queue()  # type: ignore[attr-defined]

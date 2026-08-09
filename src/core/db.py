@@ -19,9 +19,11 @@ from . import paths
 
 # 2: `fsrs_cards` gained `step` and lost nothing; `tag_mastery` was dropped.
 # 3: `attempts` gained `optimality` and `audio_path`.
+# 4: suspend/resume — `sessions` gained the four columns a run needs to be picked
+#    up in a later process, and `attempts` gained the away-time counters.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -60,7 +62,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at     TEXT,
   planned_n    INTEGER NOT NULL,
   outcome      TEXT,                      -- completed|partial|abandoned
-  session_note TEXT                       -- optional end-of-run reflection
+  session_note TEXT,                      -- optional end-of-run reflection
+  -- Everything below is what a *suspended* run needs to be picked up by a later
+  -- process. A run only ever lived in memory before this; `slugs` and
+  -- `speech_mode` come straight off the `session_started` payload, so a replay
+  -- refills them for runs that predate the feature too.
+  slugs        TEXT,                      -- JSON array, ordered; the run's plan
+  speech_mode  INTEGER NOT NULL DEFAULT 0,
+  suspended_at TEXT,                      -- set while waiting to be resumed
+  resume_index INTEGER                    -- cursor into `slugs`
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -94,7 +104,13 @@ CREATE TABLE IF NOT EXISTS attempts (
   -- reserved for whatever eventually checks the claim against the code.
   confirmed_complexity TEXT,
   optimality         TEXT,                -- optimal|suboptimal|unsure
-  is_review          INTEGER NOT NULL DEFAULT 0
+  is_review          INTEGER NOT NULL DEFAULT 0,
+  -- Time the app was closed on this attempt, and how many times you walked away
+  -- and came back. Deliberately not folded into `paused_seconds`: a pause is
+  -- four minutes at the kettle with the run on screen, and calling an overnight
+  -- gap the same thing would make both numbers useless.
+  suspended_seconds  INTEGER DEFAULT 0,
+  suspends           INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS attempts_session_idx ON attempts(session_id);
 CREATE INDEX IF NOT EXISTS attempts_slug_idx    ON attempts(slug);
@@ -201,6 +217,7 @@ PROJECTION_TABLES = (
 SHAPE_CHANGED_IN = {
     2: ("fsrs_cards", "tag_mastery"),
     3: ("submissions", "attempts"),
+    4: ("submissions", "attempts", "sessions"),
 }
 
 
