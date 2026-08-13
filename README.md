@@ -88,13 +88,17 @@ in settings and replaying reschedules all of it.
    You solve in the browser and self-report the verdict; LeetCode is the judge —
    except [offline](#offline), where there isn't one.
 3. **Finish** — how much help you needed, how well it would stick cold in a
-   month, the time complexity you claim your solution has, and whether it was
-   the optimal algorithm. The last two are recorded and shown back in history
-   and on the run summary; neither is scored and neither moves a review, because
-   a bonus set before there is data to set it from is a guess with a number on
-   it. The optimality answer defaults to *not sure* — the flattering answer is
-   never the default here, for the same reason the verdict starts on the worst
-   thing already on the record.
+   month, and what you say the solution costs: a time complexity and a space
+   complexity, each with its own *was it optimal?* answer. Two axes rather than
+   one because the trade is the whole point — the hash map that buys O(n) time
+   pays O(n) space for it, and one answer cannot record a decision made in two
+   directions. The cost claims are recorded and shown back in history and on the
+   run summary; none of it is scored and none of it moves a review, because a
+   bonus set before there is data to set it from is a guess with a number on it.
+   Both optimality answers default to *not sure*, separately — being certain
+   about time and having never thought about space is the normal state, and the
+   flattering answer is never the default here, for the same reason the verdict
+   starts on the worst thing already on the record.
 4. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
@@ -126,7 +130,7 @@ still work.
 | | |
 |---|---|
 | `j` `k` | down, up |
-| `h` `l` | left, right — between panes, or through the values of a setting |
+| `h` `l` | left, right — between panes, between the time and space ladders at the finish prompt, or through the values of a setting |
 | `gg` `G` | top, bottom |
 | `ctrl+d` `ctrl+u` | half a screen |
 | `ctrl+f` `ctrl+b` | a full screen |
@@ -154,7 +158,7 @@ real points.
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, time complexity, optimality, then capture |
+| `f` | finish — verdict, confidence, time and space cost, optimality, then capture |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |

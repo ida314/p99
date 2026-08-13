@@ -21,9 +21,12 @@ from . import paths
 # 3: `attempts` gained `optimality` and `audio_path`.
 # 4: suspend/resume — `sessions` gained the four columns a run needs to be picked
 #    up in a later process, and `attempts` gained the away-time counters.
+# 5: the cost claim split along its two axes — `attempts` gained a space
+#    complexity and a per-axis optimality answer, and `optimality` stopped being
+#    written to.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -100,10 +103,22 @@ CREATE TABLE IF NOT EXISTS attempts (
   -- what you said your solution costs, typed at the finish prompt. Free text:
   -- O(n+m), O(nk) and "amortized O(1)" are the answers worth having, and a
   -- format that rejects them would only be recording the easy cases.
-  claimed_complexity TEXT,
+  claimed_complexity       TEXT,          -- time
+  claimed_space_complexity TEXT,
   -- reserved for whatever eventually checks the claim against the code.
   confirmed_complexity TEXT,
-  optimality         TEXT,                -- optimal|suboptimal|unsure
+  -- optimal|suboptimal|unsure, once per axis. They are separate columns and not
+  -- one answer because they are separate facts: a hash map that buys O(n) time
+  -- with O(n) space is optimal on one axis and beaten on the other, and being
+  -- sure about time while having never thought about space is the normal state.
+  time_optimality    TEXT,
+  space_optimality   TEXT,
+  -- legacy, still in the log: the answer to "was it the optimal algorithm?",
+  -- asked before the question had axes. Never written to again, and never
+  -- reinterpreted as either of the two above -- an unqualified "optimal" is not
+  -- a claim about time, it is a claim someone made about a question that did
+  -- not distinguish. It renders as it always did.
+  optimality         TEXT,
   is_review          INTEGER NOT NULL DEFAULT 0,
   -- Time the app was closed on this attempt, and how many times you walked away
   -- and came back. Deliberately not folded into `paused_seconds`: a pause is
@@ -218,6 +233,7 @@ SHAPE_CHANGED_IN = {
     2: ("fsrs_cards", "tag_mastery"),
     3: ("submissions", "attempts"),
     4: ("submissions", "attempts", "sessions"),
+    5: ("submissions", "attempts"),
 }
 
 

@@ -118,7 +118,7 @@ def cmd_history(args: argparse.Namespace) -> int:
                         attempt["difficulty"],
                         score,
                         attempt.get("self_confidence"),
-                        render.approach_label(attempt),
+                        render.approach_rows(attempt),
                     )
                 )
                 console.print()

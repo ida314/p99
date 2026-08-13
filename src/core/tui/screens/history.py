@@ -16,7 +16,7 @@ from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ... import events, scoring, stats
-from ...render import approach_label, death_screen, empty_state, history_table, stat_line
+from ...render import approach_rows, death_screen, empty_state, history_table, stat_line
 from ...scoring import fmt_duration
 from ..vim import MOTIONS, VimMotion
 from .finish import ConfirmModal
@@ -117,7 +117,7 @@ class HistoryScreen(VimMotion, Screen[None]):
                     attempt["difficulty"],
                     score,
                     attempt.get("self_confidence"),
-                    approach_label(attempt),
+                    approach_rows(attempt),
                 )
             )
             blocks.append(self._artifacts(attempt))

@@ -1132,10 +1132,10 @@ async def test_the_confidence_knob_asks_about_recall_not_about_now(app):
 
 
 async def test_the_finish_prompt_asks_what_the_solution_cost(app):
-    """The typed complexity and the optimality answer, from keystrokes to row."""
+    """The typed complexities and the optimality answers, from keystrokes to row."""
     from textual.widgets import RadioButton, RadioSet
 
-    from core.tui.screens.finish import OPTIMALITY_OPTIONS
+    from core.tui.screens.finish import OPTIMALITY_AXES, OPTIMALITY_OPTIONS
 
     async with app.run_test() as pilot:
         app.start_run(["two-sum"])
@@ -1146,29 +1146,41 @@ async def test_the_finish_prompt_asks_what_the_solution_cost(app):
         assert isinstance(screen, FinishModal)
 
         labels = [_plain(s) for s in screen.query(Static)]
-        assert "your time complexity — optional" in labels
-        assert "was it the optimal algorithm?" in labels
+        assert "what your solution costs — optional" in labels
+        assert "was it optimal?" in labels
+        # The axes are named on screen, or two identical ladders mean nothing.
+        assert "time" in labels and "space" in labels
 
-        buttons = screen.query_one("#optimality", RadioSet).query(RadioButton)
-        assert [b.label.plain for b in buttons] == [label for _, label in OPTIMALITY_OPTIONS]
+        for radio_id, _, _ in OPTIMALITY_AXES:
+            buttons = screen.query_one(f"#{radio_id}", RadioSet).query(RadioButton)
+            assert [b.label.plain for b in buttons] == [
+                label for _, label in OPTIMALITY_OPTIONS
+            ]
 
         screen.query_one("#complexity", Input).value = "O(n log n)"
+        screen.query_one("#space-complexity", Input).value = "O(n)"
         # `k` off the default highlights "not optimal"; `space` presses it. The
         # motion moves the cursor and nothing else, which is the point of the
         # rule in `vim.py` — a key that moves must never also commit.
-        screen.query_one("#optimality", RadioSet).focus()
+        screen.query_one("#time-optimality", RadioSet).focus()
         await pilot.press("k")
         await pilot.press("space")
         await pilot.pause()
+        # The other axis is untouched, and keeps its own default rather than
+        # following the one you just answered.
         await pilot.press("ctrl+s")
         await pilot.pause()
 
     row = app.conn.execute("SELECT * FROM attempts").fetchone()
     assert row["claimed_complexity"] == "O(n log n)"
-    assert row["optimality"] == "suboptimal"
+    assert row["claimed_space_complexity"] == "O(n)"
+    assert row["time_optimality"] == "suboptimal"
+    assert row["space_optimality"] == "unsure"
+    # The question that had no axes is not answered by the two that do.
+    assert row["optimality"] is None
 
 
-async def test_optimality_defaults_to_not_sure(app):
+async def test_optimality_defaults_to_not_sure_on_both_axes(app):
     """The flattering answer is never the default — same rule as the verdict."""
     async with app.run_test() as pilot:
         app.start_run(["two-sum"])
@@ -1179,9 +1191,11 @@ async def test_optimality_defaults_to_not_sure(app):
         await pilot.pause()
 
     row = app.conn.execute("SELECT * FROM attempts").fetchone()
-    assert row["optimality"] == "unsure"
+    assert row["time_optimality"] == "unsure"
+    assert row["space_optimality"] == "unsure"
     # An untouched complexity field stores nothing rather than an empty string.
     assert row["claimed_complexity"] is None
+    assert row["claimed_space_complexity"] is None
 
 
 async def test_what_you_claimed_is_not_shown_back_on_the_next_attempt(app):
@@ -1225,6 +1239,7 @@ async def test_history_shows_the_approach_after_the_fact(app):
         await pilot.press("f")
         await pilot.pause()
         app.screen.query_one("#complexity", Input).value = "O(n)"
+        app.screen.query_one("#space-complexity", Input).value = "O(1)"
         await pilot.press("ctrl+s")
         await pilot.pause()
         await pilot.pause()
@@ -1235,9 +1250,51 @@ async def test_history_shows_the_approach_after_the_fact(app):
         await pilot.pause()
         assert isinstance(app.screen, HistoryScreen)
         shown = _plain(app.screen.query_one("#run-detail", Static))
-        assert "approach" in shown
-        assert "O(n)" in shown
-        assert "not sure" in shown
+        # One row per axis, each carrying its own claim and its own answer.
+        assert "time     O(n)  ·  not sure" in shown
+        assert "space    O(1)  ·  not sure" in shown
+
+
+async def test_h_and_l_cross_between_the_two_ladders(app):
+    """The one sideways move on the finish screen, and it undoes itself."""
+    from textual.widgets import RadioSet
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen
+
+        screen.query_one("#time-optimality", RadioSet).focus()
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert screen.focused.id == "space-optimality"
+        await pilot.press("h")
+        await pilot.pause()
+        assert screen.focused.id == "time-optimality"
+
+        # Nowhere sideways to go from the verdict ladder, so nothing moves.
+        screen.query_one("#verdict", RadioSet).focus()
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        assert screen.focused.id == "verdict"
+
+
+def test_history_still_shows_an_answer_given_before_the_question_had_axes():
+    """A pre-split attempt keeps its one unqualified row, worded as it was.
+
+    It is not promoted to the time axis and not dropped: the row says what was
+    asked and what was answered, which is the only honest thing left to render.
+    """
+    from core.render import approach_rows
+
+    legacy = {"claimed_complexity": "O(n log n)", "optimality": "optimal"}
+    assert approach_rows(legacy) == [("approach", "O(n log n)  ·  optimal")]
+    # Nothing to say is still nothing to say — no empty rows either way.
+    assert approach_rows({}) == []
 
 
 async def test_the_radio_cursor_starts_on_the_shown_default(app):
@@ -1257,11 +1314,11 @@ async def test_the_radio_cursor_starts_on_the_shown_default(app):
         await pilot.pause()
         screen = app.screen
 
-        for radio_id in ("#verdict", "#confidence", "#optimality"):
+        for radio_id in ("#verdict", "#confidence", "#time-optimality", "#space-optimality"):
             radio = screen.query_one(radio_id, RadioSet)
             assert radio._selected == radio.pressed_index, radio_id
 
-        screen.query_one("#optimality", RadioSet).focus()
+        screen.query_one("#space-optimality", RadioSet).focus()
         await pilot.pause()
         await pilot.press("j")
         await pilot.press("space")
@@ -1269,8 +1326,11 @@ async def test_the_radio_cursor_starts_on_the_shown_default(app):
         await pilot.press("ctrl+s")
         await pilot.pause()
 
-    # "not sure" is last, so one step down wraps to the top: "optimal".
-    assert app.conn.execute("SELECT * FROM attempts").fetchone()["optimality"] == "optimal"
+    # "not sure" is last, so one step down wraps to the top: "optimal". Only on
+    # the axis that had focus — a motion moves one ladder, not both.
+    row = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["space_optimality"] == "optimal"
+    assert row["time_optimality"] == "unsure"
 
 
 SPEECH_CONFIG = """

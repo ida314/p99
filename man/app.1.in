@@ -249,10 +249,11 @@ like every capture step, and switchable off in the settings screen.
 .TP
 .B f
 Finish: how much help you needed, how well it would stick cold in a month, the
-time complexity you claim, whether it was the optimal algorithm, and the
-LeetCode percentiles if you have them — then the two editor steps. The last two
-answers are recorded and shown back afterwards; neither is scored and neither
-moves a review.
+time and space complexities you claim with a separate
+.I "was it optimal?"
+answer for each, and the LeetCode percentiles if you have them — then the two
+editor steps. The cost claims are recorded and shown back afterwards; none of
+them is scored and none of them moves a review.
 .TP
 .B x
 Give up. Scores zero, and is still recorded.

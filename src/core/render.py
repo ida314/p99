@@ -77,7 +77,7 @@ def stat_line(
     difficulty: str,
     score: Score,
     confidence: int | None = None,
-    approach: str = "",
+    approach: Sequence[tuple[str, str]] = (),
 ) -> RenderableType:
     head = Text("  ")
     head.append(title, style="bold")
@@ -98,10 +98,10 @@ def stat_line(
     # Two reasons: nothing here is scored, and `score_attempt`'s component list
     # ends with a guard that folds the rounding residual into the last entry --
     # a zero-delta row appended there would silently absorb it.
-    if approach:
+    for label, detail in approach:
         line = Text("  ")
-        line.append(f"{'approach':<9}", style="bright_black")
-        line.append(f"{approach:<26}")
+        line.append(f"{label:<9}", style="bright_black")
+        line.append(f"{detail:<26}")
         line.append(f"{'':<14}")
         line.append(f"{'':>6}")
         rows.append(line)
@@ -133,6 +133,8 @@ CONFIDENCE_LABELS = {
 }
 
 # The finish modal's optimality answers, short enough to sit beside a complexity.
+# One set of words for both axes, and for the axeless answer the log still holds:
+# the three rungs never changed, only how many times you are asked to pick one.
 OPTIMALITY_LABELS = {
     "optimal": "optimal",
     "suboptimal": "not optimal",
@@ -140,17 +142,35 @@ OPTIMALITY_LABELS = {
 }
 
 
-def approach_label(attempt: Mapping[str, Any]) -> str:
-    """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one.
-
-    Empty when you answered neither question, which is why the row it feeds is
-    conditional: a stat line should not grow a blank line to say nothing.
-    """
+def _cost(complexity: Any, optimality: Any) -> str:
+    """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one."""
     parts = [
-        (attempt.get("claimed_complexity") or "").strip(),
-        OPTIMALITY_LABELS.get(attempt.get("optimality") or "", ""),
+        (complexity or "").strip(),
+        OPTIMALITY_LABELS.get(optimality or "", ""),
     ]
     return "  ·  ".join(p for p in parts if p)
+
+
+def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The stat line's cost rows: one per axis, labelled `time` and `space`.
+
+    Empty when you answered nothing, which is why the rows are built rather than
+    always emitted: a stat line should not grow a blank line to say nothing.
+
+    An attempt recorded before the question had axes gets its single unqualified
+    row back, labelled `approach` exactly as it was written. Nothing here reads
+    that answer as the time one — it was given to a question that did not ask.
+    """
+    time_row = _cost(attempt.get("claimed_complexity"), attempt.get("time_optimality"))
+    space_row = _cost(attempt.get("claimed_space_complexity"), attempt.get("space_optimality"))
+    if any(
+        attempt.get(k)
+        for k in ("time_optimality", "space_optimality", "claimed_space_complexity")
+    ):
+        return [row for row in (("time", time_row), ("space", space_row)) if row[1]]
+
+    legacy = _cost(attempt.get("claimed_complexity"), attempt.get("optimality"))
+    return [("approach", legacy)] if legacy else []
 
 
 # --- what happened last time -----------------------------------------------

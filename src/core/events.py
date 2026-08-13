@@ -357,6 +357,12 @@ def apply(
             lc_memory_pct=p.get("lc_memory_pct"),
             language=p.get("language"),
             claimed_complexity=p.get("claimed_complexity"),
+            claimed_space_complexity=p.get("claimed_space_complexity"),
+            time_optimality=p.get("time_optimality"),
+            space_optimality=p.get("space_optimality"),
+            # Only events written before the question had axes carry this, and
+            # they land in the column of the same name. Nothing maps it onto
+            # either axis: see the `attempts.optimality` comment.
             optimality=p.get("optimality"),
         )
         # Every rating input is on the row by now: verdict and timing from this

@@ -505,12 +505,14 @@ class RunEngine:
         lc_memory_pct: float | None = None,
         language: str | None = None,
         claimed_complexity: str | None = None,
-        optimality: str | None = None,
+        claimed_space_complexity: str | None = None,
+        time_optimality: str | None = None,
+        space_optimality: str | None = None,
     ) -> Attempt:
         a = self._require_attempt()
         if verdict == "gave_up":
             # Nothing you claim about a solution survives not having reached
-            # one, so the complexity and the optimality answer are dropped
+            # one, so the complexities and the optimality answers are dropped
             # rather than carried onto an abandonment.
             return self.abandon(timing=timing)
         a.final_timing = timing or a.timing()
@@ -527,7 +529,9 @@ class RunEngine:
                 "lc_memory_pct": lc_memory_pct,
                 "language": language,
                 "claimed_complexity": claimed_complexity,
-                "optimality": optimality,
+                "claimed_space_complexity": claimed_space_complexity,
+                "time_optimality": time_optimality,
+                "space_optimality": space_optimality,
             },
         )
         a.finished = True

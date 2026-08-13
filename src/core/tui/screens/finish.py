@@ -47,12 +47,23 @@ OPTIMALITY_OPTIONS = (
 )
 OPTIMALITY_DEFAULT = len(OPTIMALITY_OPTIONS) - 1
 
+# The same ladder asked once per axis, side by side. Two answers rather than one
+# because the trade is the whole point: the hash map that turns O(n log n) into
+# O(n) pays O(n) space for it, and an answer that cannot say "bought time with
+# space" cannot record the decision you actually made. Each axis keeps its own
+# "not sure" -- being certain about time and having never thought about space is
+# the normal state, and a single answer would force you to lie about one of them.
+OPTIMALITY_AXES = (
+    ("time-optimality", "time", "time_optimality"),
+    ("space-optimality", "space", "space_optimality"),
+)
+
 
 class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     """Verdict, self-confidence, what you say the solution costs, the percentiles."""
 
     # No VIM_TARGET: motions here move the focused radio set and nothing else.
-    # With focus in the complexity field or one of the percentile inputs there is
+    # With focus in a complexity field or one of the percentile inputs there is
     # nothing sensible for `j` to move, and guessing would move a radio set you
     # can't see moving.
     BINDINGS = [
@@ -62,6 +73,11 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         # A chord, not a letter: focus lives in a radio set or in one of the
         # percentile inputs, where a bare `x` is something you typed.
         Binding("ctrl+x", "throw_away", "throw away"),
+        # The one place on this screen with sideways content: the two optimality
+        # ladders. `h` and `l` cross between them and mean nothing anywhere else,
+        # which keeps the rule from `vim.py` — whatever `l` does, `h` undoes.
+        Binding("h", "axis(-1)", "time / space", show=False),
+        Binding("l", "axis(1)", "time / space", show=False),
     ]
 
     def __init__(self, title: str, active_seconds: int, submissions: int, hint_tier: int):
@@ -109,12 +125,18 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
                     yield RadioButton(label, value=(i == 2))
-            yield Static("your time complexity — optional", classes="field-label")
-            yield Input(placeholder="O(n log n)", id="complexity")
-            yield Static("was it the optimal algorithm?", classes="field-label")
-            with RadioSet(id="optimality"):
-                for i, (_, label) in enumerate(OPTIMALITY_OPTIONS):
-                    yield RadioButton(label, value=(i == OPTIMALITY_DEFAULT))
+            yield Static("what your solution costs — optional", classes="field-label")
+            with Horizontal(id="complexity-row"):
+                yield Input(placeholder="time   O(n log n)", id="complexity")
+                yield Input(placeholder="space   O(1)", id="space-complexity")
+            yield Static("was it optimal?", classes="field-label")
+            with Horizontal(id="optimality-row"):
+                for radio_id, axis, _ in OPTIMALITY_AXES:
+                    with Vertical(classes="optimality-axis"):
+                        yield Static(axis, classes="axis-label")
+                        with RadioSet(id=radio_id):
+                            for i, (_, label) in enumerate(OPTIMALITY_OPTIONS):
+                                yield RadioButton(label, value=(i == OPTIMALITY_DEFAULT))
             yield Static("leetcode percentiles — optional", classes="field-label")
             with Horizontal(id="optional-row"):
                 yield Input(placeholder="runtime %", id="runtime", type="number")
@@ -157,12 +179,26 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         except ValueError:
             return None
 
+    def action_axis(self, delta: int) -> None:
+        """Move focus between the two ladders. A no-op from anywhere else.
+
+        Deliberately not a wrap-around ride through every widget on the screen:
+        `l` from the verdict ladder has nowhere sideways to go, and taking focus
+        somewhere you were not looking is exactly what the motion rule forbids.
+        """
+        ids = [radio_id for radio_id, _, _ in OPTIMALITY_AXES]
+        focused = getattr(self.focused, "id", None)
+        if focused not in ids:
+            return
+        self.query_one(f"#{ids[(ids.index(focused) + delta) % len(ids)]}", RadioSet).focus()
+
+    def _optimality(self, radio_id: str) -> str:
+        index = self.query_one(f"#{radio_id}", RadioSet).pressed_index
+        return OPTIMALITY_OPTIONS[index if index >= 0 else OPTIMALITY_DEFAULT][0]
+
     def action_save(self) -> None:
         verdict_index = self.query_one("#verdict", RadioSet).pressed_index
         confidence_index = self.query_one("#confidence", RadioSet).pressed_index
-        optimality_index = self.query_one("#optimality", RadioSet).pressed_index
-        if optimality_index < 0:
-            optimality_index = OPTIMALITY_DEFAULT
         self.dismiss(
             {
                 "verdict": VERDICTS[
@@ -170,7 +206,10 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 ],
                 "self_confidence": (confidence_index + 1) if confidence_index >= 0 else None,
                 "claimed_complexity": self.query_one("#complexity", Input).value.strip() or None,
-                "optimality": OPTIMALITY_OPTIONS[optimality_index][0],
+                "claimed_space_complexity": (
+                    self.query_one("#space-complexity", Input).value.strip() or None
+                ),
+                **{key: self._optimality(radio_id) for radio_id, _, key in OPTIMALITY_AXES},
                 "lc_runtime_pct": self._pct(self.query_one("#runtime", Input).value),
                 "lc_memory_pct": self._pct(self.query_one("#memory", Input).value),
             }

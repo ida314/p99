@@ -233,8 +233,23 @@ FinishModal {
     width: 1fr;
 }
 
-#optional-row {
+#optional-row, #complexity-row, #optimality-row {
     height: auto;
+}
+
+/* Two ladders side by side rather than stacked: the same question asked twice
+   costs one line of height this way and four the other, and this modal is the
+   one screen where height is the whole budget. */
+.optimality-axis {
+    width: 1fr;
+    height: auto;
+}
+
+/* Nothing sets a border here on purpose: a RadioSet's border is how you see
+   which of the two axes has focus. */
+#finish-box .axis-label {
+    color: $text-muted;
+    padding-left: 1;
 }
 
 /* Pinned, so the three actions stay on screen while the verdict ladder above

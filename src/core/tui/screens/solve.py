@@ -567,7 +567,9 @@ class SolveScreen(VimMotion, Screen[None]):
                 lc_memory_pct=result.get("lc_memory_pct"),
                 language=cfg.capture.language,
                 claimed_complexity=result.get("claimed_complexity"),
-                optimality=result.get("optimality"),
+                claimed_space_complexity=result.get("claimed_space_complexity"),
+                time_optimality=result.get("time_optimality"),
+                space_optimality=result.get("space_optimality"),
             )
             self._stop_recording()
             await self._capture_flow()

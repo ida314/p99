@@ -24,7 +24,9 @@ def _run_a_session(conn, slugs=("two-sum", "3sum")):
             lc_runtime_pct=91.0,
             language="python",
             claimed_complexity="O(n log n)",
-            optimality="optimal",
+            claimed_space_complexity="O(n)",
+            time_optimality="optimal",
+            space_optimality="suboptimal",
         )
         eng.archive_code(f"/tmp/{slug}.py", "python")
         eng.record_note(f"/tmp/{slug}.md")
@@ -181,13 +183,17 @@ def test_what_you_claimed_about_the_solution_reaches_the_row(conn):
     eng.finish(
         "solved_unaided",
         claimed_complexity="O(n)",
-        optimality="suboptimal",
+        claimed_space_complexity="O(1)",
+        time_optimality="suboptimal",
+        space_optimality="optimal",
     )
     eng.record_audio("/tmp/two-sum.opus")
 
     row = conn.execute("SELECT * FROM attempts").fetchone()
     assert row["claimed_complexity"] == "O(n)"
-    assert row["optimality"] == "suboptimal"
+    assert row["claimed_space_complexity"] == "O(1)"
+    assert row["time_optimality"] == "suboptimal"
+    assert row["space_optimality"] == "optimal"
     assert row["audio_path"] == "/tmp/two-sum.opus"
 
 
@@ -197,8 +203,41 @@ def test_the_recording_and_the_claim_survive_a_replay(conn):
 
     row = conn.execute("SELECT * FROM attempts").fetchone()
     assert row["claimed_complexity"] == "O(n log n)"
-    assert row["optimality"] == "optimal"
+    assert row["claimed_space_complexity"] == "O(n)"
+    assert row["time_optimality"] == "optimal"
+    assert row["space_optimality"] == "suboptimal"
     assert row["audio_path"] == "/tmp/two-sum.opus"
+
+
+def test_an_old_optimality_answer_stays_the_answer_it_was(conn):
+    """A claim made before the question had axes is not read as either axis.
+
+    "Was it the optimal algorithm?" did not ask about time, so replaying an
+    event that answers it must not fill `time_optimality` — that would put an
+    axis on an answer nobody gave. It lands in the column of its own name and
+    renders there, unqualified, forever.
+    """
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    attempt = eng.start_problem("two-sum")
+    events.append(
+        conn,
+        events.PROBLEM_FINISHED,
+        {
+            "attempt_uuid": attempt.uuid,
+            "slug": "two-sum",
+            "verdict": "solved_unaided",
+            "claimed_complexity": "O(n log n)",
+            "optimality": "optimal",
+        },
+    )
+    events.replay(conn)
+
+    row = conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["optimality"] == "optimal"
+    assert row["time_optimality"] is None
+    assert row["space_optimality"] is None
+    assert row["claimed_space_complexity"] is None
 
 
 def test_giving_up_carries_no_claim_about_a_solution(conn):
@@ -206,12 +245,20 @@ def test_giving_up_carries_no_claim_about_a_solution(conn):
     eng = RunEngine(conn)
     eng.start_session(["two-sum"])
     eng.start_problem("two-sum")
-    eng.finish("gave_up", claimed_complexity="O(n)", optimality="optimal")
+    eng.finish(
+        "gave_up",
+        claimed_complexity="O(n)",
+        claimed_space_complexity="O(1)",
+        time_optimality="optimal",
+        space_optimality="optimal",
+    )
 
     row = conn.execute("SELECT * FROM attempts").fetchone()
     assert row["verdict"] == "gave_up"
     assert row["claimed_complexity"] is None
-    assert row["optimality"] is None
+    assert row["claimed_space_complexity"] is None
+    assert row["time_optimality"] is None
+    assert row["space_optimality"] is None
 
 
 def test_gave_up_is_still_recorded(conn):
