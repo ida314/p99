@@ -163,7 +163,7 @@ real points.
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
 | `d` | delete the highlighted run (history) |
-| `q` | end the run / back |
+| `q` | end the run / back — on a live problem it asks: record it as `gave_up` (`y`) or throw it away and go (`x`) |
 
 ## How it stores things
 
@@ -173,9 +173,10 @@ appends. Any bug in projection logic is therefore fixable retroactively — fix
 `events.apply`, replay, and all history is corrected.
 
 Deleting is the same trick. Throwing an attempt away (`ctrl+x` at the finish
-prompt) and deleting a run (`d` in history) append a **tombstone** rather than
-erasing anything: the log still records exactly what happened, and the replay
-skips every event addressed to the dead attempt or session. That skip is load
+prompt, or `x` at the end-of-run prompt) and deleting a run (`d` in history)
+append a **tombstone** rather than erasing anything: the log still records
+exactly what happened, and the replay skips every event addressed to the dead
+attempt or session. That skip is load
 bearing — a tombstone sits at the *end* of the log, so applying its events and
 deleting the rows afterwards would leave `fsrs_cards` shaped by a run that no
 longer exists. Archived code and notes stay on disk; run numbers are positional

@@ -271,6 +271,26 @@ ConfirmModal {
     background: $surface;
 }
 
+/* Same box, wider: three buttons and a line of prose for each of them. A
+   narrower one wraps "keep going" onto a second row, where the way out of the
+   prompt is the option you can't see. */
+EndRunModal {
+    align: center middle;
+}
+
+#end-run-box {
+    width: 68;
+    height: auto;
+    padding: 1 2;
+    border: round $warning;
+    background: $surface;
+}
+
+#end-run-box .field-label {
+    color: $text-muted;
+    margin-top: 1;
+}
+
 #confirm-buttons {
     height: auto;
     margin-top: 1;

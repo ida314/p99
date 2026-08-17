@@ -1,4 +1,4 @@
-"""Modals: the finish prompt and a generic confirm.
+"""Modals: the finish prompt, the end-of-run prompt, and a generic confirm.
 
 The finish prompt is the manual verdict entry (spec §15.4). LeetCode is the
 judge; you self-report. Keep it fast — this screen sits between you and the
@@ -57,6 +57,11 @@ OPTIMALITY_AXES = (
     ("time-optimality", "time", "time_optimality"),
     ("space-optimality", "space", "space_optimality"),
 )
+
+#: The two ways out of `EndRunModal` that end the run. Named rather than spelled
+#: out at both ends, so the caller's branch and the modal's answer cannot drift.
+END_RUN_RECORD = "record"
+END_RUN_DISCARD = "discard"
 
 
 class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
@@ -225,6 +230,68 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         the destructive step is never one keystroke deep inside a modal.
         """
         self.dismiss({"discard": True})
+
+
+class EndRunModal(ModalScreen[str | None]):
+    """How to end a run that still has a problem open.
+
+    Three answers rather than two, because "I'm done for today" and "this
+    attempt should never have existed" are different things and the prompt used
+    to only be able to say the first. Ending on a live problem records it as
+    `gave_up` and then opens the editor for the partial code, which is the right
+    default -- but it is the wrong thing entirely for the run you opened by
+    mistake, and sitting through two editor handoffs to get out of one is how
+    people learn to hard-quit instead.
+
+    Dismisses with `END_RUN_RECORD`, `END_RUN_DISCARD`, or None for keep going.
+    """
+
+    BINDINGS = [
+        Binding("escape", "keep", "keep going"),
+        Binding("y", "record", "end run"),
+        # `x` for throwing an attempt away, the same letter the finish modal
+        # already chords for it. Bare here, because unlike that screen there is
+        # nothing on this one you could be typing into.
+        Binding("x", "discard", "throw it away"),
+        Binding("n", "keep", "keep going"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="end-run-box"):
+            yield Static("End the run here?", classes="modal-title")
+            yield Static(
+                "end run — the problem in progress is recorded as gave_up, then "
+                "the editor opens for whatever code you have.",
+                classes="field-label",
+            )
+            yield Static(
+                "throw it away — nothing about this problem is recorded and no "
+                "editor opens. Problems you already finished keep their scores "
+                "either way.",
+                classes="field-label",
+            )
+            yield Static(
+                "If you mean to come back to it, keep going and z suspends the run.",
+                classes="field-label",
+            )
+            with Horizontal(id="confirm-buttons"):
+                yield Button("end run  (y)", variant="warning", id="record")
+                yield Button("throw away  (x)", variant="warning", id="discard")
+                yield Button("keep going  (n)", id="keep")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(
+            {"record": END_RUN_RECORD, "discard": END_RUN_DISCARD}.get(event.button.id or "")
+        )
+
+    def action_record(self) -> None:
+        self.dismiss(END_RUN_RECORD)
+
+    def action_discard(self) -> None:
+        self.dismiss(END_RUN_DISCARD)
+
+    def action_keep(self) -> None:
+        self.dismiss(None)
 
 
 class ConfirmModal(ModalScreen[bool]):

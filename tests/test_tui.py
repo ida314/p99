@@ -15,6 +15,7 @@ from textual.widgets import Input, OptionList, Static
 from core import branding, db, paths, stats
 from core.tui.app import CoreApp
 from core.tui.screens import (
+    EndRunModal,
     FetchScreen,
     FinishModal,
     HistoryScreen,
@@ -889,6 +890,77 @@ async def test_declining_the_throw_away_keeps_the_attempt_running(app):
         assert not app.engine.attempt.finished
 
 
+async def test_ending_a_run_can_throw_the_open_problem_away(app):
+    """`q` then `x`: out of the run, nothing recorded, no editor on the way."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("question_mark")   # a hint, to prove it goes too
+        await pilot.pause()
+        thrown = app.engine.attempt.uuid
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, EndRunModal)
+        await pilot.press("x")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SummaryScreen)
+        assert app.engine.attempt is None
+        rows = app.conn.execute("SELECT uuid FROM attempts").fetchall()
+        assert thrown not in [r["uuid"] for r in rows]
+        assert not rows
+        assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+        # Ended, not put down: nothing is waiting to be picked back up.
+        assert app.suspended_run() is None
+
+
+async def test_ending_a_run_still_records_the_gave_up_by_default(app):
+    """The throw-away is the new door, not the new default."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        open_attempt = app.engine.attempt.uuid
+
+        await pilot.press("q")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SummaryScreen)
+        row = app.conn.execute(
+            "SELECT verdict, ended_at FROM attempts WHERE uuid = ?", (open_attempt,)
+        ).fetchone()
+        assert row["verdict"] == "gave_up"
+        assert row["ended_at"]
+
+
+async def test_declining_the_end_run_hands_the_problem_back(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        uuid = app.engine.attempt.uuid
+
+        await pilot.press("q")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt.uuid == uuid
+        assert not app.engine.attempt.finished
+
+
 async def _play_one_run(pilot, app):
     """n → solve both problems on the defaults → back to home."""
     await pilot.press("n")
@@ -971,6 +1043,31 @@ async def test_the_finish_buttons_stay_on_screen_on_a_short_terminal(isolated_ho
         for button in app.screen.query("Button"):
             assert button.region.bottom <= 24, f"{button.id} is below the fold"
             assert button.region.right <= box.region.right, f"{button.id} overflows"
+
+
+async def test_the_end_run_buttons_fit_on_a_short_terminal(isolated_home):
+    """Three buttons in one row: the way out must not wrap off the box."""
+    paths.ensure_dirs()
+    paths.config_file().write_text(NO_CAPTURE_CONFIG)
+    app = CoreApp(db.open_db())
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+
+        assert isinstance(app.screen, EndRunModal)
+        box = app.screen.query_one("#end-run-box")
+        assert box.region.bottom <= 24
+        for button in app.screen.query("Button"):
+            assert button.region.bottom <= 24, f"{button.id} is below the fold"
+            assert button.region.right <= box.region.right, f"{button.id} overflows"
+            assert button.region.y == box.query("Button").first().region.y, (
+                f"{button.id} wrapped onto its own row"
+            )
 
 
 PAST_ATTEMPT_SLUG = "two-sum"
@@ -1463,6 +1560,30 @@ async def test_throwing_an_attempt_away_takes_its_recording_with_it(speaking_app
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
+
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
+    assert not paths.audio_path(slug, attempt_id).exists()
+    assert not segments.exists()
+
+
+async def test_ending_a_run_by_throwing_it_away_takes_the_recording_too(speaking_app):
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        slug = app.engine.attempt.problem.slug
+        attempt_id = app.engine.attempt.id
+        segments = screen._recorder.segment_dir
+
+        await pilot.press("q")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SummaryScreen)
 
     assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
     assert not paths.audio_path(slug, attempt_id).exists()

@@ -270,7 +270,15 @@ starts it. Quitting hard does the same thing rather than recording a
 you never meant. Time spent away is kept separately from paused time.
 .TP
 .B q
-End the run.
+End the run. With a problem still open it asks how:
+.B y
+records that problem as
+.I gave_up
+and opens the editor for the partial code, and
+.B x
+throws it away instead — nothing about it is recorded, no review is scheduled,
+and no editor opens. Problems already finished in the run keep their scores
+either way.
 .SH FILES
 .TP
 .I ~/.config/@SLUG@/config.toml

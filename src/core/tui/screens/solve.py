@@ -22,7 +22,7 @@ from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
 from ...scoring import HINT_TIER_NAMES, fmt_duration
 from ..vim import MOTIONS, VimMotion
-from .finish import ConfirmModal, FinishModal
+from .finish import END_RUN_DISCARD, ConfirmModal, EndRunModal, FinishModal
 
 
 class SolveScreen(VimMotion, Screen[None]):
@@ -696,25 +696,28 @@ class SolveScreen(VimMotion, Screen[None]):
             if attempt is not None and not attempt.finished:
                 timing = attempt.timing()
                 self._pause_recording(True)
-                ok = await self.app.push_screen_wait(
-                    ConfirmModal(
-                        "End the run here?",
-                        "The problem in progress is recorded as gave_up. "
-                        "If you mean to come back to it, z suspends the run instead.",
-                        yes_label="end run",
-                        no_label="keep going",
-                    )
-                )
-                if not ok:
+                choice = await self.app.push_screen_wait(EndRunModal())
+                if choice is None:
                     self._pause_recording(False)
                     self._tick()
                     return
-                self.engine.abandon(timing=timing)
-                self._stop_recording()
-                # Keep partial code on gave_up (spec §16.2): diffing it against
-                # the eventual solution is one of the most instructive artifacts
-                # this system can produce, and it's nearly free.
-                await self._capture_flow(advance=False)
+                if choice == END_RUN_DISCARD:
+                    # A way out that costs nothing and asks for nothing: the
+                    # attempt is thrown away exactly as `ctrl+x` throws one away
+                    # at the finish prompt, and the capture flow is skipped
+                    # because there is no attempt left to archive anything
+                    # against. The recording goes too, for the same reason it
+                    # does there — see `_do_throw_away`.
+                    self._stop_recording(keep=False)
+                    self.engine.discard()
+                else:
+                    self.engine.abandon(timing=timing)
+                    self._stop_recording()
+                    # Keep partial code on gave_up (spec §16.2): diffing it
+                    # against the eventual solution is one of the most
+                    # instructive artifacts this system can produce, and it's
+                    # nearly free.
+                    await self._capture_flow(advance=False)
             self._show_summary()
         finally:
             self._busy = False
