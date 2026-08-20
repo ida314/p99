@@ -36,6 +36,11 @@ DEFAULT_CONFIG_TOML = f"""\
 # with capture in it is ~30-45 min per problem: three is one sitting, and a
 # run you finish is worth more than a run you abandon halfway.
 planned_n = 3
+# how many problems today's queue holds. Separate from `planned_n` because the
+# two numbers answer different questions: this one is how much the scheduler
+# thinks you owe it today, `planned_n` is how big a hand-picked run starts out.
+# Left unset it follows `planned_n`, so splitting them is opt-in.
+queue_n = 3
 # which catalog list is active: neetcode150 | blind75
 active_list = "neetcode150"
 # random | manual
@@ -121,6 +126,7 @@ EXT_BY_LANGUAGE = {
 @dataclass(frozen=True)
 class SessionConfig:
     planned_n: int = 3
+    queue_n: int = 3
     active_list: str = "neetcode150"
     selection: str = "random"
 
@@ -196,7 +202,24 @@ def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _queue_n_follows_planned_n(raw: dict[str, Any]) -> dict[str, Any]:
+    """An unset `queue_n` is not 3 — it is whatever `planned_n` came out as.
+
+    The two numbers used to be one, so a config written before the split says
+    only `planned_n`, and taking the dataclass default there would silently
+    shrink a queue somebody had already sized. Setting `queue_n` once, in either
+    layer, decouples them for good.
+    """
+    session = _section(raw, "session")
+    if "queue_n" in session:
+        return raw
+    follows = session.get("planned_n", SessionConfig.planned_n)
+    return {**raw, "session": {**session, "queue_n": follows}}
+
+
 def _build(raw: dict[str, Any]) -> Config:
+    raw = _queue_n_follows_planned_n(raw)
+
     def pick(cls, name: str):
         allowed = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in _section(raw, name).items() if k in allowed})
@@ -306,8 +329,17 @@ def options() -> tuple[Option, ...]:
         ),
         Option(
             "session.planned_n",
-            "problems per run",
+            "problems per new run",
             "what the setup screen rolls by default — a starting point, not a floor",
+            tuple(range(1, 11)),
+        ),
+        # Beside `planned_n` rather than on the end: they are the same question
+        # asked of two screens, and a settings list that separates them invites
+        # exactly the confusion the split exists to end.
+        Option(
+            "session.queue_n",
+            "problems in the queue",
+            "how many the scheduler puts on today's queue — unset, it follows the number above",
             tuple(range(1, 11)),
         ),
         Option(
@@ -334,9 +366,12 @@ def options() -> tuple[Option, ...]:
             "`o` opens the cached copy of the problem instead of leetcode.com — for planes",
             (False, True),
         ),
-        # New options go on the end. The settings screen is an OptionList and
-        # its tests navigate it by row index, so inserting above an existing
-        # knob silently retargets every one of them.
+        # New options go on the end unless they belong beside an existing one.
+        # The settings screen is an OptionList and its tests navigate it by row
+        # index, so an insert silently retargets every row below it: check
+        # `test_settings_opens_from_home_and_toggles_wrong_answer_capture`,
+        # `test_settings_values_move_sideways_and_come_back` and
+        # `test_new_options_go_on_the_end` before moving anything.
         Option(
             "audio.speech_mode",
             "speech mode",

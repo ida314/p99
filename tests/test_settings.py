@@ -138,6 +138,52 @@ def test_the_recording_bitrate_is_a_settings_knob(conn):
     assert config.load(conn).audio.bitrate_kbps == 24
 
 
+def test_the_queue_size_follows_planned_n_until_it_is_set(conn):
+    """The two numbers were one, so a config written before the split still works.
+
+    Taking the dataclass default for `queue_n` there would quietly shrink a
+    queue somebody had already sized by setting `planned_n`.
+    """
+    _write_file_config()  # planned_n = 5, no queue_n
+    cfg = config.load(conn)
+    assert cfg.session.planned_n == 5
+    assert cfg.session.queue_n == 5
+
+
+def test_the_queue_size_and_the_run_size_are_separate_knobs(conn):
+    _write_file_config(FILE_CONFIG + "\n[stats]\nmin_samples = 3\n")
+    config.set_option(conn, "session.queue_n", 2)
+    cfg = config.load(conn)
+    assert cfg.session.queue_n == 2
+    assert cfg.session.planned_n == 5  # untouched by its neighbour
+
+    config.set_option(conn, "session.planned_n", 1)
+    cfg = config.load(conn)
+    assert cfg.session.planned_n == 1
+    assert cfg.session.queue_n == 2  # and once set, it stops following
+
+    config.clear_option(conn, "session.queue_n")
+    assert config.load(conn).session.queue_n == 1  # back to following the file's chain
+
+
+def test_the_queue_size_is_a_settings_knob(conn):
+    _write_file_config('[session]\nqueue_n = 4\n')
+    assert config.load(conn).session.queue_n == 4
+
+    config.set_option(conn, "session.queue_n", 7)
+    assert config.load(conn).session.queue_n == 7
+
+    # A value that is no longer on offer is ignored rather than loaded.
+    config.set_option(conn, "session.queue_n", 999)
+    assert config.load(conn).session.queue_n == 4
+
+
+def test_the_queue_size_sits_beside_the_run_size(conn):
+    """Two rows apart would reintroduce the confusion the split exists to end."""
+    keys = [o.key for o in config.options()]
+    assert keys.index("session.queue_n") == keys.index("session.planned_n") + 1
+
+
 def test_the_microphone_is_a_file_only_setting(conn):
     """Which device to record from is a fact about the machine, not a knob."""
     _write_file_config(FILE_CONFIG + '\n[audio]\ninput_format = "alsa"\ndevice = "hw:0"\n')

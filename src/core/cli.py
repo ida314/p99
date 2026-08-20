@@ -153,7 +153,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     weights = scoring.load_weights(cfg.scoring.weights)
     queue = queues.ensure(
         conn,
-        n=args.n or cfg.session.planned_n,
+        n=args.n or cfg.session.queue_n,
         active_list=cfg.session.active_list,
         weights=weights,
         regenerate=args.regenerate,

@@ -387,6 +387,30 @@ def empty_state(message: str, hint: str = "") -> RenderableType:
 # --- the queue (spec §10) --------------------------------------------------
 
 
+def queue_row(n: int, item) -> Text:
+    """One queue line: what it is, and when it was owed.
+
+    Its own function because the queue screen hands these to a `SelectionList`
+    as prompts, and a row that drifted from the one `p99 queue` prints would be
+    two descriptions of the same queue.
+    """
+    line = Text("  ")
+    line.append(f"{n} ", style="bright_black")
+    title = item.title if len(item.title) <= 29 else item.title[:28] + "…"
+    line.append(f"{title:<30}", style="bold" if item.is_review else "")
+    line.append(
+        f"{(item.difficulty or '?')[:1].upper():<3}",
+        style=DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
+    )
+    line.append(f"{(item.pattern or '—'):<20}", style="bright_black")
+    if item.is_review:
+        when = f"review · {item.overdue_days}d overdue" if item.overdue_days else "review · due"
+        line.append(when, style="yellow")
+    else:
+        line.append("new", style="bright_black")
+    return line
+
+
 def queue_panel(queue, show_rationale: bool = True) -> RenderableType:
     """Today's queue: what to do, in what order, and why.
 
@@ -407,21 +431,7 @@ def queue_panel(queue, show_rationale: bool = True) -> RenderableType:
     rows.append(header)
 
     for n, item in enumerate(queue.items, 1):
-        line = Text("  ")
-        line.append(f"{n} ", style="bright_black")
-        title = item.title if len(item.title) <= 29 else item.title[:28] + "…"
-        line.append(f"{title:<30}", style="bold" if item.is_review else "")
-        line.append(
-            f"{(item.difficulty or '?')[:1].upper():<3}",
-            style=DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
-        )
-        line.append(f"{(item.pattern or '—'):<20}", style="bright_black")
-        if item.is_review:
-            when = f"review · {item.overdue_days}d overdue" if item.overdue_days else "review · due"
-            line.append(when, style="yellow")
-        else:
-            line.append("new", style="bright_black")
-        rows.append(line)
+        rows.append(queue_row(n, item))
 
     rows.append(rule())
     counts = Text("  ")

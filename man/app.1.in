@@ -107,8 +107,10 @@ Sample count below which the 99th percentile is greyed out.
 .TP
 .BI \-n " N"
 Problems in the queue. Defaults to
+.I session.queue_n
+from the configuration, which itself falls back to
 .I session.planned_n
-from the configuration.
+until you set it.
 .TP
 .B \-\-regenerate
 Rebuild today's queue from the current cards, replacing the one already stored
@@ -190,15 +192,22 @@ quits. The menu is also a list, so
 .BR j / k
 and Enter reach the same places.
 .PP
-On the queue screen:
+On the queue screen every row arrives checked.
+.B Space
+unchecks the one under the cursor,
+.B ^e
+and
+.B ^x
+check everything and nothing,
 .B Enter
 (or
 .BR ^s )
-starts a run over the queue as it stands,
+starts a run over whatever is checked,
 .B ^r
-rebuilds it from the current cards, and
+rebuilds the queue from the current cards, and
 .B q
-goes back.
+goes back. Unchecking a row shortens the run and leaves today's queue as
+generated \(em what you skipped is still owed.
 .PP
 On the setup screen:
 .B /
@@ -209,8 +218,16 @@ moves to the filter box and
 comes back out of it to the list — a second
 .B Escape
 leaves the screen.
+.B c
+moves to the count box, which is how many
+.B ^r
+rolls \(em for this run only, never written back to the configuration.
 .B Space
 picks a problem,
+.B ^e
+and
+.B ^x
+pick everything and nothing,
 .B ^r
 rolls a fresh random set,
 .B ^a

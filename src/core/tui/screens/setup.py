@@ -17,8 +17,11 @@ from textual.screen import Screen
 from textual.widgets import Footer, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
+from rich.text import Text
+
 from ... import catalog
 from ...catalog import Problem
+from ...render import DIFFICULTY_STYLE
 from ..vim import MOTIONS, VimMotion
 
 DIFFICULTY_MARK = {"easy": "E", "medium": "M", "hard": "H"}
@@ -49,7 +52,13 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         Binding("escape", "cancel", "back"),
         Binding("slash", "filter", "filter", show=False),
         Binding("i", "filter", "filter", show=False),
+        # The count box used to be reachable only with a mouse, in an app whose
+        # whole premise is that it isn't one. `c` for count, and `escape` comes
+        # back out to the list exactly as it does from the filter.
+        Binding("c", "count", "count"),
+        Binding("number_sign", "count", "count", show=False),
         Binding("ctrl+r", "roll", "roll random"),
+        Binding("ctrl+e", "select_all", "select all"),
         Binding("ctrl+x", "clear", "clear"),
         Binding("ctrl+s", "start", "start run"),
         # A chord, like the other two run-shaping keys: `a` is a character you
@@ -86,8 +95,8 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         yield Static(id="setup-status")
         yield Vertical(
             Static(
-                "  / filter    j/k move    space pick    ctrl+r roll"
-                "    ctrl+a speech    ctrl+s start",
+                "  / filter    c count    space pick    ctrl+r roll"
+                "    ctrl+e all    ctrl+x none    ctrl+a speech    ctrl+s start",
                 classes="hint-bar",
             )
         )
@@ -116,10 +125,19 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         haystack = " ".join([p.title, p.slug, p.pattern or "", *p.tags, p.difficulty]).lower()
         return all(token in haystack for token in needle.lower().split())
 
-    def _label(self, p: Problem) -> str:
+    def _label(self, p: Problem) -> Text:
+        """The row, as `Text` rather than a string.
+
+        Textual parses a prompt for console markup, so `[E]` was read as a tag
+        and the difficulty marker rendered as nothing at all. A `Text` is taken
+        literally, which is the only way to print a bracket here.
+        """
         mark = DIFFICULTY_MARK.get(p.difficulty, "?")
         seen = "·" if p.slug in self.attempted else " "
-        return f"{seen} [{mark}] {p.title}"
+        line = Text(f"{seen} ")
+        line.append(f"[{mark}]", style=DIFFICULTY_STYLE.get(p.difficulty, ""))
+        line.append(f" {p.title}")
+        return line
 
     def _populate(self, needle: str) -> None:
         widget = self.query_one("#problem-list", SelectionList)
@@ -147,7 +165,12 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         if hidden > 0:
             note = f"   ({hidden} hidden by the filter)"
         elif len(self.chosen) != n:
-            note = f"   (count says {n} — the run uses what's selected)"
+            note = f"   (ctrl+r rolls {n} — the run uses what's selected)"
+        elif n != self.planned_n:
+            # Say out loud that the box is a decision about tonight. It has
+            # never written back to the settings, but a number you typed into a
+            # box has no way of telling you that on its own.
+            note = f"   (count {n}, this run only)"
         speech = "on" if self.speech_mode else "off"
         self.query_one("#setup-status", Static).update(
             f"  {len(self.chosen)} selected{note}   ·   speech mode: {speech}"
@@ -168,6 +191,13 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
             self._update_status()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter in the count box means "give me that many", not "go" — you came
+        # here to change the number, and starting the run instead would leave
+        # the change you just typed unused.
+        if event.input.id == "count":
+            self.action_roll()
+            self.query_one("#problem-list", SelectionList).focus()
+            return
         self.action_start()
 
     def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
@@ -201,6 +231,12 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         self.chosen = set()
         self._populate(self.query_one("#filter", Input).value)
 
+    def action_select_all(self) -> None:
+        """Everything the filter is showing — narrow first, then take the lot."""
+        needle = self.query_one("#filter", Input).value
+        self.chosen |= {p.slug for p in self.problems if self._matches(p, needle)}
+        self._populate(needle)
+
     def action_toggle_speech(self) -> None:
         """Record this run, or don't. Never a surprise: the status line says which."""
         self.speech_mode = not self.speech_mode
@@ -227,6 +263,12 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
     def action_filter(self) -> None:
         """`/` — search, in the only place this app has anything to type into."""
         self.query_one("#filter", Input).focus()
+
+    def action_count(self) -> None:
+        """`c` — how many `ctrl+r` rolls. Never written back to the settings."""
+        box = self.query_one("#count", Input)
+        box.focus()
+        box.action_end()
 
     def action_cancel(self) -> None:
         # From a text field, escape means "leave the field", not "abandon the

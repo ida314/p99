@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, SelectionList, Static
 
 from core import branding, db, paths, stats
 from core.tui.app import CoreApp
@@ -544,6 +544,77 @@ async def test_a_skipped_second_note_edit_keeps_the_first(capturing_app, monkeyp
     assert app.conn.execute("SELECT session_note FROM sessions").fetchone()["session_note"] == first
 
 
+# --- the setup screen's per-run count --------------------------------------
+
+
+async def test_c_reaches_the_count_box_and_the_number_stays_in_this_run(app):
+    """The box was mouse-only, in an app whose whole premise is that it isn't."""
+    from core import config as config_module
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SetupScreen)
+        assert len(screen.chosen) == 2  # planned_n, straight from the file
+
+        await pilot.press("c")
+        await pilot.pause()
+        box = screen.query_one("#count", Input)
+        assert screen.focused is box
+
+        await pilot.press("backspace", "3")
+        await pilot.pause()
+        assert box.value == "3"
+
+        # Enter in the count box rolls that many and hands the list back, rather
+        # than starting a run over the set the number was meant to replace.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SetupScreen)
+        assert len(screen.chosen) == 3
+        assert screen.focused is screen.query_one("#problem-list", SelectionList)
+        assert "this run only" in _plain(screen.query_one("#setup-status", Static))
+
+    # The promise the status line makes: nothing was written back.
+    assert config_module.overrides(app.conn) == {}
+    assert config_module.load(app.conn).session.planned_n == 2
+
+
+async def test_ctrl_x_and_ctrl_e_clear_and_fill_the_selection(app):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        screen = app.screen
+
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert screen.chosen == set()
+
+        # ctrl+s on an empty set starts nothing and says so.
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SetupScreen)
+        assert "nothing selected" in _plain(screen.query_one("#setup-status", Static))
+
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert len(screen.chosen) == len(screen.problems)
+
+
+async def test_the_difficulty_marker_is_not_eaten_as_markup(app):
+    """`[E]` is console markup to Textual unless the prompt is a rich `Text`."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        listing = app.screen.query_one("#problem-list", SelectionList)
+        marks = {
+            listing.get_option_at_index(i).prompt.plain[2:5]
+            for i in range(min(20, listing.option_count))
+        }
+        assert marks and marks <= {"[E]", "[M]", "[H]"}
+
+
 # --- the queue screen (spec §15 Phase 2, item 9) ---------------------------
 
 
@@ -573,6 +644,66 @@ async def test_the_queue_starts_a_run(app):
         assert app.engine.session is not None
         # The queue's list, in the queue's order — not a re-roll.
         assert app.engine.session.slugs == slugs
+
+
+async def test_unchecking_a_row_shortens_the_run_but_not_the_queue(app):
+    """Three queued and time for two is a fact about tonight, not the schedule."""
+    import json
+
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        screen = app.screen
+        queued = screen.queue.slugs
+        assert len(queued) >= 2
+        assert screen.selected() == queued  # everything arrives checked
+
+        await pilot.press("space")  # drops the row under the cursor
+        await pilot.pause()
+        assert screen.selected() == queued[1:]
+        assert f"{len(queued) - 1} of {len(queued)} selected" in _plain(
+            screen.query_one("#queue-status", Static)
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.session.slugs == queued[1:]
+
+    # Today's queue row is left exactly as generated: what you skipped is owed.
+    stored = app.conn.execute("SELECT slugs FROM queues").fetchone()
+    assert json.loads(stored["slugs"]) == queued
+
+
+async def test_an_empty_queue_selection_starts_nothing(app):
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert app.screen.selected() == []
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        assert app.engine.session is None
+        assert "nothing selected" in _plain(app.screen.query_one("#queue-status", Static))
+
+        # And ctrl+e takes it all back, without regenerating.
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert app.screen.selected() == app.screen.queue.slugs
+
+
+async def test_regenerating_rechecks_everything(app):
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert app.screen.selected() == app.screen.queue.slugs
 
 
 async def test_regenerating_keeps_one_row_per_day(app):

@@ -77,6 +77,26 @@ Screen {
     height: 1;
 }
 
+/* --- queue ------------------------------------------------------------- */
+
+/* Same treatment as the setup screen's list, because it is the same gesture:
+   space picks, and what is picked is what runs. */
+#queue-list {
+    margin: 1 2;
+    height: 1fr;
+    border: round $panel;
+}
+
+#queue-status {
+    margin: 0 2;
+    height: 1;
+}
+
+#queue-rationale {
+    margin: 0 2 1 2;
+    height: auto;
+}
+
 /* --- settings ---------------------------------------------------------- */
 
 /* Same treatment as the home menu: a real list so j/k reach it, drawn as

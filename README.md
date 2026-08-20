@@ -72,6 +72,18 @@ due, the difficulty mix targets 20/60/20, and **no pattern ever runs three deep*
 — interleaving beats blocking for transfer, and it is the highest-value
 scheduling rule in here. `enter` starts a run over it, `ctrl+r` rebuilds it.
 
+Every row arrives checked and `space` unchecks one, so a queue of three and an
+evening with time for two is a run over two — not a queue you rebuild until it
+comes out short enough. `ctrl+e` takes the lot back, `ctrl+x` drops it. What you
+skip is left on today's queue exactly as generated: unchecking is a fact about
+tonight, not a correction to the schedule.
+
+How many the queue holds is `session.queue_n`. It is a separate knob from
+`session.planned_n`, which is only what the setup screen rolls by default —
+"five reviews a day, but two when I pick by hand" is a sentence the one shared
+number could not say. Left unset, `queue_n` follows `planned_n`, so splitting
+them is opt-in.
+
 Reviews score 1.25×. Retention is the thing being trained.
 
 The cards are a projection, like everything else derived: `p99 replay` rebuilds
@@ -150,7 +162,9 @@ real points.
 | `t` | stats (home) |
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |
-| `space` | pick a problem (setup) |
+| `c` | how many `ctrl+r` rolls (setup); this run only, never written to settings |
+| `space` | pick a problem (setup, queue) |
+| `ctrl+e` `ctrl+x` | pick everything / nothing (setup, queue) |
 | `ctrl+a` | speech mode on / off for this run (setup) |
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
