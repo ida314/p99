@@ -84,7 +84,9 @@ rather than ending the sweep. Set
 .I cache.offline
 to point
 .B o
-at the cached copy instead of the browser.
+at the cached copy instead of the browser. Inside the app this is
+.B warm the cache
+on the settings screen, one row under that switch.
 .TP
 .B doctor
 Print the resolved paths, catalog size, editor, cache state and configuration.
@@ -202,9 +204,16 @@ opens the mastered problems,
 .B s
 opens the settings,
 .B q
-quits. The menu is also a list, so
+quits. The menu is also a list, drawn in two columns, so
 .BR j / k
-and Enter reach the same places.
+move within a column,
+.BR h / l
+step across, and Enter reaches the same places. A suspended run gets a
+full-width row of its own above the columns, because its label says where you
+were rather than naming a screen. Warming the offline cache is not on this
+menu: it is a row on the settings screen, directly under the
+.I cache.offline
+switch it serves.
 .PP
 On the queue screen every row arrives checked.
 .B Space

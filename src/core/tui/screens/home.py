@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
@@ -23,7 +23,16 @@ from rich.text import Text
 #: real list, so `j`/`k` and enter get you there without knowing any of them.
 #:
 #: `resume run` is not here: it only exists when there is a run to resume, and
-#: `build_menu` puts it at the top when there is.
+#: `build_menu` gives it a row of its own above the columns when there is. That
+#: row is full width because its label is not a label — it is a sentence, and
+#: `resume run · problem 1 of 3 · Two Sum, 00:00 in · just now` wraps to three
+#: lines in half a screen and takes the layout with it. It is also the entry you
+#: most want to see, so the width is not wasted on it.
+#:
+#: The rest is drawn in two columns. Seven entries down the left of an
+#: 80-column terminal is a lot of vertical scan for a menu whose whole job is to
+#: disappear, and the banner above it already owns the height. Split
+#: column-major, so `j` still walks the order written here and `l` steps across.
 MENU = [
     ("n", "new_run", "new run"),
     ("d", "queue", "queue"),
@@ -32,11 +41,11 @@ MENU = [
     # Beside stats because it is the same kind of thing — a record to look at,
     # not an action. `m` for mastered: `r` is already runs and `t` is stats.
     ("m", "mastered", "mastered"),
-    ("s", "settings", "settings"),
-    # Below settings because it is packing, not practice — and next to the
-    # switch it serves, since turning offline mode on without warming the cache
+    # The offline cache is not here. It is packing, not practice, and it lives
+    # one row under the `offline` switch on the settings screen — the switch is
+    # useless without it, and turning offline mode on without warming the cache
     # first is the one way to reach a plane with nothing to open.
-    ("f", "fetch", "offline cache"),
+    ("s", "settings", "settings"),
     ("q", "quit", "quit"),
 ]
 
@@ -59,12 +68,30 @@ class HomeScreen(VimMotion, Screen):
         Binding("t", "stats", "stats"),
         Binding("m", "mastered", "mastered"),
         Binding("s", "settings", "settings"),
-        Binding("f", "fetch", "offline cache"),
         Binding("q", "quit", "quit"),
-        Binding("l", "select", "open", show=False),
+        # `l` used to be a second `enter`, which quietly broke the one rule
+        # `vim.py` sets for these two keys: they may only ever mean left and
+        # right, and whatever `l` does `h` has to undo. With two columns they
+        # finally do mean that.
+        Binding("l", "focus_next_column", "right", show=False),
+        Binding("right", "focus_next_column", "right", show=False),
+        Binding("h", "focus_prev_column", "left", show=False),
+        Binding("left", "focus_prev_column", "left", show=False),
     ]
 
+    #: The columns, left to right. Focus decides which one motions move —
+    #: `VimMotion.vim_target` returns the focused widget when it is navigable —
+    #: so `l`/`h` only have to move focus and `j`/`k` follow it for free.
+    COLUMNS = ("#menu", "#menu-right")
+
+    #: The full-width row above them, empty unless a run is suspended.
+    RESUME = "#menu-resume"
+
     VIM_TARGET = "#menu"
+
+    #: Which column `j` off the resume row drops into — the one `k` came up
+    #: from, or the left one on a first move.
+    _resume_target = COLUMNS[0]
 
     def compose(self) -> ComposeResult:
         yield Static(BANNER, id="banner")
@@ -73,7 +100,15 @@ class HomeScreen(VimMotion, Screen):
             classes="tagline",
         )
         yield Vertical(Static(id="overview", classes="panel"))
-        yield OptionList(id="menu")
+        yield Vertical(
+            OptionList(id="menu-resume"),
+            Horizontal(
+                OptionList(id="menu"),
+                OptionList(id="menu-right"),
+                id="menu-columns",
+            ),
+            id="menu-block",
+        )
         yield Footer()
 
     def on_screen_resume(self) -> None:
@@ -83,25 +118,45 @@ class HomeScreen(VimMotion, Screen):
         self.refresh_overview()
 
     def on_mount(self) -> None:
-        self.build_menu()
-        self.query_one("#menu", OptionList).focus()
+        self.build_menu()  # focuses whichever list it parked the cursor on
         self.refresh_overview()
 
     def build_menu(self) -> None:
         """Draw the menu, with the suspended run on top of it if there is one."""
         suspended = self.app.suspended_run()  # type: ignore[attr-defined]
         entries = list(MENU)
-        if suspended is not None:
-            entries.insert(0, ("c", "resume_run", f"resume run  ·  {suspended.summary}"))
+        resume = (
+            [("c", "resume_run", f"resume run  ·  {suspended.summary}")]
+            if suspended is not None
+            else []
+        )
 
-        menu = self.query_one("#menu", OptionList)
-        menu.clear_options()
-        for key, action, label in entries:
-            entry = Text("  ")
-            entry.append(f" {key} ", style="reverse")
-            entry.append(f"  {label}", style="" if action == "resume_run" else "bright_black")
-            menu.add_option(Option(entry, id=action))
-        menu.highlighted = 0
+        # Column-major, left column first and one longer when the count is odd.
+        # `j` therefore walks `MENU` in the order it is written, which is what
+        # `test_the_home_menu_is_navigable` indexes off and what a reader of
+        # that list expects; row-major would interleave the two.
+        split = (len(entries) + 1) // 2
+        columns = (entries[:split], entries[split:])
+        for selector, column in zip((self.RESUME, *self.COLUMNS), (resume, *columns)):
+            listing = self.query_one(selector, OptionList)
+            listing.clear_options()
+            for key, action, label in column:
+                entry = Text("  ")
+                entry.append(f" {key} ", style="reverse")
+                entry.append(f"  {label}", style="" if action == "resume_run" else "bright_black")
+                listing.add_option(Option(entry, id=action))
+            listing.display = bool(column)
+
+        # Exactly one cursor is parked, and it is on the topmost row there is.
+        # An `OptionList` leaves `highlighted` unset until something moves it,
+        # and leaving the others unset is what keeps one visible cursor on
+        # screen — three lists all showing row 0 reads as three cursors.
+        first = self.RESUME if resume else self.COLUMNS[0]
+        for selector in (self.RESUME, *self.COLUMNS):
+            self.query_one(selector, OptionList).highlighted = 0 if selector == first else None
+        # Focus goes with it. The two have to agree or the first `j` moves a
+        # list that is not showing the cursor, and both lists then show one.
+        self.query_one(first, OptionList).focus()
 
     def refresh_overview(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
@@ -143,9 +198,79 @@ class HomeScreen(VimMotion, Screen):
         if event.option.id:
             getattr(self, f"action_{event.option.id}")()
 
-    def action_select(self) -> None:
-        """`l` — same as enter, for hands that never leave the home row."""
-        self.query_one("#menu", OptionList).action_select()
+    # --- moving between the three lists -------------------------------------
+    #
+    # The menu looks like one list and has to behave like one. It is three
+    # `OptionList`s, so every move that crosses a boundary is a focus change
+    # plus a cursor handoff, and the two rules below are what keep exactly one
+    # cursor visible: whoever gives up focus sets `highlighted = None`, and
+    # whoever takes it sets a row.
+
+    def _list(self, selector: str) -> OptionList:
+        return self.query_one(selector, OptionList)
+
+    def _focused_list(self) -> str:
+        """Which of the three has focus. The left column when none of them does."""
+        for selector in (self.RESUME, *self.COLUMNS):
+            if self.focused is self._list(selector):
+                return selector
+        return self.COLUMNS[0]
+
+    def _hand_over(self, source: str, target: str, row: int) -> None:
+        listing = self._list(target)
+        if not listing.option_count:
+            return
+        self._list(source).highlighted = None
+        listing.highlighted = max(0, min(row, listing.option_count - 1))
+        listing.focus()
+
+    def _move_column(self, delta: int) -> None:
+        """Step focus one column over, carrying the cursor with it.
+
+        Clamped rather than wrapping: `h` has to undo `l`, and a wrap makes the
+        pair a cycle instead of an axis. From the resume row — which spans both
+        columns — sideways means nothing, so it does nothing.
+        """
+        source = self._focused_list()
+        if source == self.RESUME:
+            return
+        index = self.COLUMNS.index(source)
+        target = self.COLUMNS[max(0, min(len(self.COLUMNS) - 1, index + delta))]
+        if target == source:
+            return
+        # Land on the same row where there is one, so the cursor tracks across
+        # rather than jumping to the top of the next column.
+        self._hand_over(source, target, self._list(source).highlighted or 0)
+
+    def action_focus_next_column(self) -> None:
+        self._move_column(1)
+
+    def action_focus_prev_column(self) -> None:
+        self._move_column(-1)
+
+    # `j` off the bottom of the resume row, and `k` off the top of a column,
+    # cross into the neighbouring list instead of stopping dead. Overridden here
+    # rather than in `VimMotion`, which moves within one focused widget on
+    # purpose — this screen is the only one that draws a single list as three.
+
+    def action_vim_down(self) -> None:
+        source = self._focused_list()
+        if source == self.RESUME:
+            # One row, so being on it is being at the bottom of it.
+            self._hand_over(source, self._resume_target, 0)
+            return
+        super().action_vim_down()
+
+    def action_vim_up(self) -> None:
+        source = self._focused_list()
+        if source in self.COLUMNS and (self._list(source).highlighted or 0) == 0:
+            if self._list(self.RESUME).option_count:
+                # Remembered, so `k` then `j` puts you back where you started
+                # rather than always dropping into the left column.
+                self._resume_target = source
+                self._hand_over(source, self.RESUME, 0)
+                return
+        super().action_vim_up()
 
     def action_quit(self) -> None:
         # Defined here rather than left to `App.action_quit` so every menu entry
@@ -172,6 +297,3 @@ class HomeScreen(VimMotion, Screen):
 
     def action_settings(self) -> None:
         self.app.action_settings()  # type: ignore[attr-defined]
-
-    def action_fetch(self) -> None:
-        self.app.action_fetch()  # type: ignore[attr-defined]

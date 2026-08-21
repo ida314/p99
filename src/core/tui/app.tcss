@@ -25,10 +25,37 @@ Screen {
 }
 
 /* The home menu is a real list so j/k and enter reach it, but it should read
-   as a menu: no border, no scrollbar, sized to its four entries. */
-#menu {
+   as a menu: no border, no scrollbar, sized to its entries.
+
+   Two columns, and the row is bounded to the width of the overview panel above
+   it rather than left at 1fr — full width shoves the right column against the
+   screen edge, and two lists forty columns apart do not read as one menu. The
+   Horizontal needs `height: auto` too, or it claims the rest of the screen and
+   pushes the footer off the bottom. */
+#menu-block {
     height: auto;
     margin: 1 2;
+}
+
+#menu-columns {
+    width: 62;
+    height: auto;
+}
+
+/* The resume row spans both columns and is sized to its own sentence, which is
+   longer than either of them. */
+#menu-resume {
+    width: auto;
+    height: auto;
+}
+
+#menu, #menu-right {
+    width: 1fr;
+    height: auto;
+}
+
+#menu-resume, #menu, #menu-right {
+    margin: 0;
     padding: 0;
     border: none;
     background: transparent;

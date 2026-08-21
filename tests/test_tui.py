@@ -13,6 +13,7 @@ import pytest
 from textual.widgets import Input, OptionList, SelectionList, Static
 
 from core import branding, db, paths, stats
+from core.tui.screens import home
 from core.tui.app import CoreApp
 from core.tui.screens import (
     EndRunModal,
@@ -892,11 +893,26 @@ def no_network(monkeypatch):
     return requested
 
 
-async def test_f_warms_the_offline_cache_from_home(app, no_network):
+async def _open_fetch(pilot, app):
+    """Reach the fetch screen the way a keyboard does — through settings.
+
+    Finds the action row by key rather than counting `j` presses, so inserting
+    another setting above it does not quietly retarget three tests.
+    """
+    await pilot.press("s")
+    await pilot.pause()
+    assert isinstance(app.screen, SettingsScreen)
+    listing = app.screen.query_one("#settings-list", OptionList)
+    listing.highlighted = [r.key for r in app.screen.rows].index("cache.warm")
+    await pilot.pause()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def test_the_settings_row_warms_the_offline_cache(app, no_network):
     """The whole feature through the keyboard: the night before the flight."""
     async with app.run_test() as pilot:
-        await pilot.press("f")
-        await pilot.pause()
+        await _open_fetch(pilot, app)
         assert isinstance(app.screen, FetchScreen)
         assert not list(paths.cache_dir().glob("*.html"))
 
@@ -912,15 +928,27 @@ async def test_f_warms_the_offline_cache_from_home(app, no_network):
         assert len(on_disk) == 150 - 2
         assert "two-sum" in on_disk
 
+        # Escape goes back to the switch it belongs to, not to home.
         await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_warming_the_cache_is_not_on_the_home_menu(app):
+    """It is packing, not practice. `f` from home does nothing at all."""
+    async with app.run_test() as pilot:
+        assert "fetch" not in {action for _, action, _ in home.MENU}
+        await pilot.press("f")
         await pilot.pause()
         assert isinstance(app.screen, HomeScreen)
 
 
 async def test_a_failed_problem_is_named_not_swallowed(app, no_network):
     async with app.run_test() as pilot:
-        await pilot.press("f")
-        await pilot.pause()
+        await _open_fetch(pilot, app)
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -948,8 +976,7 @@ async def test_escape_stops_a_sweep_before_it_leaves_the_screen(app, no_network,
     monkeypatch.setattr(cache, "fetch_question", gated)
 
     async with app.run_test() as pilot:
-        await pilot.press("f")
-        await pilot.pause()
+        await _open_fetch(pilot, app)
         await pilot.press("enter")
 
         screen = app.screen
@@ -971,7 +998,7 @@ async def test_escape_stops_a_sweep_before_it_leaves_the_screen(app, no_network,
         # Only now does escape mean leave.
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, HomeScreen)
+        assert isinstance(app.screen, SettingsScreen)
 
 
 async def test_the_cache_screen_does_not_open_mid_run(app):
@@ -1957,8 +1984,12 @@ async def test_a_resumed_run_can_be_finished_normally(app):
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(later.screen, HomeScreen)
-        # Nothing left to resume, so the entry is gone again.
-        assert later.screen.query_one(OptionList).get_option_at_index(0).id == "new_run"
+        # Nothing left to resume, so its row is empty and hidden again, and the
+        # menu proper starts where it always does.
+        resume = later.screen.query_one("#menu-resume", OptionList)
+        assert resume.option_count == 0 and resume.display is False
+        menu = later.screen.query_one("#menu", OptionList)
+        assert menu.get_option_at_index(0).id == "new_run"
 
     session = later.conn.execute("SELECT * FROM sessions").fetchone()
     assert session["outcome"] == "completed"
@@ -2019,3 +2050,59 @@ async def test_a_suspended_recording_is_continued_rather_than_cut_short(speaking
     assert attempt["audio_path"] is not None
     assert Path(attempt["audio_path"]).exists()
     assert not segments.exists()
+
+
+async def test_the_suspended_run_gets_its_own_full_width_row(app):
+    """Its label is a sentence, not a label, and wraps to three lines in half a
+    screen — so it sits above the columns rather than inside one."""
+    from textual.widgets import OptionList as OL
+
+    from core.engine import RunEngine
+
+    async with app.run_test() as pilot:
+        eng = RunEngine(app.conn)
+        eng.start_session(["two-sum", "3sum"], planned_n=2)
+        eng.start_problem("two-sum")
+        eng.suspend_session()
+        app.screen.build_menu()
+        await pilot.pause()
+
+        resume = app.screen.query_one("#menu-resume", OL)
+        assert resume.option_count == 1 and resume.display is True
+        assert resume.get_option_at_index(0).id == "resume_run"
+        # And it is not also in the columns.
+        columns = app.screen.query_one("#menu", OL), app.screen.query_one("#menu-right", OL)
+        assert "resume_run" not in {o.id for c in columns for o in c._options}
+
+        # `j` off it lands in the menu proper; `k` comes straight back.
+        assert resume.highlighted == 0
+        await pilot.press("j")
+        assert resume.highlighted is None and columns[0].highlighted == 0
+        await pilot.press("k")
+        assert resume.highlighted == 0 and columns[0].highlighted is None
+
+
+async def test_the_settings_action_row_is_not_a_value(app):
+    """`h`/`l`/`x` have nothing to say about an action, and must not pretend to."""
+    from core import config as config_module
+    from core.tui.screens.settings import Action
+
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        screen = app.screen
+        listing = screen.query_one("#settings-list", OptionList)
+        row = [r.key for r in screen.rows].index("cache.warm")
+        listing.highlighted = row
+        await pilot.pause()
+        assert isinstance(screen.current, Action)
+
+        before = config_module.overrides(app.conn)
+        await pilot.press("h")  # a motion key must not start a download
+        await pilot.press("x")  # nor clear an override that does not exist
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        assert config_module.overrides(app.conn) == before
+
+        # It sits directly under the switch it serves.
+        assert screen.rows[row - 1].key == "cache.offline"

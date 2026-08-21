@@ -190,7 +190,8 @@ real points.
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
 | `m` | mastered problems — what has left the rotation (home) |
-| `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
+| `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml`, `enter` on **warm the cache** downloads the list |
+| `h` `l` | across the menu's two columns (home) |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |
 | `c` | how many `ctrl+r` rolls (setup); this run only, never written to settings |
 | `space` | pick a problem (setup, queue) |
@@ -269,11 +270,16 @@ as files, is never read by a projection, and can be deleted at any time.
 
 ## Offline
 
-`p99 fetch` downloads the active list's problem statements into
-`~/.local/share/p99/cache/` as self-contained HTML — images inlined, official
-hints folded away behind `<details>`, the starter snippet for your language,
-nothing left to request. Then flip `offline` in settings and `o` opens the
-cached copy instead of leetcode.com.
+`p99 fetch`, or **warm the cache** in settings, downloads the active list's
+problem statements into `~/.local/share/p99/cache/` as self-contained HTML —
+images inlined, official hints folded away behind `<details>`, the starter
+snippet for your language, nothing left to request. Then flip `offline` one row
+above it and `o` opens the cached copy instead of leetcode.com.
+
+It is in settings rather than on the home menu because it is packing, not
+practice, and because it is useless apart from the switch it sits under: turning
+offline mode on without warming the cache first is the one way to reach a plane
+with nothing to open.
 
 The whole list, every time. Not a subset you pick beforehand, because the queue
 cannot know what you will need on day two of a trip — it reads live card state,

@@ -224,3 +224,44 @@ async def test_h_and_l_move_between_the_history_panes(app):
         await pilot.press("h")
         await pilot.pause()
         assert screen.focused is screen.query_one("#run-list")
+
+
+async def test_the_home_menu_is_one_list_in_three_widgets(app):
+    """`h`/`l` cross the columns, and exactly one cursor is ever on screen.
+
+    Three `OptionList`s draw what reads as one menu, so the invariant worth
+    asserting is not where the cursor is — it is that there is only one.
+    """
+    from textual.widgets import OptionList as OL
+
+    async with app.run_test() as pilot:
+        screen = app.screen
+        lists = [screen.query_one(s, OL) for s in ("#menu-resume", "#menu", "#menu-right")]
+
+        def cursors():
+            return [i for i, w in enumerate(lists) if w.highlighted is not None]
+
+        assert cursors() == [1]  # nothing to resume, so the left column leads
+
+        await pilot.press("l")
+        assert cursors() == [2]
+        await pilot.press("l")  # clamped: `h` has to undo `l`, so no wrap
+        assert cursors() == [2]
+        await pilot.press("h")
+        assert cursors() == [1]
+        await pilot.press("h")
+        assert cursors() == [1]
+
+
+async def test_the_columns_split_the_menu_in_written_order(app):
+    """Column-major, so `j` still walks `MENU` the way it is written."""
+    from textual.widgets import OptionList as OL
+
+    async with app.run_test() as pilot:
+        left = app.screen.query_one("#menu", OL)
+        right = app.screen.query_one("#menu-right", OL)
+        ids = [o.id for o in left._options] + [o.id for o in right._options]
+        assert ids == [action for _, action, _ in MENU]
+        # The left column takes the extra row when the count is odd.
+        assert left.option_count >= right.option_count
+        await pilot.pause()
