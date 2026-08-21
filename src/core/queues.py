@@ -15,7 +15,6 @@ Named plural to leave `queue` to the standard library.
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,7 +27,14 @@ GENERATED_BY = "deterministic-v1"
 #: Reviews lead the queue but never take it over. Falling behind on new coverage
 #: because reviews piled up is how you end up excellent at fifteen problems
 #: (spec §8).
-DUE_SHARE = 0.4
+#:
+#: A flat count, not the share of the queue this used to be. A share cannot say
+#: "one": at the queue size actually used, `ceil(0.4 * 3)` is 2, so two thirds of
+#: every day went to problems already seen while 131 of the 150 had never been
+#: opened. The budget the schedule is built around is 2 new and 1 review, and
+#: that is a number, so it is stored as one. `session.reviews_per_day` overrides
+#: it; `_select` still relaxes it rather than handing back a short queue.
+REVIEWS_PER_DAY = 1
 
 #: Days a problem is off the table after an attempt, unless FSRS says otherwise.
 COOLDOWN_DAYS = 3
@@ -41,6 +47,17 @@ DIFFICULTY_MIX = {"easy": 0.2, "medium": 0.6, "hard": 0.2}
 #: three is a block.
 MAX_CONSECUTIVE_PATTERN = 2
 
+#: How many due cards reach the pool, as a multiple of the review budget. More
+#: than the budget on purpose: the selector may skip the weakest card because
+#: taking it would run a pattern three deep, and with a pool of exactly one it
+#: would then take no review at all. Three gives it somewhere to go.
+DUE_POOL_MULT = 3
+
+#: Attempts on a pattern before its mastery score is worth ranking on. Lower
+#: than the tag threshold because each problem carries exactly one pattern and
+#: a dozen tags, so pattern counts climb roughly a twelfth as fast.
+MIN_PATTERN_ATTEMPTS = 2
+
 
 @dataclass(frozen=True)
 class Item:
@@ -48,7 +65,8 @@ class Item:
     title: str
     difficulty: str
     pattern: str | None
-    #: Why it was picked: due | tail | weak-tag | unseen.
+    #: Why it was picked: due | tail | pattern-transfer | weak-pattern |
+    #: weak-tag | unseen.
     source: str
     #: Whether starting it counts as a review. Deliberately *not* `source ==
     #: "due"`: a problem pulled in as a tail driver still has a card, and the
@@ -56,6 +74,11 @@ class Item:
     #: the reason it was picked would let the queue screen say "new" about
     #: something the summary then scores at 1.25x.
     is_review: bool = False
+    #: Already mastered. Almost never true on a freshly generated queue --
+    #: `srs.due_cards` drops mastered problems -- but a queue *reloaded* from an
+    #: earlier day can hold one that has been mastered since. Carried so
+    #: `render.queue_row` can star it rather than re-querying the card per row.
+    mastered: bool = False
     due: str | None = None
     overdue_days: int = 0
 
@@ -186,6 +209,7 @@ def candidates(
     active_list: str,
     weights: Weights,
     now: datetime,
+    reviews_per_day: int = REVIEWS_PER_DAY,
 ) -> list[Item]:
     """The pool the selector chooses from, in priority order (spec §10 stage 1)."""
     problems = {p.slug: p for p in catalog.all_problems(conn, active_list)}
@@ -215,38 +239,91 @@ def candidates(
                 pattern=p.pattern,
                 source=source,
                 is_review=bool(card and card["state"] in srs.REVIEW_STATES),
+                mastered=srs.is_mastered(card),
                 due=due,
                 overdue_days=overdue,
             )
         )
 
-    # 1. Due reviews, most overdue first, capped so they cannot eat the queue.
-    cap = math.ceil(DUE_SHARE * n)
-    for row in srs.due_cards(conn, now)[:cap]:
-        overdue = max(0, (now - srs.parse_ts(row["due"])).days)
-        add(row["slug"], "due", due=row["due"], overdue=overdue)
-
-    # 2. Tail drivers — slow or ugly solves from the last 60 days.
-    for slug in _tail_driver_slugs(conn, weights):
-        add(slug, "tail")
-
-    # Both fills below walk the catalog spread across patterns, so the pool the
+    # Computed before the tail drivers, which now need it: a mastered tail
+    # driver is answered with an unseen problem rather than with itself.
+    #
+    # Every fill below walks the catalog spread across patterns, so the pool the
     # selector sees can actually satisfy the interleaving rule and the
     # difficulty mix rather than being nine arrays-hashing problems in a row.
     unseen = spread_by_pattern([p for slug, p in problems.items() if slug not in attempted])
 
-    # 3. Unattempted problems carrying your weakest tags.
-    weak = [m.tag for m in stats.tag_mastery(conn, weights, min_attempts=3)]
-    for tag in weak:
+    def add_unseen_in_pattern(pattern: str | None, source: str) -> bool:
+        """Take the first unseen problem in `pattern`. True if one was added.
+
+        The whole of the transfer rule in four lines: the thing a weak pattern
+        needs is another problem of that shape, not another pass over the one
+        problem of that shape you have already mastered.
+        """
+        if not pattern:
+            return False
+        for p in unseen:
+            if p.pattern != pattern:
+                continue
+            before = len(pool)
+            add(p.slug, source)
+            if len(pool) > before:
+                return True
+        return False
+
+    # 1. Due reviews, weakest first — `srs.due_cards` has already dropped
+    #    everything mastered. `_select` enforces the actual cap; more than the
+    #    budget reaches the pool for two reasons. The selector may skip its first
+    #    choice because taking it would run a pattern three deep, and needs
+    #    somewhere else to go. And once the catalog is exhausted there is nothing
+    #    but reviews left to fill a queue with, `_select`'s third pass drops the
+    #    cap accordingly, and a pool of one candidate would hand back a queue of
+    #    one -- so `n` is the floor.
+    for row in srs.due_cards(conn, now)[: max(reviews_per_day * DUE_POOL_MULT, n)]:
+        overdue = max(0, (now - srs.parse_ts(row["due"])).days)
+        add(row["slug"], "due", due=row["due"], overdue=overdue)
+
+    # 2. Tail drivers — slow or ugly solves from the last 60 days. A mastered
+    #    one is not re-served: it has been recalled across its whole ladder, and
+    #    the fact that it was once slow is a fact about a pattern, not about a
+    #    problem you now know. Spend the slot on an unseen problem of the same
+    #    shape instead, which is the transfer this is all for.
+    for slug in _tail_driver_slugs(conn, weights):
+        if srs.is_mastered(srs.card_row(conn, slug)):
+            driver = problems.get(slug)
+            add_unseen_in_pattern(driver.pattern if driver else None, "pattern-transfer")
+            continue
+        add(slug, "tail")
+
+    # 3. Unattempted problems in your weakest *patterns*. Ahead of the tag fill
+    #    below because a pattern is the unit an answer transfers along, where a
+    #    tag like `array` spans a dozen unrelated approaches.
+    for pattern in weak_patterns(conn, weights):
+        add_unseen_in_pattern(pattern, "weak-pattern")
+
+    # 4. Unattempted problems carrying your weakest tags.
+    for tag in weak_tags(conn, weights):
         for p in unseen:
             if tag in p.tags:
                 add(p.slug, "weak-tag")
 
-    # 4. Anything never seen, so a fresh catalog still fills a queue.
+    # 5. Anything never seen, so a fresh catalog still fills a queue.
     for p in unseen:
         add(p.slug, "unseen")
 
     return pool[: 3 * n]
+
+
+def weak_patterns(conn: sqlite3.Connection, weights: Weights) -> list[str]:
+    """Patterns you are worst at, weakest first."""
+    return [
+        m.name
+        for m in stats.pattern_mastery(conn, weights, min_attempts=MIN_PATTERN_ATTEMPTS)
+    ]
+
+
+def weak_tags(conn: sqlite3.Connection, weights: Weights) -> list[str]:
+    return [m.name for m in stats.tag_mastery(conn, weights, min_attempts=3)]
 
 
 # --- selection -------------------------------------------------------------
@@ -269,7 +346,9 @@ def _mix_targets(n: int) -> dict[str, int]:
     return targets
 
 
-def _select(pool: list[Item], n: int) -> tuple[list[Item], bool]:
+def _select(
+    pool: list[Item], n: int, reviews_per_day: int = REVIEWS_PER_DAY
+) -> tuple[list[Item], bool]:
     """Take `n` from the pool honoring the review cap, the mix and interleaving.
 
     Returns the selection and whether interleaving had to be relaxed. Pool order
@@ -283,9 +362,15 @@ def _select(pool: list[Item], n: int) -> tuple[list[Item], bool]:
     much of it as a due review does -- capping only the due slice lets reviews
     back in through the side door and hands you a queue with no new coverage in
     it, which is the outcome the cap exists to prevent.
+
+    The cap is now a flat count rather than a share of `n`, and one a day is the
+    intended figure. Due dates are priorities, not deadlines: when six things are
+    due, the answer is to spend the slot on the weakest of them -- which is the
+    order `srs.due_cards` hands the pool over in -- and let the other five wait,
+    not to spend the day clearing a backlog instead of covering new ground.
     """
     targets = _mix_targets(n)
-    review_cap = math.ceil(DUE_SHARE * n)
+    review_cap = max(0, reviews_per_day)
     taken: list[Item] = []
     used: set[str] = set()
     relaxed = False
@@ -327,7 +412,7 @@ def _select(pool: list[Item], n: int) -> tuple[list[Item], bool]:
     return taken, relaxed
 
 
-def _rationale(items: list[Item], relaxed: bool, weak: list[str]) -> str:
+def _rationale(items: list[Item], relaxed: bool, weak: list[str], deferred: int = 0) -> str:
     """The templated stand-in for Phase 3's written rationale (spec §10 stage 2).
 
     Phase 3 replaces the prose. It does not replace the decision.
@@ -341,15 +426,24 @@ def _rationale(items: list[Item], relaxed: bool, weak: list[str]) -> str:
         oldest = max(due, key=lambda i: i.overdue_days)
         when = f"oldest overdue by {oldest.overdue_days}d" if oldest.overdue_days else "none overdue yet"
         bits.append(f"{len(due)} review{'s' if len(due) != 1 else ''} lead ({when})")
+    if deferred > 0:
+        # Said out loud for the same reason the relaxed interleaving is: a
+        # backlog you cannot see reads as a scheduler that has lost track of it.
+        bits.append(f"{deferred} more due and deferred — they keep")
     fresh = [i for i in items if not i.is_review]
     if fresh:
         bits.append(f"{len(fresh)} new")
     tail = [i for i in items if i.source == "tail"]
     if tail:
         bits.append(f"{len(tail)} from the slow tail of the last 60 days")
-    weak_picks = [i for i in items if i.source == "weak-tag"]
+    transfer = [i for i in items if i.source == "pattern-transfer"]
+    if transfer:
+        bits.append(
+            f"{len(transfer)} standing in for a mastered problem of the same shape"
+        )
+    weak_picks = [i for i in items if i.source in ("weak-pattern", "weak-tag")]
     if weak_picks and weak:
-        bits.append(f"{len(weak_picks)} on your weakest tags ({', '.join(weak[:3])})")
+        bits.append(f"{len(weak_picks)} on your weakest patterns ({', '.join(weak[:3])})")
 
     counts: dict[str, int] = {}
     for i in items:
@@ -376,6 +470,7 @@ def generate(
     weights: Weights,
     now: datetime | None = None,
     date: str | None = None,
+    reviews_per_day: int = REVIEWS_PER_DAY,
 ) -> Queue:
     """Build today's queue and append the `queue_generated` event.
 
@@ -385,10 +480,20 @@ def generate(
     """
     now = now or datetime.now(timezone.utc)
     date = date or today(now)
-    pool = candidates(conn, n=n, active_list=active_list, weights=weights, now=now)
-    items, relaxed = _select(pool, n)
-    weak = [m.tag for m in stats.tag_mastery(conn, weights, min_attempts=3)][:3]
-    rationale = _rationale(items, relaxed, weak)
+    pool = candidates(
+        conn,
+        n=n,
+        active_list=active_list,
+        weights=weights,
+        now=now,
+        reviews_per_day=reviews_per_day,
+    )
+    items, relaxed = _select(pool, n, reviews_per_day)
+    weak = (weak_patterns(conn, weights) or weak_tags(conn, weights))[:3]
+    # Everything the scheduler wanted today minus what the budget let through,
+    # so the rationale can own the backlog instead of hiding it.
+    deferred = max(0, len(srs.due_cards(conn, now)) - sum(1 for i in items if i.is_review))
+    rationale = _rationale(items, relaxed, weak, deferred)
 
     events.append(
         conn,
@@ -434,6 +539,7 @@ def _hydrate(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> Queue
                 # so the honest thing is to say the queue is what it is.
                 source="queued",
                 is_review=is_review,
+                mastered=srs.is_mastered(card),
                 due=card["due"] if card else None,
                 overdue_days=overdue,
             )
@@ -459,6 +565,7 @@ def ensure(
     weights: Weights,
     now: datetime | None = None,
     regenerate: bool = False,
+    reviews_per_day: int = REVIEWS_PER_DAY,
 ) -> Queue:
     """Today's queue, generating it if today has none.
 
@@ -472,4 +579,12 @@ def ensure(
         existing = load(conn, date, now)
         if existing is not None and existing.items:
             return existing
-    return generate(conn, n=n, active_list=active_list, weights=weights, now=now, date=date)
+    return generate(
+        conn,
+        n=n,
+        active_list=active_list,
+        weights=weights,
+        now=now,
+        date=date,
+        reviews_per_day=reviews_per_day,
+    )

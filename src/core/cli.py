@@ -146,6 +146,24 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mastered(args: argparse.Namespace) -> int:
+    """Problems that have left the rotation.
+
+    The same list the TUI's `m` shows, through the same renderer: mastery is the
+    one scheduling decision with no other trace, so both surfaces have to be
+    able to answer for it.
+    """
+    conn = db.open_db()
+    cfg = config_module.load(conn)
+    rows = srs.mastered_cards(conn)
+    size = len(catalog.all_problems(conn, cfg.session.active_list))
+    console.print()
+    console.print("  [bold]mastered problems[/bold]")
+    console.print(render.mastered_table(rows, size, datetime.now(timezone.utc)))
+    console.print()
+    return 0
+
+
 def cmd_queue(args: argparse.Namespace) -> int:
     """Today's queue (spec §10). Generated on demand until Phase 3's cron."""
     conn = db.open_db()
@@ -157,6 +175,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         active_list=cfg.session.active_list,
         weights=weights,
         regenerate=args.regenerate,
+        reviews_per_day=cfg.session.reviews_per_day,
     )
     console.print()
     console.print(f"  [bold]today's queue[/bold]  ·  {queue.date}")
@@ -264,10 +283,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     editor = " ".join(config_module.editor())
 
     now = datetime.now(timezone.utc)
-    card_count, due_now = srs.counts(conn, now)
+    card_count, due_now, mastered = srs.counts(conn, now)
     if card_count:
         nxt = srs.next_due(conn)
         cards_state = f"{card_count} scheduled, {due_now} due now"
+        if mastered:
+            cards_state += f", {mastered} mastered"
         if nxt:
             cards_state += f", next {nxt[:10]}"
     else:
@@ -388,6 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--regenerate", action="store_true", help="rebuild today's queue from current cards"
     )
     p_queue.set_defaults(func=cmd_queue)
+
+    p_mastered = sub.add_parser("mastered", help="problems that have left the rotation")
+    p_mastered.set_defaults(func=cmd_mastered)
 
     p_replay = sub.add_parser("replay", help="rebuild projections from the event log")
     p_replay.set_defaults(func=cmd_replay)

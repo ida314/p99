@@ -1,0 +1,108 @@
+# FSRS parameters — v3
+#
+# Same bargain as `v1.toml` and `v2.toml`: nothing here is denormalized into the
+# event log. `fsrs_cards` is a projection, so editing this file and running
+# `p99 replay` re-derives every card from scratch. v1 and v2 are left exactly as
+# they were and stay selectable.
+#
+# What this version is for: v2 scheduled a failed problem to come back tomorrow,
+# every time, forever. With a verdict history dominated by `gave_up` and
+# `solved_with_hints` that produced 18 due cards against 19 seen problems and
+# 150 in the list — excellent at fifteen problems, which is the exact failure
+# the review cap and spec §8 were written to prevent. v3 moves the entry
+# intervals out to days you can actually absorb, and masters a problem once you
+# have recalled it across its ladder instead of repeating it indefinitely.
+#
+# `docs/spaced-repetition.md` has the derivation and the measured tables.
+
+version = 3
+name = "v3"
+
+# The FSRS-6 weights, with **the first four replaced by hand** and the remaining
+# seventeen left at the published values.
+#
+# This is a deliberate departure from the rule stated in v1/v2 and in the doc —
+# "change these only by running the optimizer" — and it is narrow on purpose.
+# `weights[0..3]` are the initial stabilities for Again/Hard/Good/Easy, and
+# stability is *defined* as the interval at which recall probability falls to
+# 0.9. So at `desired_retention = 0.9` these four numbers are literally the
+# first-review intervals in days:
+#
+#     Again (failed)  ->  2 days      w[0] = 2.0
+#     Hard            ->  5 days      w[1] = 5.0
+#     Good (okay)     ->  9 days      w[2] = 9.0
+#     Easy            -> 21 days      w[3] = 21.0
+#
+# The published values are 0.212 / 1.2931 / 2.3065 / 8.2956 — i.e. 1d / 1d / 2d
+# / 8d after rounding. Those are fitted on flashcard recall, sub-10-second
+# retrieval events. Nothing about them was ever fitted on 30-minute constructive
+# problem solving, and the first four are the ones that governed every card in
+# the database, because almost every card was still on its first rep.
+#
+# The other seventeen — difficulty, stability growth, the decay term — are
+# untouched, because they describe the *shape* of forgetting rather than its
+# scale, and the shape is the part that transfers. When there are ~400 reviews
+# in review state, run `fsrs.Optimizer` and let it fit all twenty-one; that
+# supersedes this file rather than arguing with it.
+weights = [
+  2.0,    5.0,    9.0,    21.0,   6.4133, 0.8334, 3.0194, 0.001,
+  1.8722, 0.1666, 0.796,  1.4835, 0.0614, 0.2629, 1.6483, 0.6014,
+  1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+]
+
+# A flat scalar, which is a change from v2's per-difficulty table (0.92 for
+# hard). Two reasons, and the first is arithmetic: the ladder above is stated in
+# days, and it only *is* those days at 0.9. Asking 0.92 of hard problems
+# multiplies their intervals by ~0.73, so `w[0] = 2.0` would quietly mean 1 day
+# again for exactly the problems this version exists to stop hammering.
+#
+# The second is that difficulty is already priced in twice before FSRS sees
+# anything — par is difficulty-relative in `scoring/v1.toml` (900s/1800s/2700s),
+# and par is what `srs.rate` compares the clock against. A hard problem solved
+# at hard-problem pace should not also be penalised in the schedule.
+desired_retention = 0.9
+
+# Minutes. Deliberately empty, unchanged from v1 and v2: FSRS's own tutorial
+# recommends against any step longer than 12-14 hours, and you are not going to
+# re-solve a 30-minute problem sixty seconds after finishing it. Empty steps put
+# every graded attempt straight into the review state on a day-scale interval,
+# which is now the ladder above.
+learning_steps = []
+relearning_steps = []
+
+# Days. Unchanged from v2, and less load-bearing than ever now that `[mastery]`
+# masters cards outright: it answers only "how long may a problem you have
+# nailed go unseen", and almost nothing reaches it before mastering.
+maximum_interval = 365
+
+# `hard_interval_mult` is deliberately absent, as in v2. It defaults to 1.0,
+# which turns off the post-hoc date surgery in `srs.grade_attempt`.
+
+# Mastery. **Keep this table last in the file**: everything below a TOML
+# `[table]` header belongs to it, so a scalar written after this one silently
+# stops being a top-level setting.
+#
+# How many successful reviews a card must survive, counting from the rating that
+# started its current run, before it leaves the rotation. Keyed by FSRS rating
+# name; the run vocabulary is Failed / Hard / Okay / Easy in that order.
+#
+#     failed (Again)  4     2 -> 5 -> 12 -> 30 -> mastered
+#     hard            3     5 -> 12 -> 30 -> mastered
+#     good  (okay)    2     9 -> 25 -> mastered
+#     easy            1     21 -> mastered
+#
+# The day figures in that comment are the ladder as it was specified. The
+# intervals actually served are FSRS's, and they run *longer* — 2/6/18/45 for a
+# failed entry — so these counts are what does the mastering, not the days. The
+# counter is the whole mechanism: it decrements on every graded review that is
+# not a failure, and a failure resets it to `failed`, because forgetting a
+# problem puts you back at the bottom of the failed ladder however far up you
+# were.
+#
+# Omitting this table (v1, v2) disables mastery entirely and those versions
+# schedule exactly as they always did.
+[mastery]
+failed = 4
+hard = 3
+good = 2
+easy = 1

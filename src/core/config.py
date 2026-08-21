@@ -41,6 +41,11 @@ planned_n = 3
 # thinks you owe it today, `planned_n` is how big a hand-picked run starts out.
 # Left unset it follows `planned_n`, so splitting them is opt-in.
 queue_n = 3
+# how many of those slots reviews may take. One, so the other two go to
+# problems you have never opened: due dates are priorities, not deadlines, and
+# when several are due the queue spends the slot on the weakest and lets the
+# rest wait. Raise it to work off a backlog faster, at the cost of new coverage.
+reviews_per_day = 1
 # which catalog list is active: neetcode150 | blind75
 active_list = "neetcode150"
 # random | manual
@@ -66,7 +71,9 @@ weights = "v1"
 # which FSRS parameter file in the package's data/srs/ schedules reviews.
 # `fsrs_cards` is a projection, so changing this and running
 # `{branding.COMMAND} replay` re-derives every card and reschedules all history.
-params = "v2"
+# v3 sets the entry intervals directly (2/5/9/21 days) and masters a problem once
+# you have recalled it across its ladder; v1 and v2 stay selectable and unchanged.
+params = "v3"
 
 [stats]
 # below this many samples in a slice, p99 is one data point and is greyed out
@@ -127,6 +134,7 @@ EXT_BY_LANGUAGE = {
 class SessionConfig:
     planned_n: int = 3
     queue_n: int = 3
+    reviews_per_day: int = 1
     active_list: str = "neetcode150"
     selection: str = "random"
 
@@ -149,7 +157,7 @@ class ScoringConfig:
 
 @dataclass(frozen=True)
 class SrsConfig:
-    params: str = "v2"
+    params: str = "v3"
 
 
 @dataclass(frozen=True)
@@ -341,6 +349,12 @@ def options() -> tuple[Option, ...]:
             "problems in the queue",
             "how many the scheduler puts on today's queue — unset, it follows the number above",
             tuple(range(1, 11)),
+        ),
+        Option(
+            "session.reviews_per_day",
+            "reviews per day",
+            "how many queue slots go to problems you have already seen — the rest are new",
+            tuple(range(0, 6)),
         ),
         Option(
             "session.active_list",

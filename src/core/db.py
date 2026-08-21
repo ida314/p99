@@ -24,9 +24,11 @@ from . import paths
 # 5: the cost claim split along its two axes — `attempts` gained a space
 #    complexity and a per-axis optimality answer, and `optimality` stopped being
 #    written to.
+# 6: mastery — `fsrs_cards` gained `rungs_left` and `mastered_at`, the counter
+#    that decides when a problem leaves the rotation and the date it did.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -170,7 +172,13 @@ CREATE TABLE IF NOT EXISTS fsrs_cards (
   due          TEXT, last_review TEXT,
   reps         INTEGER, lapses INTEGER,
   state        TEXT,                      -- learning|review|relearning
-  step         INTEGER                    -- learning/relearning step; null in review
+  step         INTEGER,                   -- learning/relearning step; null in review
+  -- Mastery, from the `[mastery]` table in `data/srs/*.toml`. `rungs_left` is
+  -- how many more non-failing reviews this card owes before it leaves the
+  -- rotation; `mastered_at` is when it did. Both null under v1/v2, which have
+  -- no mastery table and master nothing.
+  rungs_left   INTEGER,
+  mastered_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS coach_memory (
@@ -234,6 +242,7 @@ SHAPE_CHANGED_IN = {
     3: ("submissions", "attempts"),
     4: ("submissions", "attempts", "sessions"),
     5: ("submissions", "attempts"),
+    6: ("fsrs_cards",),
 }
 
 

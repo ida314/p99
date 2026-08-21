@@ -21,6 +21,7 @@ from core.tui.screens import (
     HistoryScreen,
     HomeScreen,
     QueueScreen,
+    MasteredScreen,
     SettingsScreen,
     SetupScreen,
     SolveScreen,
@@ -62,6 +63,68 @@ async def test_stats_and_history_open_on_an_empty_database(app):
         assert isinstance(app.screen, HistoryScreen)
         await pilot.press("escape")
         assert isinstance(app.screen, HomeScreen)
+
+
+async def test_the_mastered_page_opens_and_says_so_when_nothing_is_mastered(app):
+    async with app.run_test() as pilot:
+        await pilot.press("m")
+        assert isinstance(app.screen, MasteredScreen)
+        # Asserted against the widget's own renderable rather than a screenshot:
+        # the empty state is the whole content of this screen most of the time,
+        # and a blank page and a page that failed to render look identical.
+        assert "Nothing mastered yet" in _plain(
+            app.screen.query_one("#mastered-content", Static)
+        )
+        await pilot.press("escape")
+        assert isinstance(app.screen, HomeScreen)
+
+
+async def test_a_mastered_problem_shows_up_starred(app):
+    """Two clean solves master a problem; the star follows it onto every list."""
+    from core import catalog, render, srs
+    from core.engine import RunEngine
+
+    catalog.seed(app.conn, name="neetcode150")
+    for _ in range(2):
+        eng = RunEngine(app.conn)
+        eng.start_session(["two-sum"])
+        eng.start_problem("two-sum")
+        eng.finish("solved_unaided", self_confidence=3)
+        eng.advance()
+        eng.end_session()
+    assert srs.is_mastered(srs.card_row(app.conn, "two-sum"))
+
+    async with app.run_test() as pilot:
+        # The home overview owns the count; the page owns the list.
+        assert "1 mastered" in _plain(app.screen.query_one("#overview", Static))
+
+        await pilot.press("m")
+        text = _plain(app.screen.query_one("#mastered-content", Static))
+        assert "Two Sum" in text
+        assert "1 mastered" in text
+        assert render.MASTERED_MARK in text
+        await pilot.press("escape")
+
+        # And on the hand-picking screen, where knowing is the whole point.
+        await pilot.press("n")
+        assert isinstance(app.screen, SetupScreen)
+        rows = app.screen.query_one("#problem-list", SelectionList)
+        starred = [
+            o.prompt.plain for o in rows._options
+            if render.MASTERED_MARK in o.prompt.plain
+        ]
+        assert len(starred) == 1 and "Two Sum" in starred[0]
+
+
+async def test_the_star_does_not_shift_unmastered_titles(app):
+    """The mark sits in its own column, or the list stops lining up."""
+    from core import render
+
+    plain = render.mastered_prefix(False)
+    starred = render.mastered_prefix(True)
+    assert len(plain.plain) == len(starred.plain)
+    assert plain.plain.strip() == ""
+    assert starred.plain.startswith(render.MASTERED_MARK)
 
 
 async def test_a_full_run_is_recorded_end_to_end(app):

@@ -6,6 +6,7 @@ and into a widget by the Textual app, so the two can never drift.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from . import branding
@@ -19,6 +20,23 @@ from .stats import Distribution, PastAttempt, Run, RunStanding
 WIDTH = 62
 
 DIFFICULTY_STYLE = {"easy": "green", "medium": "yellow", "hard": "red"}
+
+#: Goes in front of the name of a problem that has been mastered, everywhere one
+#: is listed. One character and one style, in one place, so the four screens that
+#: draw a problem name cannot each invent their own way of saying it.
+MASTERED_MARK = "★"
+MASTERED_STYLE = "yellow"
+
+
+def mastered_prefix(mastered: bool, *, width: int = 2) -> Text:
+    """`★ ` if mastered, blank of the same width if not.
+
+    Padded rather than omitted: the star has to sit in its own column, or every
+    unmastered title on the screen shifts left by one and the list stops being a
+    list. `width` is the whole column including the trailing space.
+    """
+    mark = MASTERED_MARK if mastered else ""
+    return Text(f"{mark:<{width}}", style=MASTERED_STYLE if mastered else "")
 # keyed by the rendered label, since that is what the stat line carries.
 # The solve ladder fades as the help increases — green for the one you want,
 # dimming rung by rung, so a column of stat lines reads at a glance.
@@ -396,8 +414,9 @@ def queue_row(n: int, item) -> Text:
     """
     line = Text("  ")
     line.append(f"{n} ", style="bright_black")
-    title = item.title if len(item.title) <= 29 else item.title[:28] + "…"
-    line.append(f"{title:<30}", style="bold" if item.is_review else "")
+    line.append(mastered_prefix(getattr(item, "mastered", False)))
+    title = item.title if len(item.title) <= 27 else item.title[:26] + "…"
+    line.append(f"{title:<28}", style="bold" if item.is_review else "")
     line.append(
         f"{(item.difficulty or '?')[:1].upper():<3}",
         style=DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
@@ -459,6 +478,105 @@ def _wrap(text: str, width: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+# --- mastered problems -----------------------------------------------------
+
+
+def _days_ago(iso: str | None, now: datetime) -> str:
+    if not iso:
+        return "—"
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return "—"
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    days = max(0, (now - when).days)
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"{days}d ago"
+
+
+#: (label, width). Wider than `WIDTH` because six columns will not fit in 62 and
+#: the rules are drawn to match rather than the columns squeezed to the rule.
+MASTERED_COLUMNS = (
+    ("", 2),
+    ("problem", 26),
+    ("", 3),
+    ("pattern", 18),
+    ("solves", 8),
+    ("lapses", 8),
+    ("mastered", 10),
+)
+MASTERED_WIDTH = 2 + sum(w for _, w in MASTERED_COLUMNS)
+
+
+def mastered_table(
+    rows: Sequence[Mapping[str, Any]], catalog_size: int, now: datetime
+) -> RenderableType:
+    """Everything you have mastered, and what it cost to get there.
+
+    Mastery is the one thing the scheduler does that you cannot see happen: a
+    problem simply stops being offered. So it gets a page — the alternative is a
+    queue that quietly narrows for reasons you have to take on faith.
+    """
+    if not rows:
+        return empty_state(
+            "Nothing mastered yet.",
+            "A problem is mastered once you have recalled it across its whole "
+            "ladder — one clean recall after an easy solve, four after a failed one.",
+        )
+
+    head = Text("  ")
+    for label, w in MASTERED_COLUMNS:
+        head.append(f"{label:<{w}}", style="bright_black")
+    out: list[RenderableType] = [head, rule(width=MASTERED_WIDTH)]
+
+    by_pattern: dict[str, int] = {}
+    for row in rows:
+        title = row["title"] or row["slug"]
+        line = Text("  ")
+        line.append(mastered_prefix(True))
+        line.append(f"{title if len(title) <= 25 else title[:24] + chr(8230):<26}")
+        difficulty = (row["problem_difficulty"] or "").lower()
+        line.append(
+            f"{difficulty[:1].upper():<3}", style=DIFFICULTY_STYLE.get(difficulty, "")
+        )
+        pattern = row["pattern"] or "—"
+        line.append(f"{pattern if len(pattern) <= 17 else pattern[:16] + chr(8230):<18}",
+                    style="bright_black")
+        line.append(f"{row['reps'] or 0:<8}")
+        lapses = int(row["lapses"] or 0)
+        line.append(f"{lapses:<8}", style="bright_black" if not lapses else "yellow")
+        line.append(f"{_days_ago(row['mastered_at'], now):<10}", style="bright_black")
+        out.append(line)
+        by_pattern[pattern] = by_pattern.get(pattern, 0) + 1
+
+    out.append(rule(width=MASTERED_WIDTH))
+    footer = Text("  ")
+    footer.append(f"{len(rows)} mastered", style="bold")
+    if catalog_size:
+        footer.append(f" of {catalog_size}", style="bright_black")
+    footer.append("   ", style="bright_black")
+    # The patterns you have actually finished, which is the question this page
+    # gets opened to answer.
+    leaders = sorted(by_pattern.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+    footer.append(
+        "  ".join(f"{name} {count}" for name, count in leaders), style="bright_black"
+    )
+    out.append(footer)
+    # Kept inside `MASTERED_WIDTH` so it does not wrap under the table it
+    # belongs to on an 80-column terminal.
+    out.append(
+        Text(
+            "  Out of the daily queue for good — losing one in a mixed run puts it back.",
+            style="bright_black italic",
+        )
+    )
+    return Group(*out)
 
 
 # --- history ---------------------------------------------------------------

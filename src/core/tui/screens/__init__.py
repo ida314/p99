@@ -2,6 +2,7 @@ from .fetch import FetchScreen
 from .finish import ConfirmModal, EndRunModal, FinishModal
 from .history import HistoryScreen
 from .home import HomeScreen
+from .mastered import MasteredScreen
 from .queue import QueueScreen
 from .settings import SettingsScreen
 from .setup import RunPlan, SetupScreen
@@ -16,6 +17,7 @@ __all__ = [
     "FinishModal",
     "HistoryScreen",
     "HomeScreen",
+    "MasteredScreen",
     "QueueScreen",
     "RunPlan",
     "SettingsScreen",

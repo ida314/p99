@@ -29,6 +29,9 @@ MENU = [
     ("d", "queue", "queue"),
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
+    # Beside stats because it is the same kind of thing — a record to look at,
+    # not an action. `m` for mastered: `r` is already runs and `t` is stats.
+    ("m", "mastered", "mastered"),
     ("s", "settings", "settings"),
     # Below settings because it is packing, not practice — and next to the
     # switch it serves, since turning offline mode on without warming the cache
@@ -54,6 +57,7 @@ class HomeScreen(VimMotion, Screen):
         Binding("d", "queue", "queue"),
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
+        Binding("m", "mastered", "mastered"),
         Binding("s", "settings", "settings"),
         Binding("f", "fetch", "offline cache"),
         Binding("q", "quit", "quit"),
@@ -114,8 +118,10 @@ class HomeScreen(VimMotion, Screen):
         clean_pct = f"{ov.clean_solves / ov.total_attempts * 100:.0f}%" if ov.total_attempts else "—"
         coverage = f"{ov.distinct_slugs} / {ov.catalog_size} problems seen"
 
-        cards, due = srs.counts(conn, datetime.now(timezone.utc))
+        cards, due, mastered = srs.counts(conn, datetime.now(timezone.utc))
         scheduled = f"{due} due now" if cards else "nothing scheduled yet"
+        if mastered:
+            scheduled += f"  ·  {mastered} mastered"
 
         rows = [
             rule(),
@@ -160,6 +166,9 @@ class HomeScreen(VimMotion, Screen):
 
     def action_stats(self) -> None:
         self.app.action_stats()  # type: ignore[attr-defined]
+
+    def action_mastered(self) -> None:
+        self.app.action_mastered()  # type: ignore[attr-defined]
 
     def action_settings(self) -> None:
         self.app.action_settings()  # type: ignore[attr-defined]

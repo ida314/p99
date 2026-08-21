@@ -169,9 +169,8 @@ def _attempt_id(conn: sqlite3.Connection, attempt_uuid: str) -> int | None:
 def _setting(conn: sqlite3.Connection, key: str, default: str) -> str:
     """Read one in-app override straight from the projection.
 
-    Deliberately not via `config`: `config.set_option` appends events, so this
-    module cannot import it. Only the two keys the card projection depends on
-    are read this way, and both are plain strings.
+    The settings-table layer only. `srs_context` puts the config *file* under
+    it; this stays a bare projection read so it cannot fail on a broken file.
     """
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     if row is None:
@@ -191,10 +190,22 @@ def srs_context(conn: sqlite3.Connection) -> tuple[srs.Params, scoring.Weights]:
     `settings_changed` event as it goes. Switching `srs.params` from v1 to v2
     and replaying is meant to reschedule everything, not to leave the first half
     of your history on the old model.
+
+    Both layers, in `config`'s own order: the file, then the settings screen on
+    top of it. This used to read the settings table alone, which meant a
+    `params` line in `config.toml` was honoured by every screen that reports the
+    schedule and by nothing that computes it -- `p99 doctor` could name one
+    parameter file while the cards were graded under another. The import is
+    function-local because `config` imports this module; resolving it at call
+    time rather than at import time is what makes that legal, and it is the same
+    trick `config.options` already uses to reach `scoring` and `srs`.
     """
+    from . import config
+
+    cfg = config.load(conn)
     return (
-        srs.load_params(_setting(conn, "srs.params", srs.DEFAULT_PARAMS)),
-        scoring.load_weights(_setting(conn, "scoring.weights", scoring.DEFAULT_WEIGHTS)),
+        srs.load_params(cfg.srs.params),
+        scoring.load_weights(cfg.scoring.weights),
     )
 
 

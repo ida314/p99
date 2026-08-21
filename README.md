@@ -65,18 +65,31 @@ multipliers, so the two ways of getting help can never be double-charged and the
 worse of the two always wins. Every rung still counts as solved and still earns
 credit: reading the implementation after a real fight beats not logging it.
 
-The queue puts due reviews first but never lets them take more than ~40% of it,
-because falling behind on new coverage is how you end up excellent at fifteen
-problems. Nothing you attempted in the last three days comes back unless it is
-due, the difficulty mix targets 20/60/20, and **no pattern ever runs three deep**
-— interleaving beats blocking for transfer, and it is the highest-value
-scheduling rule in here. `enter` starts a run over it, `ctrl+r` rebuilds it.
+The queue puts due reviews first but gives them **one slot a day**, because
+falling behind on new coverage is how you end up excellent at fifteen problems.
+When several things are due it spends that slot on the one you have forgotten
+most — not the one that has waited longest — and says how many it deferred. Due
+dates are priorities, not deadlines. Nothing you attempted in the last three days
+comes back unless it is due, the difficulty mix targets 20/60/20, and **no
+pattern ever runs three deep** — interleaving beats blocking for transfer, and it
+is the highest-value scheduling rule in here. `enter` starts a run over it,
+`ctrl+r` rebuilds it.
+
+The other two slots go to problems you have never opened, chosen from your
+**weakest patterns**. A pattern is the unit an answer transfers along, so a
+pattern you are bad at is answered with a new problem of that shape rather than
+another pass over one you have already mastered — which is also what happens
+when a mastered problem turns up in the slow tail of the last 60 days.
 
 Every row arrives checked and `space` unchecks one, so a queue of three and an
 evening with time for two is a run over two — not a queue you rebuild until it
 comes out short enough. `ctrl+e` takes the lot back, `ctrl+x` drops it. What you
 skip is left on today's queue exactly as generated: unchecking is a fact about
 tonight, not a correction to the schedule.
+
+How many of those slots reviews may take is `session.reviews_per_day`, and one
+is the default. Raise it to work off a backlog faster, at the cost of new
+coverage; set it to zero for a stretch of pure coverage.
 
 How many the queue holds is `session.queue_n`. It is a separate knob from
 `session.planned_n`, which is only what the setup screen rolls by default —
@@ -85,6 +98,22 @@ number could not say. Left unset, `queue_n` follows `planned_n`, so splitting
 them is opt-in.
 
 Reviews score 1.25×. Retention is the thing being trained.
+
+## Mastering a problem
+
+A problem leaves the rotation once you have recalled it across its whole ladder:
+one clean recall after an easy solve, two after a shaky one, three after a solve
+that needed help, four after one you failed. After that it stops being offered.
+`m` from home lists everything mastered, when it went, and what it cost to get
+there — the scheduler's one otherwise invisible act. A mastered problem carries a
+★ in front of its name wherever one is listed, so the queue and the hand-picking
+screen say so too.
+
+It is hidden, not deleted. A mastered problem can still turn up in a mixed run,
+and losing it there puts it straight back on the bottom of the failed ladder with
+its schedule intact. Mastery is parameters, not code: it lives in a `[mastery]`
+table in the selected `data/srs/*.toml`, and the older files have none, so
+replaying under one of them masters nothing.
 
 The cards are a projection, like everything else derived: `p99 replay` rebuilds
 every one of them from the event log, so the schedule seeds itself retroactively
@@ -160,6 +189,7 @@ real points.
 | `d` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
+| `m` | mastered problems — what has left the rotation (home) |
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml` |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |
 | `c` | how many `ctrl+r` rolls (setup); this run only, never written to settings |

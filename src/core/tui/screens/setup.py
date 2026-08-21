@@ -19,9 +19,9 @@ from textual.widgets.selection_list import Selection
 
 from rich.text import Text
 
-from ... import catalog
+from ... import catalog, srs
 from ...catalog import Problem
-from ...render import DIFFICULTY_STYLE
+from ...render import DIFFICULTY_STYLE, mastered_prefix
 from ..vim import MOTIONS, VimMotion
 
 DIFFICULTY_MARK = {"easy": "E", "medium": "M", "hard": "H"}
@@ -78,6 +78,7 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         self.speech_mode = speech_mode
         self.problems: list[Problem] = []
         self.attempted: set[str] = set()
+        self.mastered: set[str] = set()
         # The chosen set lives here, not in the widget: SelectionList only knows
         # about currently-visible options, so filtering would silently drop
         # every pick that scrolled out of the filter.
@@ -108,6 +109,9 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         self.attempted = {
             r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM attempts").fetchall()
         }
+        # Read once here rather than per row: this list is 150 long and gets
+        # redrawn on every keystroke in the filter box.
+        self.mastered = {r["slug"] for r in srs.mastered_cards(conn)}
         self.query_one("#problem-list", SelectionList).border_title = (
             f"{self.active_list}  ·  {len(self.problems)} problems"
         )
@@ -136,7 +140,13 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         seen = "·" if p.slug in self.attempted else " "
         line = Text(f"{seen} ")
         line.append(f"[{mark}]", style=DIFFICULTY_STYLE.get(p.difficulty, ""))
-        line.append(f" {p.title}")
+        line.append(" ")
+        # The star goes in its own column, not glued to the title, so the names
+        # still line up down the list. The `·` beside it already means "seen";
+        # this is the stronger claim, and picking a starred problem by hand is
+        # still allowed -- it just will not be picked *for* you.
+        line.append(mastered_prefix(p.slug in self.mastered))
+        line.append(p.title)
         return line
 
     def _populate(self, needle: str) -> None:

@@ -11,7 +11,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from . import scoring
 from .scoring import Weights, fmt_duration
@@ -545,8 +545,8 @@ def problem_history(
 
 
 @dataclass(frozen=True)
-class TagMastery:
-    """How well one tag is going. Spec §4 gives this a table; it does not get one.
+class Mastery:
+    """How well one slice is going. Spec §4 gives this a table; it does not get one.
 
     `ema_score` is a function of the score, and the score is a function of a
     versioned weights file that you are expected to edit (see the note at the
@@ -556,7 +556,10 @@ class TagMastery:
     here, at read time, like everything else derived.
     """
 
-    tag: str
+    #: The tag or the pattern, depending on which reader built it. Named for
+    #: neither, because the arithmetic below is the same either way and a field
+    #: called `tag` holding `sliding-window` is a comment that lies.
+    name: str
     attempts: int
     solved_clean: int
     ema_score: float
@@ -573,18 +576,19 @@ class TagMastery:
 MASTERY_ALPHA = 0.3
 
 
-def tag_mastery(
+def _mastery(
     conn: sqlite3.Connection,
-    weights: Weights | None = None,
+    weights: Weights | None,
+    keys_of: Callable[[dict[str, Any]], Iterable[str]],
     *,
-    min_attempts: int = 1,
-    days: int | None = None,
-) -> list[TagMastery]:
-    """Per-tag mastery, weakest first. Spec §10 stage 1's `weak_tags`.
+    min_attempts: int,
+    days: int | None,
+) -> list[Mastery]:
+    """The shared arithmetic behind `tag_mastery` and `pattern_mastery`.
 
-    One attempt feeds every tag its problem carries -- that is the reason tags
-    get a score and not an FSRS card (spec §8): every problem review is also a
-    review of all its tags, and scheduling on both would double-count.
+    One attempt feeds every key its problem carries -- that is the reason these
+    slices get a score and not an FSRS card (spec §8): every problem review is
+    also a review of all its tags, and scheduling on both would double-count.
     """
     w = weights or scoring.load_weights()
     attempts = load_attempts(conn, days=days)  # oldest first, which the EMA needs
@@ -597,27 +601,68 @@ def tag_mastery(
     for a in attempts:
         score = scoring.score_attempt(a, a.get("difficulty") or "medium", w).total
         is_clean = scoring.is_clean_solve(a)
-        for tag in a.get("tags") or ():  # already decoded by `load_attempts`
-            counts[tag] = counts.get(tag, 0) + 1
-            clean[tag] = clean.get(tag, 0) + (1 if is_clean else 0)
-            ema[tag] = score if tag not in ema else MASTERY_ALPHA * score + (1 - MASTERY_ALPHA) * ema[tag]
+        for key in keys_of(a):
+            counts[key] = counts.get(key, 0) + 1
+            clean[key] = clean.get(key, 0) + (1 if is_clean else 0)
+            ema[key] = score if key not in ema else MASTERY_ALPHA * score + (1 - MASTERY_ALPHA) * ema[key]
             if a.get("ended_at"):
-                seen[tag] = a["ended_at"]
+                seen[key] = a["ended_at"]
 
     out = [
-        TagMastery(
-            tag=tag,
-            attempts=counts[tag],
-            solved_clean=clean.get(tag, 0),
-            ema_score=ema[tag],
-            last_seen=seen.get(tag),
+        Mastery(
+            name=key,
+            attempts=counts[key],
+            solved_clean=clean.get(key, 0),
+            ema_score=ema[key],
+            last_seen=seen.get(key),
         )
-        for tag in counts
-        if counts[tag] >= min_attempts
+        for key in counts
+        if counts[key] >= min_attempts
     ]
-    # Ties broken by tag so the ordering is stable — a queue built from this has
-    # to be reproducible.
-    return sorted(out, key=lambda m: (m.ema_score, m.tag))
+    # Ties broken by name so the ordering is stable — a queue built from this
+    # has to be reproducible.
+    return sorted(out, key=lambda m: (m.ema_score, m.name))
+
+
+def tag_mastery(
+    conn: sqlite3.Connection,
+    weights: Weights | None = None,
+    *,
+    min_attempts: int = 1,
+    days: int | None = None,
+) -> list[Mastery]:
+    """Per-tag mastery, weakest first. Spec §10 stage 1's `weak_tags`."""
+    return _mastery(
+        conn,
+        weights,
+        lambda a: a.get("tags") or (),  # already decoded by `load_attempts`
+        min_attempts=min_attempts,
+        days=days,
+    )
+
+
+def pattern_mastery(
+    conn: sqlite3.Connection,
+    weights: Weights | None = None,
+    *,
+    min_attempts: int = 1,
+    days: int | None = None,
+) -> list[Mastery]:
+    """Per-pattern mastery, weakest first.
+
+    The slice the queue actually wants to fill against. A pattern is the unit
+    the answer transfers along -- knowing that a problem is a monotonic-stack
+    problem is most of solving it -- where a tag like `array` spans a dozen
+    unrelated approaches and averages out to nothing. Each problem carries
+    exactly one, so unlike `tag_mastery` this partitions rather than overlaps.
+    """
+    return _mastery(
+        conn,
+        weights,
+        lambda a: (a["pattern"],) if a.get("pattern") else (),
+        min_attempts=min_attempts,
+        days=days,
+    )
 
 
 @dataclass(frozen=True)

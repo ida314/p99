@@ -93,6 +93,7 @@ class QueueScreen(VimMotion, Screen[None]):
             active_list=app.config.session.active_list,
             weights=app.weights,
             regenerate=regenerate,
+            reviews_per_day=app.config.session.reviews_per_day,
         )
         self.query_one("#queue-title", Static).update(f"  today's queue  ·  {self.queue.date}")
         self._populate()

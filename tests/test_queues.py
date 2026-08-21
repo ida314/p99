@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta, timezone
 
 from core import catalog, events, queues, scoring, srs
@@ -12,7 +11,7 @@ WEIGHTS = scoring.load_weights()
 NOW = datetime(2026, 7, 31, 9, 0, tzinfo=timezone.utc)
 
 
-def _build(conn, n=6, now=NOW, regenerate=False):
+def _build(conn, n=6, now=NOW, regenerate=False, reviews_per_day=queues.REVIEWS_PER_DAY):
     return queues.ensure(
         conn,
         n=n,
@@ -20,6 +19,7 @@ def _build(conn, n=6, now=NOW, regenerate=False):
         weights=WEIGHTS,
         now=now,
         regenerate=regenerate,
+        reviews_per_day=reviews_per_day,
     )
 
 
@@ -134,7 +134,13 @@ def test_no_pattern_runs_three_deep(conn):
 
 
 def test_reviews_never_take_over_the_queue(conn):
-    """Spec §8: due reviews lead, but never consume more than ~40% of it."""
+    """Spec §8: due reviews lead, and now take one slot a day rather than ~40%.
+
+    The budget is a flat count, so it does not grow with the queue: a ten-problem
+    day is nine new problems and one review, not four reviews. That is the whole
+    point -- a share of a bigger queue was still a bigger backlog-clearing
+    session, and coverage is what was starving.
+    """
     slugs = [p.slug for p in catalog.all_problems(conn, "neetcode150")[:20]]
     for slug in slugs:
         _solve(conn, slug, self_confidence=3)
@@ -142,10 +148,33 @@ def test_reviews_never_take_over_the_queue(conn):
     later = NOW + timedelta(days=400)  # everything is long overdue
     for n in (3, 5, 6, 10):
         queue = _build(conn, n=n, now=later, regenerate=True)
-        assert queue.due_count <= math.ceil(queues.DUE_SHARE * n), (
+        assert queue.due_count <= queues.REVIEWS_PER_DAY, (
             f"n={n}: {queue.due_count} reviews"
         )
         assert queue.new_count > 0
+
+
+def test_the_review_budget_is_configurable(conn):
+    """`session.reviews_per_day` is the knob, and zero really means zero."""
+    slugs = [p.slug for p in catalog.all_problems(conn, "neetcode150")[:20]]
+    for slug in slugs:
+        _solve(conn, slug, self_confidence=3)
+
+    later = NOW + timedelta(days=400)
+    for budget in (0, 1, 3):
+        queue = _build(conn, n=6, now=later, regenerate=True, reviews_per_day=budget)
+        assert queue.due_count <= budget, f"budget={budget}: {queue.due_count}"
+        assert len(queue.items) == 6  # still a full queue either way
+
+
+def test_the_deferred_backlog_is_named_out_loud(conn):
+    """A backlog you cannot see reads as a scheduler that lost track of it."""
+    slugs = [p.slug for p in catalog.all_problems(conn, "neetcode150")[:20]]
+    for slug in slugs:
+        _solve(conn, slug, self_confidence=3)
+
+    queue = _build(conn, n=3, now=NOW + timedelta(days=400), regenerate=True)
+    assert "deferred" in queue.rationale
 
 
 def test_the_difficulty_mix_is_targeted(conn):

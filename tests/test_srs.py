@@ -7,11 +7,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fsrs import Rating
 
-from core import events, scoring, srs
+from core import config, events, scoring, srs
 from core.engine import RunEngine
 
 WEIGHTS = scoring.load_weights()
 PARAMS = srs.load_params()
+#: v2 is still selectable, and several properties below belong to it rather than
+#: to whatever the default happens to be: per-difficulty retention is a v2
+#: feature that v3 deliberately drops. Naming it here keeps those tests testing
+#: the file that makes the claim.
+V2 = srs.load_params("v2")
 
 # medium par is 1800s; easy 900; hard 2700.
 PAR_MEDIUM = WEIGHTS.par_for("medium")
@@ -320,11 +325,58 @@ def test_an_explicit_flag_still_wins(conn):
 # --- parameters ------------------------------------------------------------
 
 
-def test_the_default_params_load_and_are_the_published_ones():
-    assert PARAMS.name == srs.DEFAULT_PARAMS == "v2"
+def test_the_default_params_load_and_only_the_entry_intervals_are_hand_set():
+    """v3 replaces `weights[0..3]` by hand and leaves the other seventeen alone.
+
+    The narrowness is the claim. `weights[0..3]` are the initial stabilities, and
+    stability is the interval at which recall falls to 0.9 -- so at
+    `desired_retention = 0.9` those four numbers *are* the first-review intervals
+    in days, which is what makes hand-setting them a statement about this domain
+    rather than a guess at the model. Everything from index 4 on describes the
+    shape of forgetting and stays fitted.
+    """
+    assert PARAMS.name == srs.DEFAULT_PARAMS == "v3"
     assert len(PARAMS.weights) == 21  # FSRS-6; index 20 is decay
     assert 0 < PARAMS.desired_retention <= 1
-    assert {"v1", "v2"} <= set(srs.available_params())
+    assert {"v1", "v2", "v3"} <= set(srs.available_params())
+
+    # Failed / Hard / Okay / Easy, in days.
+    assert PARAMS.weights[:4] == (2.0, 5.0, 9.0, 21.0)
+    # And nothing else moved.
+    assert PARAMS.weights[4:] == V2.weights[4:]
+
+
+def test_the_entry_intervals_really_are_the_days_they_claim_to_be():
+    """The arithmetic the weights file rests on, checked rather than asserted.
+
+    If `desired_retention` ever drifts off 0.9, or the decay term moves, the
+    first four weights stop meaning days and the file's whole comment is wrong.
+    """
+    assert PARAMS.desired_retention == 0.9
+    assert PARAMS.retention == ()  # flat, not per-difficulty: see v3.toml
+
+    at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    wanted = {Rating.Again: 2, Rating.Hard: 5, Rating.Good: 9, Rating.Easy: 21}
+    for rating, days in wanted.items():
+        card, _ = srs.scheduler(PARAMS).review_card(
+            srs.new_card("x", at), rating, review_datetime=at
+        )
+        assert (card.due - at).days == days, rating
+
+
+def test_a_failed_problem_no_longer_comes_back_tomorrow(conn):
+    """The regression this whole version exists to fix.
+
+    Under v2 every failure scheduled a one-day interval, forever, because
+    `weights[0]` is 0.212 days. With a verdict history full of `gave_up` that
+    produced 18 due cards against 19 problems ever seen.
+    """
+    _solve(conn, "two-sum", verdict="gave_up")
+    card = _cards(conn)["two-sum"]
+    ended = conn.execute(
+        "SELECT ended_at FROM attempts WHERE slug = 'two-sum'"
+    ).fetchone()["ended_at"]
+    assert (srs.parse_ts(card["due"]) - srs.parse_ts(ended)).days == 2
 
 
 def test_v1_still_loads_and_still_behaves_the_way_it_was_recorded():
@@ -345,13 +397,25 @@ def test_v1_still_loads_and_still_behaves_the_way_it_was_recorded():
 
 
 def test_retention_is_per_difficulty_and_hard_aims_higher():
-    assert PARAMS.retention_for("easy") == PARAMS.retention_for("medium") == 0.90
-    assert PARAMS.retention_for("hard") > PARAMS.retention_for("medium")
+    """A v2 property, and still v2's. v3 drops the split -- see below."""
+    assert V2.retention_for("easy") == V2.retention_for("medium") == 0.90
+    assert V2.retention_for("hard") > V2.retention_for("medium")
     # Unknown difficulties fall back rather than raising mid-replay.
-    assert PARAMS.retention_for("") == PARAMS.desired_retention
-    assert PARAMS.retention_for("insane") == PARAMS.desired_retention
+    assert V2.retention_for("") == V2.desired_retention
+    assert V2.retention_for("insane") == V2.desired_retention
     # `Params` is an lru_cache key on `scheduler`, so it has to stay hashable.
-    assert hash(PARAMS)
+    assert hash(V2) and hash(PARAMS)
+
+
+def test_v3_asks_the_same_retention_of_every_difficulty():
+    """Deliberate, and load-bearing on the entry intervals above.
+
+    0.92 multiplies an interval by ~0.73, so under v2's table `weights[0] = 2.0`
+    would mean 1 day for hard problems -- exactly the ones v3 exists to stop
+    scheduling for tomorrow. Difficulty is already priced in through par, which
+    is what `srs.rate` compares the clock against.
+    """
+    assert {PARAMS.retention_for(d) for d in ("easy", "medium", "hard", "")} == {0.9}
 
 
 def _fold_hard(params, *, apply_mult, reps=6):
@@ -405,7 +469,7 @@ def test_a_hard_problem_comes_back_sooner_than_a_medium_one(conn):
     at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
     cards, intervals = {}, {}
     for difficulty in ("medium", "hard"):
-        sched = srs.scheduler(PARAMS, PARAMS.retention_for(difficulty))
+        sched = srs.scheduler(V2, V2.retention_for(difficulty))
         card, t = srs.new_card("x", at), at
         # Two reps, not one: intervals are whole days, and on a first encounter
         # both difficulties round to 2. The split resolves from the second
@@ -455,7 +519,12 @@ def test_the_retention_table_reaches_the_projection(conn):
 
     The unit test above proves the scheduler does it; this proves `grade_attempt`
     asks for the right one, which is the wiring that actually decides your queue.
+
+    Pinned to v2, which is the file that has a retention table. It also exercises
+    the thing the table was always for: selecting a parameter file through the
+    settings layer and having the projection grade against it.
     """
+    config.set_option(conn, "srs.params", "v2")
     _solve(conn, "trapping-rain-water", self_confidence=3)  # hard
     _solve(conn, "3sum", self_confidence=3)  # medium
 
@@ -476,3 +545,147 @@ def test_the_retention_table_reaches_the_projection(conn):
 def test_parse_ts_always_returns_utc():
     assert srs.parse_ts("2026-01-01T12:00:00+00:00").tzinfo == timezone.utc
     assert srs.parse_ts("2026-01-01T12:00:00").tzinfo == timezone.utc  # naive treated as UTC
+
+
+# --- mastery (v3's `[mastery]` table) --------------------------------------
+
+
+def _rungs(conn, slug):
+    row = srs.card_row(conn, slug)
+    return row["rungs_left"], row["mastered_at"]
+
+
+def test_the_mastery_ladder_is_parameters_not_code():
+    """v3 masters; v1 and v2 do not, and that is what makes the change replayable.
+
+    Mastery had to be addable without rescheduling history recorded under the
+    older files. It is a table in the toml, so an older file simply has none and
+    `rungs_for` answers None all the way down.
+    """
+    assert PARAMS.rungs_for(Rating.Again) == 4
+    assert PARAMS.rungs_for(Rating.Hard) == 3
+    assert PARAMS.rungs_for(Rating.Good) == 2
+    assert PARAMS.rungs_for(Rating.Easy) == 1
+    for older in (srs.load_params("v1"), V2):
+        assert older.mastery == ()
+        assert all(older.rungs_for(r) is None for r in Rating)
+
+
+def test_a_clean_solve_is_mastered_on_its_second_recall(conn):
+    """The Easy ladder as specified: 21 days, then out.
+
+    Short on purpose -- it was the option chosen over a 60- and a 90-day
+    threshold -- so a problem you recognise and implement at pace twice running
+    leaves the rotation and stops competing for the one review slot a day.
+    """
+    _solve(conn, "two-sum", self_confidence=3)  # instant clean solve rates Easy
+    assert _rungs(conn, "two-sum") == (1, None)
+
+    _solve(conn, "two-sum", self_confidence=3)
+    rungs, mastered_at = _rungs(conn, "two-sum")
+    assert rungs == 0 and mastered_at is not None
+
+
+def test_a_failed_problem_takes_the_long_ladder(conn):
+    """Four recalls, not one, before something you could not solve is mastered."""
+    _solve(conn, "two-sum", verdict="gave_up")
+    assert _rungs(conn, "two-sum")[0] == 4
+    for expected in (3, 2, 1, 0):
+        _solve(conn, "two-sum", self_confidence=3)
+        assert _rungs(conn, "two-sum")[0] == expected
+    assert _rungs(conn, "two-sum")[1] is not None
+
+
+def test_forgetting_puts_you_back_at_the_bottom_of_the_failed_ladder(conn):
+    """A lapse is not a smaller version of a recall.
+
+    Without this a card that failed on its last rung would be mastered on the
+    very next solve, which is the one moment the evidence says it should not.
+    """
+    _solve(conn, "two-sum", self_confidence=3)  # Easy: one rung left
+    assert _rungs(conn, "two-sum")[0] == 1
+    _solve(conn, "two-sum", verdict="gave_up")
+    assert _rungs(conn, "two-sum") == (4, None)
+
+
+def test_a_mastered_problem_leaves_the_schedule(conn):
+    """Mastered is hidden, not deleted — the card and its due date stay put."""
+    _solve(conn, "two-sum", self_confidence=3)
+    _solve(conn, "two-sum", self_confidence=3)
+    now = datetime.now(timezone.utc) + timedelta(days=400)
+
+    assert srs.is_mastered(srs.card_row(conn, "two-sum"))
+    assert srs.due_cards(conn, now) == []
+    assert srs.next_due(conn) is None
+    cards, due, mastered = srs.counts(conn, now)
+    assert (cards, due, mastered) == (1, 0, 1)
+    assert [r["slug"] for r in srs.mastered_cards(conn)] == ["two-sum"]
+    # Still a review if a mock serves it, and still carrying a live schedule.
+    assert srs.is_due_review(conn, "two-sum")
+    assert srs.card_row(conn, "two-sum")["due"]
+
+
+def test_failing_a_mastered_problem_brings_it_back(conn):
+    """The safety valve on a one-recall mastery.
+
+    Mastered problems can still turn up in a mixed run. Losing one there is the
+    strongest evidence available that it was mastered too early, so it goes back
+    on the failed ladder with the schedule it already had underneath it.
+    """
+    _solve(conn, "two-sum", self_confidence=3)
+    _solve(conn, "two-sum", self_confidence=3)
+    assert srs.is_mastered(srs.card_row(conn, "two-sum"))
+
+    _solve(conn, "two-sum", verdict="gave_up")
+    assert not srs.is_mastered(srs.card_row(conn, "two-sum"))
+    assert _rungs(conn, "two-sum") == (4, None)
+    assert srs.due_cards(conn, datetime.now(timezone.utc) + timedelta(days=400))
+
+
+def test_mastery_survives_a_replay(conn):
+    """It is a projection like everything else, or it is a bug."""
+    _solve(conn, "two-sum", self_confidence=3)
+    _solve(conn, "two-sum", self_confidence=3)
+    before = _cards(conn)
+    events.replay(conn)
+    assert _cards(conn) == before
+
+
+def test_the_date_a_problem_was_mastered_does_not_move(conn):
+    """A mock run that goes well is not a fresh mastery."""
+    _solve(conn, "two-sum", self_confidence=3)
+    _solve(conn, "two-sum", self_confidence=3)
+    first = srs.card_row(conn, "two-sum")["mastered_at"]
+
+    _solve(conn, "two-sum", self_confidence=3)
+    row = srs.card_row(conn, "two-sum")
+    assert row["mastered_at"] == first
+    assert row["rungs_left"] == 0  # stays at the floor rather than going negative
+
+
+def test_due_cards_come_back_weakest_first(conn):
+    """One review a day means the order is the decision.
+
+    `due` alone cannot tell a card three days past a four-day interval from one
+    three days past a hundred-day interval. Retrievability can, and the first is
+    much further gone.
+    """
+    at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    conn.execute("INSERT OR IGNORE INTO problems VALUES(?,?,?,?,?,?,?)",
+                 ("weak", "Weak", "u", "medium", "[]", "p", '["neetcode150"]'))
+    conn.execute("INSERT OR IGNORE INTO problems VALUES(?,?,?,?,?,?,?)",
+                 ("strong", "Strong", "u", "medium", "[]", "p", '["neetcode150"]'))
+    # `strong` is the older due date; `weak` has decayed much further past its.
+    for slug, stability, last, due in (
+        ("weak", 4.0, at - timedelta(days=40), at - timedelta(days=36)),
+        ("strong", 200.0, at - timedelta(days=250), at - timedelta(days=50)),
+    ):
+        conn.execute(
+            "INSERT INTO fsrs_cards(slug, stability, difficulty, due, last_review, "
+            "reps, lapses, state, step, rungs_left, mastered_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (slug, stability, 5.0, due.isoformat(), last.isoformat(), 1, 0, "review", None, 2, None),
+        )
+
+    order = [r["slug"] for r in srs.due_cards(conn, at)]
+    assert order == ["weak", "strong"]

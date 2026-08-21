@@ -48,11 +48,23 @@ Every run, ranked against every other run.
 .TP
 .B queue
 Today's queue: which problems to do, in what order, and why. Reviews are
-scheduled by FSRS from your own history and lead the queue, but never take more
-than about 40% of it, so new coverage does not stall. No problem attempted in
-the last three days appears unless it has come due, the difficulty mix is
-targeted at roughly 20/60/20, and no pattern ever runs three problems deep:
-interleaving beats blocking for transfer. Generated on first use each day.
+scheduled by FSRS from your own history and lead the queue, but take only
+.I session.reviews_per_day
+slots of it \(em one by default \(em so new coverage does not stall. When
+several problems are due the slot goes to the one you have forgotten most
+rather than the one that has waited longest, and the rest are deferred. The
+remaining slots go to problems you have never opened, drawn from your weakest
+patterns. No problem attempted in the last three days appears unless it has come
+due, the difficulty mix is targeted at roughly 20/60/20, and no pattern ever runs
+three problems deep: interleaving beats blocking for transfer. Generated on first
+use each day.
+.TP
+.B mastered
+Problems that have left the rotation. A problem is mastered once it has been
+recalled across its whole ladder \(em once after an easy solve, up to four times
+after a failed one \(em and stops being offered. It is hidden rather than
+deleted: losing one in a mixed run puts it back on the failed ladder. A mastered
+problem carries a star in front of its name wherever one is listed.
 .TP
 .B replay
 Rebuild all projections from the event log. Safe to run at any time; it changes
@@ -185,6 +197,8 @@ opens today's queue,
 opens the runs,
 .B t
 opens the statistics,
+.B m
+opens the mastered problems,
 .B s
 opens the settings,
 .B q

@@ -70,15 +70,144 @@ almost all on problems seen once.
 
 ## The parameters
 
-Current default is **v2**. `v1` remains selectable and unmodified.
+Current default is **v3**. `v1` and `v2` remain selectable and unmodified.
 
 | Setting | Value | Why |
 |---|---|---|
-| `weights` | the 21 published FSRS-6 values | A fitted model, not something to tune by hand. Change only by running the optimizer |
-| `desired_retention` | 0.90 easy/medium, **0.92 hard** | 0.90 is the recommended default; hard problems aim higher, which is FSRS's own lever for a tighter schedule |
+| `weights[0..3]` | **2, 5, 9, 21** | The entry intervals in days, set by hand. See below |
+| `weights[4..20]` | the published FSRS-6 values | The shape of forgetting, and it is fitted. Change only by running the optimizer |
+| `desired_retention` | **0.90, flat** | What makes those four weights mean days. v2's per-difficulty table is dropped; see below |
 | `learning_steps` | **empty** | See below |
 | `relearning_steps` | **empty** | See below |
-| `maximum_interval` | **365 days** | A coverage guarantee. See below |
+| `maximum_interval` | 365 days | A coverage guarantee, and now nearly moot — `[mastery]` masters cards long before anything reaches it |
+| `[mastery]` | **4 / 3 / 2 / 1** | Recalls owed before a problem is mastered, by the rating it entered on. See below |
+
+### What was wrong with v2
+
+Not the model. The first four weights.
+
+`weights[0..3]` are the initial stabilities for Again / Hard / Good / Easy, and
+the published values are 0.212, 1.293, 2.307, 8.296 — after rounding, 1d, 1d, 2d
+and 8d. So under v2 **every failure came back tomorrow**, every time, forever.
+That is correct for a flashcard. For a 30-minute constructive problem attempted
+three a day it is a treadmill, and with a verdict history dominated by `gave_up`
+and `solved_with_hints` almost every card sat on it. Measured on the real
+database on 2026-08-20: **19 cards, 18 of them due**, 15 with stability under 1.5
+days, against 150 problems in the list of which 131 had never been opened.
+
+Two things were compounding. The scheduler kept re-serving the same nineteen
+problems, and `queues.DUE_SHARE = 0.4` gave those reviews `ceil(0.4 × 3) = 2` of
+the three daily slots — so one new problem a day at best, against a review
+backlog that regenerated itself every night.
+
+### Why the entry intervals are set by hand
+
+Stability is *defined* as the interval at which recall probability falls to 0.9.
+So at `desired_retention = 0.9`, `weights[0..3]` are literally the first-review
+intervals in days, and writing 2 / 5 / 9 / 21 there is a statement about this
+domain rather than a guess at the model:
+
+| First attempt | v2 | v3 |
+|---|---|---|
+| Failed — needed the solution, or a major hint | 1, 2, 6, 17, 44 | **2, 6, 18, 45, 104** |
+| Hard — meaningful help, or slower than 1.5× par | 1, 5, 17, 50, 133 | **5, 17, 51, 135, 325** |
+| Okay — independent, but slow or shaky | 2, 11, 46, 163 | **9, 39, 140, 365** |
+| Easy — recognised the pattern, clean at interview pace | 8, 39, 153, 365 | **21, 89, 316, 365** |
+
+(Each row is the first interval and the four that follow it under on-time `Good`
+reviews. `tests/test_srs.py` asserts the four entry points.)
+
+This contradicts the rule the other two files state — "change these only by
+running the optimizer" — and the narrowness is the point. Indices 4 through 20
+govern difficulty, stability growth and the decay term: they describe the *shape*
+of forgetting, which is the part that transfers from flashcards, and they are
+untouched. The four that were replaced are the ones that set the scale, the ones
+that were fitted on sub-10-second retrieval events, and the ones that governed
+every card in the database because nearly every card was still on its first rep.
+When there are ~400 reviews in review state, `fsrs.Optimizer` fits all twenty-one
+and supersedes this.
+
+### Why v3 asks the same retention of every difficulty
+
+v2 aimed at 0.92 for hard problems, which multiplies an interval by ~0.73. Under
+that table `weights[0] = 2.0` would round back to 1 day for exactly the problems
+this version exists to stop scheduling for tomorrow. The ladder is stated in days
+and it is only those days at 0.90.
+
+The property is also already bought elsewhere: par is difficulty-relative in
+`scoring/v1.toml` — 900s easy, 1800s medium, 2700s hard — and par is what
+`srs.rate` compares the clock against. A hard problem solved at hard-problem pace
+should not be charged for it twice. v2 keeps its table and keeps behaving exactly
+as it did.
+
+### Mastery
+
+A problem leaves the rotation once it has been recalled across its whole ladder.
+`[mastery]` in the toml says how many recalls that is, keyed by the rating the
+current run started on:
+
+| Entered on | Recalls owed | The ladder as specified |
+|---|---|---|
+| Failed | 4 | 2 → 5 → 12 → 30 → mastered |
+| Hard | 3 | 5 → 12 → 30 → mastered |
+| Okay | 2 | 9 → 25 → mastered |
+| Easy | 1 | 21 → mastered |
+
+The day figures are the ladder as it was written down; the intervals actually
+served are FSRS's, from the table above, and they run longer. So the **counter**
+is the mechanism, not the days: `rungs_left` is set on the way in from the
+rating, decremented by every graded review that is not a failure, and reset to
+the failed ladder by one that is. Forgetting a problem is not a smaller version
+of remembering it, and a card that lapses on its last rung should not be
+mastered on the next solve.
+
+Mastered is hidden, not deleted. `due_cards` stops offering it, `counts` reports
+it separately, and `m` from home lists the lot; the card and its due date stay
+where they were, so failing one in a mixed run puts it back on the failed ladder
+with a live schedule already underneath it.
+
+Two properties are worth naming. **This is parameters, not code** — v1 and v2
+have no `[mastery]` table, `Params.rungs_for` answers `None`, and replaying under
+either masters nothing, which is what made mastery addable without rescheduling
+history. And **one recall masters an easy solve**, which is short: a
+60-day threshold with a two-rep floor was the alternative and was declined in
+favour of the ladder as specified. The safety valve is that mixed runs can still
+serve a mastered problem, and losing one there un-masters it.
+
+### The daily budget
+
+`queues.DUE_SHARE` is gone and `session.reviews_per_day` replaces it, defaulting
+to 1. A share cannot say "one": at the queue size actually used, `ceil(0.4 × 3)`
+is 2. The budget the schedule is built around is two new problems and one review,
+and that is a count, so it is stored as one — it does not grow with the queue,
+because a share of a bigger queue was still a bigger backlog-clearing session.
+
+When several cards are due, the slot goes to the one with the lowest
+**retrievability** rather than the oldest due date. `due` alone cannot tell a card
+three days past a four-day interval from one three days past a hundred-day
+interval, and the first is much further gone. The rest are deferred and the queue
+says how many, out loud.
+
+The cap relaxes rather than shortening a queue: once the unseen pool is
+exhausted, `_select`'s third pass drops it and the queue fills with reviews,
+which is the only sensible answer when there is nothing new left to serve.
+
+Simulated forward from the real card states on 2026-08-20, at three problems a
+day, varying only the rate at which reviews grade `Again` (new problems held at
+50%, which is roughly the recorded first-encounter rate):
+
+| review `Again` rate | day 30 | day 66 | day 120 | day 250 | day 400 |
+|---|---|---|---|---|---|
+| 20% | 57 / 0 | 125 / 0 | 75 / 2 | 30 / 84 | **0 / 115** |
+| 35% | 59 / 0 | 131 / 0 | 106 / 1 | 91 / 10 | 30 / 78 |
+| 50% | 62 / 0 | 132 / 0 | 135 / 0 | 116 / 4 | 117 / 14 |
+
+(backlog / mastered.) Three things to read out of it. All 131 unopened problems
+are opened by **day 66** — that is what the budget buys, and it was the goal.
+The backlog *peaks* around there and is meant to: two new cards a day against one
+review is not a steady state, and it is not supposed to be until coverage is
+done. And mastery cannot rescue a 50% review failure rate — if reviews are
+failing half the time the answer is fewer new problems, not different parameters.
 
 ### Why the learning steps are empty
 
@@ -89,9 +218,15 @@ guidance recommends against any step longer than 12–14 hours. That leaves no s
 at all, which hands the short-term schedule to FSRS itself.
 
 Empty steps put every graded attempt straight into the review state on a day-scale
-interval. On a first encounter: `Again` → 1d, `Hard` → 1d, `Good` → 2d, `Easy` → 8d.
+interval. Under v1 and v2 that first interval came out of the published weights —
+`Again` → 1d, `Hard` → 1d, `Good` → 2d, `Easy` → 8d — which is the treadmill
+described above. v3 sets it directly: 2 / 5 / 9 / 21.
 
 ### Why hard problems use retention, not an interval multiplier
+
+*A v1-versus-v2 question. v3 drops the per-difficulty split entirely, for the
+reason given above, but the measurement below is why it is not coming back as a
+multiplier.*
 
 v1 implemented spec §8's "hard problems come back sooner" by multiplying the
 computed due date by 0.8 after the model had spoken, with a comment claiming this
@@ -142,11 +277,18 @@ ladder, not by the tail.
 
 So the cap answers exactly one question — how long may a problem you have nailed
 go unseen? — and 365 says "a year." If review load ever needs managing, the levers
-are the rating map, `queues.DUE_SHARE`, and `session.planned_n`. Not this.
+are the rating map, `session.reviews_per_day`, and `session.planned_n`. Not this.
+
+Under v3 the cap is nearly moot: `[mastery]` masters a card after one to four
+recalls, and almost nothing survives long enough to reach a 365-day interval.
 
 ## What was considered and left alone
 
 - **The scheduler itself.** FSRS-6 is right; the determinism work around it is right.
+  A fixed Leitner ladder was the alternative considered against v3 — 2→5→12→30 and
+  so on, exactly as written — and was declined: FSRS reproduces the entry intervals
+  exactly through `weights[0..3]`, grows them further than the ladder did afterwards,
+  and keeps the stability/difficulty state that the optimizer will eventually fit.
 - **Interleaving.** `queues.MAX_CONSECUTIVE_PATTERN = 2` stops the queue blocking
   by pattern. Interleaved practice reliably beats blocked practice for problem
   solving specifically, by training you to pair a problem with the right approach
@@ -158,14 +300,17 @@ are the rating map, `queues.DUE_SHARE`, and `session.planned_n`. Not this.
   were fitted on flashcards." It is not wired up, because it cannot help yet: it
   needs `pip install "fsrs[optimizer]"` (which pulls in torch), a few hundred
   reviews to fit parameters, and at least 512 review logs to compute an optimal
-  retention. There are currently 18 graded attempts. Running it now would produce
-  parameters that look precise and are overfit to noise.
+  retention. There were 18 graded attempts when this was written and 27 on
+  2026-08-20. Running it now would produce parameters that look precise and are
+  overfit to noise — which is also the reason `weights[0..3]` are set by reasoning
+  about what a day means here rather than by fitting nine reviews.
 
 ## When to revisit
 
 At **~400 reviews in review state**, fitting is worth doing. Feed the log to
 `fsrs.Optimizer`, take `compute_optimal_parameters()`, and write the result out as
-`v3.toml`; at 512+ review logs with durations recorded, `compute_optimal_retention()`
+`v4.toml` — including the first four, which v3 sets by hand precisely because
+there was nothing to fit them on; at 512+ review logs with durations recorded, `compute_optimal_retention()`
 becomes meaningful too. p99 already records everything needed — rating, timestamp
 and duration are all on `attempts`. Then replay, and every card reschedules against
 a model fitted on how *you* actually forget, which is the only real answer to the

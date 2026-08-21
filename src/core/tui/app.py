@@ -14,6 +14,7 @@ from .screens import (
     HistoryScreen,
     HomeScreen,
     QueueScreen,
+    MasteredScreen,
     RunPlan,
     SettingsScreen,
     SetupScreen,
@@ -167,6 +168,9 @@ class CoreApp(App):
 
     def action_stats(self) -> None:
         self.push_screen(StatsScreen())
+
+    def action_mastered(self) -> None:
+        self.push_screen(MasteredScreen())
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen())

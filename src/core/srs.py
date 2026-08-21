@@ -42,7 +42,7 @@ from . import scoring
 # this is `core.data.srs`, not the third-party `fsrs` imported above.
 from .data import srs as _params_pkg
 
-DEFAULT_PARAMS = "v2"
+DEFAULT_PARAMS = "v3"
 
 #: `fsrs.State` has no "new" -- a problem you have never finished simply has no
 #: row in `fsrs_cards`. Absence is the new state.
@@ -69,6 +69,13 @@ class Params:
     relearning_steps: tuple[int, ...]  # minutes
     maximum_interval: int
     hard_interval_mult: float
+    #: How many non-failing reviews a card entering at each rating must survive
+    #: before it is mastered, as pairs for the same hashability reason as
+    #: `retention`. Empty means mastery is off, which is what v1 and v2 get.
+    #:
+    #: Unrelated to `stats.Mastery`, which scores how well a *tag or pattern* is
+    #: going. This one is per problem and is a countdown, not a score.
+    mastery: tuple[tuple[str, int], ...] = ()
 
     def retention_for(self, difficulty: str) -> float:
         """The recall probability to aim for on a problem of this difficulty.
@@ -81,6 +88,31 @@ class Params:
             if name == wanted:
                 return value
         return self.desired_retention
+
+    def rungs_for(self, rating: Rating) -> int | None:
+        """How many more successful reviews master a card entering at `rating`.
+
+        None when this parameter set masters nothing, which is the answer for
+        every version before v3 and the reason mastery could be added without
+        rescheduling their history.
+        """
+        if not self.mastery:
+            return None
+        for name, value in self.mastery:
+            if name == MASTERY_KEYS[rating]:
+                return value
+        return None
+
+
+#: `[mastery]` is keyed by rating name because a TOML table cannot be keyed by
+#: an enum. `failed` rather than `again`: the run vocabulary is Failed / Hard /
+#: Okay / Easy, and the file is the one place the two namings have to meet.
+MASTERY_KEYS = {
+    Rating.Again: "failed",
+    Rating.Hard: "hard",
+    Rating.Good: "good",
+    Rating.Easy: "easy",
+}
 
 
 def _parse(raw: dict[str, Any]) -> Params:
@@ -106,6 +138,7 @@ def _parse(raw: dict[str, Any]) -> Params:
         relearning_steps=tuple(int(x) for x in raw.get("relearning_steps", [])),
         maximum_interval=int(raw.get("maximum_interval", 36500)),
         hard_interval_mult=float(raw.get("hard_interval_mult", 1.0)),
+        mastery=tuple((k.lower(), int(v)) for k, v in raw.get("mastery", {}).items()),
     )
 
 
@@ -259,16 +292,27 @@ def _load_card(conn: sqlite3.Connection, slug: str) -> Card | None:
     )
 
 
-def _store_card(conn: sqlite3.Connection, slug: str, card: Card, *, reps: int, lapses: int) -> None:
+def _store_card(
+    conn: sqlite3.Connection,
+    slug: str,
+    card: Card,
+    *,
+    reps: int,
+    lapses: int,
+    rungs_left: int | None,
+    mastered_at: str | None,
+) -> None:
     conn.execute(
         "INSERT INTO fsrs_cards"
-        "(slug, stability, difficulty, due, last_review, reps, lapses, state, step) "
-        "VALUES(?,?,?,?,?,?,?,?,?) "
+        "(slug, stability, difficulty, due, last_review, reps, lapses, state, step, "
+        " rungs_left, mastered_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(slug) DO UPDATE SET "
         "  stability = excluded.stability, difficulty = excluded.difficulty, "
         "  due = excluded.due, last_review = excluded.last_review, "
         "  reps = excluded.reps, lapses = excluded.lapses, "
-        "  state = excluded.state, step = excluded.step",
+        "  state = excluded.state, step = excluded.step, "
+        "  rungs_left = excluded.rungs_left, mastered_at = excluded.mastered_at",
         (
             slug,
             card.stability,
@@ -279,8 +323,32 @@ def _store_card(conn: sqlite3.Connection, slug: str, card: Card, *, reps: int, l
             lapses,
             STATE_NAMES[card.state],
             card.step,
+            rungs_left,
+            mastered_at,
         ),
     )
+
+
+def _next_rungs(params: Params, rating: Rating, prior: sqlite3.Row | None) -> int | None:
+    """How many successful reviews this card still owes before it is mastered.
+
+    None all the way down when the parameter set has no `[mastery]` table, which
+    is how v1 and v2 keep scheduling exactly as they always did.
+
+    Three cases, and the first is the one that keeps the counter honest: a
+    failure restarts the failed ladder from the bottom, however far up the card
+    had climbed. Forgetting a problem is not a smaller version of remembering
+    it, and a card that lapses at the last rung should not be mastered on the
+    next solve. Otherwise a card with no counter yet is entering, and takes the
+    ladder its rating names; a card that already has one has just cleared a rung.
+    """
+    if not params.mastery:
+        return None
+    if rating == Rating.Again:
+        return params.rungs_for(Rating.Again)
+    if prior is None or prior["rungs_left"] is None:
+        return params.rungs_for(rating)
+    return max(0, int(prior["rungs_left"]) - 1)
 
 
 def grade_attempt(
@@ -328,7 +396,7 @@ def grade_attempt(
     rating = rate(facts, difficulty, weights)
     card = _load_card(conn, slug) or new_card(slug, reviewed_at)
     prior = conn.execute(
-        "SELECT reps, lapses FROM fsrs_cards WHERE slug = ?", (slug,)
+        "SELECT reps, lapses, rungs_left, mastered_at FROM fsrs_cards WHERE slug = ?", (slug,)
     ).fetchone()
     reps = (prior["reps"] or 0) + 1 if prior else 1
     lapses = (prior["lapses"] or 0) if prior else 0
@@ -364,7 +432,33 @@ def grade_attempt(
         if interval > timedelta(0):
             card.due = reviewed_at + interval * params.hard_interval_mult
 
-    _store_card(conn, slug, card, reps=reps, lapses=lapses)
+    # Mastery (v3's `[mastery]` table). The counter is the whole mechanism: it
+    # is set on the way in from the rating, decremented by every review that is
+    # not a failure, and reset by one that is. At zero the problem is mastered
+    # and leaves the rotation -- `due_cards` stops offering it, and only a mixed
+    # or mock run brings it back.
+    #
+    # `due` is still stored, and still moves. A mastered card is hidden, not
+    # deleted: fail it in a mock and `_next_rungs` puts it back on the failed
+    # ladder with a live schedule already under it, rather than having to invent
+    # one from nothing.
+    rungs_left = _next_rungs(params, rating, prior)
+    mastered_at = None
+    if rungs_left is not None and rungs_left <= 0:
+        # The date it was *first* mastered, not the last time something
+        # confirmed it. A mastered problem that comes back in a mock and goes
+        # well should not look like it was mastered today.
+        mastered_at = (prior["mastered_at"] if prior else None) or at
+
+    _store_card(
+        conn,
+        slug,
+        card,
+        reps=reps,
+        lapses=lapses,
+        rungs_left=rungs_left,
+        mastered_at=mastered_at,
+    )
     return rating
 
 
@@ -387,14 +481,95 @@ def is_due_review(conn: sqlite3.Connection, slug: str) -> bool:
     return bool(row and row["state"] in REVIEW_STATES)
 
 
-def due_cards(conn: sqlite3.Connection, on: datetime) -> list[sqlite3.Row]:
-    """Cards due at or before `on`, most overdue first."""
+#: The catalog columns a card is read with. `difficulty` is aliased because both
+#: tables have one and they are different things: `problems.difficulty` is
+#: 'easy'/'medium'/'hard', `fsrs_cards.difficulty` is FSRS's internal float.
+#: `sqlite3.Row` resolves a duplicate name to the *first* matching column, so an
+#: unaliased `SELECT c.*, p.difficulty` silently hands back the float -- which is
+#: a `float` where a string is expected, three call sites away.
+_PROBLEM_COLUMNS = (
+    "p.title AS title, p.difficulty AS problem_difficulty, "
+    "p.pattern AS pattern, p.tags AS tags, p.lists AS lists"
+)
+
+
+def is_mastered(row: sqlite3.Row | Mapping[str, Any] | None) -> bool:
+    """Has this problem been mastered, and so left the rotation?
+
+    One predicate rather than `row["mastered_at"] is not None` spelled out at
+    six call sites, because a row that predates the column raises `IndexError`
+    on the subscript and every one of those sites would have to say so.
+    """
+    if row is None:
+        return False
+    try:
+        return row["mastered_at"] is not None
+    except (IndexError, KeyError):
+        return False
+
+
+def retrievability(
+    row: sqlite3.Row | Mapping[str, Any], on: datetime, params: Params | None = None
+) -> float:
+    """The model's estimate that you could recall this problem right now.
+
+    The one number that says both "how overdue" and "how weak" at once, which is
+    what a one-review-a-day budget has to rank on: a card three days past a
+    four-day interval has forgotten far more than one three days past a
+    hundred-day interval, and ordering by `due` alone cannot see the difference.
+
+    Reads only the decay term (`weights[20]`) out of `params`, so the ordering is
+    the same under v1, v2 and v3 -- until an optimizer run moves it.
+    """
+    stability = row["stability"]
+    last_review = row["last_review"]
+    if not stability or not last_review:
+        return 0.0
+    # `difficulty` is not in the retrievability formula at all -- it is
+    # `(1 + FACTOR * elapsed / stability) ** DECAY` -- but `Card` wants one, and
+    # reading it off the row would mean caring which table's column won the join.
+    card = Card(
+        card_id=0,
+        stability=float(stability),
+        due=parse_ts(row["due"]) if row["due"] else on,
+        last_review=parse_ts(last_review),
+    )
+    return scheduler(params or load_params()).get_card_retrievability(card, on)
+
+
+def due_cards(
+    conn: sqlite3.Connection, on: datetime, params: Params | None = None
+) -> list[sqlite3.Row]:
+    """Cards due at or before `on`, **weakest first**, mastered ones excluded.
+
+    "Weakest" and not "oldest": due dates are priorities, not deadlines, and the
+    queue takes about one of these a day. Ordering by `due` hands that slot to
+    whatever happens to have waited longest, which on a backlog is a card you
+    failed once in June rather than the one you are actively losing. Ranking by
+    retrievability spends the slot on the problem furthest below its target.
+
+    The tie-break is still `due` then slug, so the order stays reproducible when
+    two cards are equally forgotten -- which is the common case at the floor,
+    where everything has decayed to the same near-zero.
+    """
+    rows = conn.execute(
+        f"SELECT c.*, {_PROBLEM_COLUMNS} "
+        "FROM fsrs_cards c JOIN problems p ON p.slug = c.slug "
+        "WHERE c.due <= ? AND c.mastered_at IS NULL",
+        (on.isoformat(),),
+    ).fetchall()
+    resolved = params or load_params()
+    return sorted(rows, key=lambda r: (retrievability(r, on, resolved), r["due"], r["slug"]))
+
+
+def mastered_cards(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Everything mastered, most recently mastered first."""
     return list(
         conn.execute(
-            "SELECT c.*, p.title, p.difficulty, p.pattern, p.tags, p.lists "
+            f"SELECT c.*, {_PROBLEM_COLUMNS} "
             "FROM fsrs_cards c JOIN problems p ON p.slug = c.slug "
-            "WHERE c.due <= ? ORDER BY c.due ASC",
-            (on.isoformat(),),
+            "WHERE c.mastered_at IS NOT NULL "
+            "ORDER BY c.mastered_at DESC, c.slug ASC"
         ).fetchall()
     )
 
@@ -405,25 +580,45 @@ def cards_by_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     `due_cards` answers "what does the scheduler want today"; this answers "in
     what order do these problems matter", which is what the offline cache walks
     when its budget is too small for the whole list.
+
+    Mastered cards sort last rather than dropping out. They are still reachable
+    -- a mixed or mock run can serve one -- so a big enough budget should still
+    cache them; they just have no claim on a small one.
     """
     return list(
         conn.execute(
-            "SELECT * FROM fsrs_cards ORDER BY due IS NULL, due ASC, slug ASC"
+            "SELECT * FROM fsrs_cards "
+            "ORDER BY mastered_at IS NOT NULL, due IS NULL, due ASC, slug ASC"
         ).fetchall()
     )
 
 
-def counts(conn: sqlite3.Connection, on: datetime) -> tuple[int, int]:
-    """(cards, due now) — for the home overview and `p99 doctor`."""
+def counts(conn: sqlite3.Connection, on: datetime) -> tuple[int, int, int]:
+    """(cards, due now, mastered) — for the home overview and `p99 doctor`.
+
+    `cards` counts everything with a card, mastered included: it answers "how
+    much of the list have you finished at least once". `due` counts only what
+    the scheduler will actually offer, so the two no longer sum to anything and
+    are not meant to.
+    """
     total = int(conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"])
     due = int(
         conn.execute(
-            "SELECT COUNT(*) AS n FROM fsrs_cards WHERE due <= ?", (on.isoformat(),)
+            "SELECT COUNT(*) AS n FROM fsrs_cards "
+            "WHERE due <= ? AND mastered_at IS NULL",
+            (on.isoformat(),),
         ).fetchone()["n"]
     )
-    return total, due
+    mastered = int(
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM fsrs_cards WHERE mastered_at IS NOT NULL"
+        ).fetchone()["n"]
+    )
+    return total, due, mastered
 
 
 def next_due(conn: sqlite3.Connection) -> str | None:
-    row = conn.execute("SELECT MIN(due) AS d FROM fsrs_cards").fetchone()
+    row = conn.execute(
+        "SELECT MIN(due) AS d FROM fsrs_cards WHERE mastered_at IS NULL"
+    ).fetchone()
     return row["d"] if row and row["d"] else None
