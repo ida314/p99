@@ -219,3 +219,95 @@ def test_ordinal():
     assert [scoring.ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 82)] == [
         "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "82nd",
     ]
+
+
+# --- solution quality --------------------------------------------------------
+#
+# Derived from answers the user already gave, so every case below is a reading
+# of the finish prompt and the strategy prompt -- never a judgement about code.
+
+SOLVED = {"verdict": "solved_unaided"}
+
+
+def test_an_unclaimed_optimality_is_not_a_quality():
+    """`not sure` is the default answer and it is not a claim about anything."""
+    assert scoring.solution_quality({**SOLVED, "time_optimality": "unsure"}) is None
+    assert scoring.solution_quality(SOLVED) is None
+
+
+def test_nothing_is_derived_for_an_attempt_that_was_not_solved():
+    for verdict in ("gave_up", "ungraded", "wrong_answer"):
+        assert scoring.solution_quality({"verdict": verdict, "time_optimality": "optimal"}) is None
+
+
+def test_a_beaten_solve_is_brute_force_until_you_name_the_better_one():
+    beaten = {**SOLVED, "time_optimality": "suboptimal"}
+    assert scoring.solution_quality(beaten) == scoring.QUALITY_BRUTEFORCE
+    assert (
+        scoring.solution_quality({**beaten, "saw_better": True})
+        == scoring.QUALITY_SUBOPTIMAL
+    )
+
+
+def test_a_different_route_needs_a_previous_route_to_differ_from():
+    """A first solve cannot be an alternative to anything.
+
+    Neither is one whose predecessor named nothing: comparing against a set
+    nobody filled in would label every first solve as taking a different route
+    than the nothing that came before it.
+    """
+    optimal = {**SOLVED, "time_optimality": "optimal", "used_keys": {"heap"}}
+    assert scoring.solution_quality(optimal) == scoring.QUALITY_OPTIMAL
+    assert scoring.solution_quality(optimal, prior_used=frozenset()) == scoring.QUALITY_OPTIMAL
+    assert (
+        scoring.solution_quality(optimal, prior_used=frozenset({"heap"}))
+        == scoring.QUALITY_OPTIMAL
+    )
+    assert (
+        scoring.solution_quality(optimal, prior_used=frozenset({"quickselect"}))
+        == scoring.QUALITY_ALTERNATIVE
+    )
+
+
+def test_naming_nothing_cannot_make_a_solve_an_alternative():
+    """Skipping the strategy prompt is not a claim about taking a new route."""
+    optimal = {**SOLVED, "time_optimality": "optimal"}
+    assert (
+        scoring.solution_quality(optimal, prior_used=frozenset({"heap"}))
+        == scoring.QUALITY_OPTIMAL
+    )
+
+
+def test_every_quality_has_words_to_render_it():
+    """A derived value with no label would show as a blank row and claim nothing."""
+    from core import render
+
+    for quality in scoring.QUALITIES:
+        assert render.QUALITY_LABELS[quality]
+        # The stat line's detail column is 26 wide; a longer label pushes the
+        # bar and the delta off the end of the row.
+        assert len(render.QUALITY_LABELS[quality]) <= 26
+
+
+def test_the_quality_row_says_nothing_when_nothing_was_claimed():
+    from core import render
+
+    assert render.quality_label({**SOLVED, "time_optimality": "unsure"}) == ""
+    assert render.quality_reason({**SOLVED, "time_optimality": "unsure"}) == ""
+    assert render.strategy_rows({**SOLVED, "time_optimality": "unsure"}) == []
+
+
+def test_the_quality_reason_names_the_inputs_that_decided_it():
+    """The label is a claim; the reason is what makes it checkable."""
+    from core import render
+
+    attempt = {
+        **SOLVED,
+        "time_optimality": "suboptimal",
+        "saw_better": True,
+        "strategies_worth_learning": ["sliding window"],
+    }
+    attempt["solution_quality"] = scoring.solution_quality(attempt)
+    reason = render.quality_reason(attempt)
+    assert "not optimal" in reason
+    assert "1 better approach named" in reason

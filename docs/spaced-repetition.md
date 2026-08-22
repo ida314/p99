@@ -40,14 +40,20 @@ in `srs.rate`, in this order:
 |---|---|
 | Not solved, or solved after seeing pseudocode or the implementation (help tier ≥ 3) | `Again` |
 | Any help at all (tier ≥ 1), or slower than 1.5× par | `Hard` |
+| You said the solution was beaten on time, and named no better approach | `Hard` |
 | You said you'd have no idea / would struggle in a month (confidence ≤ 2) | `Hard` |
-| Faster than 0.6× par, no help at all | `Easy` |
+| Faster than 0.6× par, no help at all, optimal on time, priced on both axes | `Easy` |
 | Everything else | `Good` |
+
+Not a chain of early returns: each row is a floor, and the worst one wins. With
+five conditions that can each cost a grade, an early return is a promotion that
+skips whatever came after it — spotting the better approach yourself must not
+also launder away a slow solve.
 
 Par is difficulty-relative — 900s easy, 1800s medium, 2700s hard (`scoring/v1.toml`),
 so difficulty is already priced in before FSRS sees anything.
 
-Two properties are deliberate:
+Three properties are deliberate:
 
 **Performance decides; the self-report only ever costs you.** A confidence rating
 is given seconds after solving, with the answer still on screen. That is the
@@ -61,12 +67,65 @@ explain — so it is allowed to demote. This is why the finish prompt asks *"if 
 came up cold in a month?"* rather than *"how well will this stick?"*: naming the
 retrieval condition is the standard correction for the bias, and it costs nothing.
 
+**Correctness, cost and implementation are three questions, not one.** Nothing
+here compares your solution to a reference, because there is no reference: p99
+stores no editorial and no canonical implementation, so a different route to the
+same complexity costs exactly nothing and always did. What was missing was the
+other half — a solution that passes every test with the wrong asymptotics has not
+learned the pattern, and the pattern is what the card is scheduling. So the
+optimality you answer at the finish prompt is now read, in one direction and with
+one exception:
+
+- **`suboptimal` demotes; `optimal` promotes only in combination.** Volunteering
+  that you were beaten is a report worth acting on. `unsure` is the default
+  answer, is the honest state of most solves, and costs nothing — if it did,
+  it would stop being honest.
+- **The exception is naming the better approach.** "I wrote the O(n²) and then
+  saw the sliding window" is a solve that found the pattern late; "I wrote the
+  O(n²) and that is where I stopped" is a solve that missed it. Only the second
+  needs the problem back soon. The difference is a strategy flagged `worth
+  learning` at the prompt after the verdict, and it is the whole reason that
+  prompt has two roles instead of one.
+- **Easy asks you to price it.** A solution you cannot cost is one you
+  pattern-matched, and pattern-matching is what a long interval will not
+  survive. Both axes, because answering time and skipping space is answering
+  half the question.
+
 **A first failure is not a lapse.** `Again` on an existing card means you forgot
 something you knew. Failing a problem you have never seen is not forgetting, it is
 not knowing yet. It still rates `Again` — a day-scale interval is right either way
 — but it no longer increments `lapses`. Before this, the column read as a
 forgetting rate while mostly counting first contact: 9 "lapses" in 18 attempts,
 almost all on problems seen once.
+
+### What the second axis cost the existing history
+
+Measured on a copy of the real database before the change shipped — 18 runs, 35
+attempts, 19 cards, on 2026-08-22:
+
+- **Run scores: byte-identical.** `scoring.py` was not touched. The score is a
+  function of measured facts, and what you claim a solution costs is not one.
+- **Attempt rows: byte-identical.**
+- **5 of the 19 cards moved**, every one of them Easy → Good, every one of them
+  written before the question existed:
+
+  | Problem | Due | Stability |
+  |---|---|---|
+  | `binary-tree-level-order-traversal` | 2026-08-16 → 2026-08-04 | 21.00 → 9.00 |
+  | `climbing-stairs` | 2026-08-24 → 2026-08-12 | 21.00 → 9.00 |
+  | `rotate-image` | 2026-08-21 → 2026-08-09 | 21.00 → 9.00 |
+  | `remove-nth-node-from-end-of-list` | 2026-09-12 → 2026-08-27 | 38.58 → 22.93 |
+  | `min-cost-to-connect-all-points` | 2026-08-25 → 2026-08-24 | 2.80 → 1.62 |
+
+  21.00 → 9.00 is `weights[3]` → `weights[2]` exactly: the entry interval for
+  Easy replaced by the one for Good. Their `rungs_left` went 1 → 2 with it, so
+  each owes one more recall before it masters. Nothing was un-mastered, because
+  nothing had mastered yet.
+
+This is the regrade working as designed rather than a migration bug: `time_optimality`
+is NULL on all 35 attempts, so no demote fires anywhere, and the only change is
+that Easy now requires a claim nobody had been asked to make. Of the three
+attempts that *were* asked, one said `optimal` and two said `not sure`.
 
 ## The parameters
 
@@ -295,6 +354,16 @@ recalls, and almost nothing survives long enough to reach a 365-day interval.
   rather than rehearsing an approach you were already handed. Already correct.
 - **The verdict ladder.** `solved_unaided` through `solved_after_implementation`
   feeds the map through `scoring.help_tier` and needs no branch of its own.
+- **Scoring the optimality answer.** The rating moves; the score does not. A
+  score is a function of measured facts, and what you say a solution costs is a
+  claim rather than a measurement — a points bonus on it would be a number
+  invented to look like one. The scheduler is the right consumer because it is
+  already in the business of acting on self-reports it cannot verify, and it
+  already reads them in one direction only.
+- **Asking `solution_quality` outright.** It is derived from the optimality
+  ladder and the strategy roles, at read time, like every score. A fifth radio
+  set between you and the next problem would be a new question that mostly
+  repeats two you just answered.
 - **Fitting the weights.** `py-fsrs` ships an optimizer that trains parameters on
   your own review history, which is the right long-term answer to "these constants
   were fitted on flashcards." It is not wired up, because it cannot help yet: it

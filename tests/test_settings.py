@@ -200,4 +200,4 @@ def test_new_options_go_on_the_end(conn):
     so the two newest have to be the last two.
     """
     keys = [o.key for o in config.options()]
-    assert keys[-2:] == ["audio.speech_mode", "audio.bitrate_kbps"]
+    assert keys[-3:] == ["audio.speech_mode", "audio.bitrate_kbps", "strategy.enabled"]

@@ -16,13 +16,14 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import audio, branding, cache, capture, stats
+from ... import audio, branding, cache, capture, scoring, stats
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
 from ...scoring import HINT_TIER_NAMES, fmt_duration
 from ..vim import MOTIONS, VimMotion
 from .finish import END_RUN_DISCARD, ConfirmModal, EndRunModal, FinishModal
+from .strategy import StrategyModal
 
 
 class SolveScreen(VimMotion, Screen[None]):
@@ -158,6 +159,15 @@ class SolveScreen(VimMotion, Screen[None]):
         panel.remove_class("visible")
         panel.update("")
         self._tick()
+
+    # The strategies you named on this problem are deliberately *not* shown
+    # here, and this is the note that stops someone adding them. `PastAttempt`
+    # already withholds your code and your notes on the reasoning that reopening
+    # a problem you have seen before is supposed to still be the problem. The
+    # name of the technique is the same spoiler in fewer words -- being told
+    # "you solved this with a monotonic stack" on a review is most of the
+    # answer, and it would quietly turn every review into a tier-2 hint that
+    # nothing logged. They belong on `history`, after the fact, where they are.
 
     def _load_past_attempts(self, slug: str) -> None:
         """Your own record on this problem: when, how long, how it ended.
@@ -559,6 +569,7 @@ class SolveScreen(VimMotion, Screen[None]):
                 return
 
             cfg = self.app.config  # type: ignore[attr-defined]
+            picked = await self._ask_strategies(result)
             self.engine.finish(
                 result["verdict"],
                 timing=timing,
@@ -570,11 +581,33 @@ class SolveScreen(VimMotion, Screen[None]):
                 claimed_space_complexity=result.get("claimed_space_complexity"),
                 time_optimality=result.get("time_optimality"),
                 space_optimality=result.get("space_optimality"),
+                strategies=picked,
             )
             self._stop_recording()
             await self._capture_flow()
         finally:
             self._busy = False
+
+    async def _ask_strategies(self, result: dict) -> dict[str, list[str]] | None:
+        """Name the approach, between the verdict prompt and the editor steps.
+
+        Before `engine.finish`, not after: the rating reads whether you named a
+        better approach, so the answer has to be on the payload that grades the
+        card. Asking afterwards would need a second event and a regrade.
+
+        Only for a solve. There is no approach to record on an attempt that
+        never reached one, which is the same reason `engine.finish` drops the
+        complexity claims on the way to `abandon`.
+        """
+        attempt = self.engine.attempt
+        cfg = self.app.config  # type: ignore[attr-defined]
+        if attempt is None or not cfg.strategy.enabled:
+            return None
+        if result.get("verdict") not in scoring.CLEAN_VERDICTS:
+            return None
+        return await self.app.push_screen_wait(
+            StrategyModal(attempt.problem.title, attempt.problem.slug, result)
+        )
 
     async def _do_throw_away(self) -> None:
         """Drop the attempt entirely, then move on. Confirmed, because it is final.

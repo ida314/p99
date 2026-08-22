@@ -367,6 +367,73 @@ def is_clean_solve(attempt: Mapping[str, Any]) -> bool:
     )
 
 
+# --- solution quality ------------------------------------------------------
+#
+# Derived, never stored and never asked. It is a reading of answers you already
+# gave -- the optimality ladder at the finish prompt and the strategies you named
+# after it -- so there is no fifth question between you and the next problem, and
+# changing the reading re-reads all of history rather than migrating it. Same
+# rule as the score itself and as `stats.pattern_mastery`.
+#
+# It is also shown back to you, live, on the screen where the last of its inputs
+# is decided. A derived value nobody sees is a value nobody can catch being
+# wrong; see `render.quality_line`.
+
+#: Optimal on time. Nothing here claims it is *the* solution -- only that you
+#: said it was not beaten, and there is no reference implementation to differ
+#: from anyway.
+QUALITY_OPTIMAL = "optimal"
+#: Beaten on time, and you named the better approach yourself afterwards.
+QUALITY_SUBOPTIMAL = "correct_but_suboptimal"
+#: Beaten on time, and nothing better was named. It passed; it missed the point.
+QUALITY_BRUTEFORCE = "bruteforce_only"
+#: Optimal on time, by a different route than you took last time on this problem.
+QUALITY_ALTERNATIVE = "alternative_valid_solution"
+
+QUALITIES = (
+    QUALITY_OPTIMAL,
+    QUALITY_ALTERNATIVE,
+    QUALITY_SUBOPTIMAL,
+    QUALITY_BRUTEFORCE,
+)
+
+
+def solution_quality(
+    attempt: Mapping[str, Any], *, prior_used: frozenset[str] | None = None
+) -> str | None:
+    """How the solution came out, separately from whether it was correct.
+
+    Reads three facts, all of them yours: the verdict, the time optimality you
+    answered, and the strategies you named. `attempt` may carry `saw_better`
+    (any strategy in the `worth_learning` role) and `used_keys` (the `used`
+    ones); both default to absent, so this works on a plain dict in a test.
+
+    `prior_used` is the `used` keys of your previous answered attempt at the
+    same problem, and an empty one is the same as none at all: a first solve
+    cannot be an alternative to anything, and neither can one whose predecessor
+    named nothing. Comparing against a set nobody filled in would label every
+    first solve as taking a different route than the nothing before it.
+
+    Returns None wherever you claimed nothing. An unanswered optimality question
+    is not a claim, and inventing a label for it would repeat the mistake the
+    legacy `optimality` column exists to avoid.
+    """
+    if attempt.get("verdict") not in CLEAN_VERDICTS:
+        return None
+
+    optimality = attempt.get("time_optimality")
+    if optimality == "suboptimal":
+        return QUALITY_SUBOPTIMAL if attempt.get("saw_better") else QUALITY_BRUTEFORCE
+
+    if optimality == "optimal":
+        used = frozenset(attempt.get("used_keys") or ())
+        if prior_used and used and used != prior_used:
+            return QUALITY_ALTERNATIVE
+        return QUALITY_OPTIMAL
+
+    return None
+
+
 def score_session(attempts: list[Mapping[str, Any]], weights: Weights | None = None) -> int:
     w = weights or load_weights()
     return sum(score_attempt(a, a.get("difficulty", "medium"), w).total for a in attempts)

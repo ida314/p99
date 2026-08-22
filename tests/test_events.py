@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from core import engine as engine_module, events
+from core import engine as engine_module, events, strategies
 from core.engine import RunEngine
 
 
@@ -27,6 +27,7 @@ def _run_a_session(conn, slugs=("two-sum", "3sum")):
             claimed_space_complexity="O(n)",
             time_optimality="optimal",
             space_optimality="suboptimal",
+            strategies=strategies.payload(["Two Pointers"], ["prefix sums"]),
         )
         eng.archive_code(f"/tmp/{slug}.py", "python")
         eng.record_note(f"/tmp/{slug}.md")
@@ -43,7 +44,20 @@ def _snapshot(conn):
             out.append({k: row[k] for k in row.keys() if k not in skip})
         return out
 
-    return rows("sessions"), rows("attempts"), rows("submissions")
+    def keyed(table, order):
+        return [
+            {k: row[k] for k in row.keys()}
+            for row in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")
+        ]
+
+    return (
+        rows("sessions"),
+        rows("attempts"),
+        rows("submissions"),
+        keyed("strategies", "key"),
+        keyed("problem_strategies", "slug, key"),
+        keyed("attempt_strategies", "attempt_uuid, key"),
+    )
 
 
 def test_projections_are_rebuilt_identically_by_replay(conn):
@@ -675,3 +689,86 @@ def test_throwing_away_a_resumed_attempt_still_replays_identically(conn):
     assert session["ended_at"] is not None
     assert session["suspended_at"] is None
     assert engine_module.suspended_run(conn) is None
+
+
+# --- solving strategies ------------------------------------------------------
+
+
+def test_a_named_strategy_lands_in_all_three_tables(conn):
+    """One payload block, three projections: vocabulary, problem link, answer."""
+    _run_a_session(conn, slugs=("two-sum",))
+
+    vocab = {r["key"]: r["name"] for r in conn.execute("SELECT key, name FROM strategies")}
+    # The key is normalised; the name is the spelling that was typed.
+    assert vocab == {"two-pointers": "Two Pointers", "prefix-sums": "prefix sums"}
+    assert {r["key"] for r in conn.execute("SELECT key FROM problem_strategies")} == {
+        "two-pointers",
+        "prefix-sums",
+    }
+    answered = {
+        r["key"]: r["role"] for r in conn.execute("SELECT key, role FROM attempt_strategies")
+    }
+    assert answered == {"two-pointers": "used", "prefix-sums": "worth_learning"}
+
+
+def test_the_vocabulary_keeps_the_first_spelling_you_used(conn):
+    """"Top-Down DP" and "top down dp" are one strategy, named once."""
+    eng = RunEngine(conn)
+    for spelling in ("Top-Down DP", "top down dp"):
+        eng.start_session(["two-sum"])
+        eng.start_problem("two-sum")
+        eng.finish("accepted", strategies=strategies.payload([spelling], []))
+        eng.advance()
+        eng.end_session()
+
+    rows = conn.execute("SELECT key, name FROM strategies").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["key"] == "top-down-dp"
+    assert rows[0]["name"] == "Top-Down DP"
+
+
+def test_a_strategy_cannot_be_both_written_and_wished_for(conn):
+    """A name in both roles is `used`. You cannot have written it and not have."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("accepted", strategies=strategies.payload(["heap"], ["heap", "quickselect"]))
+    eng.advance()
+    eng.end_session()
+
+    roles = {
+        r["key"]: r["role"] for r in conn.execute("SELECT key, role FROM attempt_strategies")
+    }
+    assert roles == {"heap": "used", "quickselect": "worth_learning"}
+
+
+def test_discarding_an_attempt_forgets_its_strategy_answer(conn):
+    """The answer goes with the attempt; the vocabulary is not a casualty."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    uuid = eng.attempt.uuid
+    eng.discard()
+
+    # Nothing was finished, so there is nothing to forget yet -- but a discard
+    # after a finish is the real case, and it is what `history` does on `d`.
+    events.append(conn, events.ATTEMPT_DISCARDED, {"attempt_uuid": uuid, "slug": "two-sum"})
+    assert (
+        conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
+    )
+
+
+def test_a_discarded_run_takes_its_strategy_answers_down_with_it(conn):
+    """A tombstoned session leaves no answer behind, before or after a replay."""
+    _run_a_session(conn, slugs=("two-sum",))
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 2
+
+    session_uuid = conn.execute("SELECT uuid FROM sessions").fetchone()["uuid"]
+    events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
+
+    events.replay(conn)
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
+    # The replay skips the whole event, so a strategy only that attempt ever
+    # named is never created rather than created and then deleted.
+    assert conn.execute("SELECT COUNT(*) AS n FROM strategies").fetchone()["n"] == 0

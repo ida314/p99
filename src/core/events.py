@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from . import scoring, srs
+from . import scoring, srs, strategies
 from .db import SCHEMA_VERSION, truncate_projections
 
 # --- event types (spec §4) -------------------------------------------------
@@ -238,6 +238,44 @@ def _grade(
     srs.grade_attempt(conn, attempt_uuid, at=event.ts, params=params, weights=weights)
 
 
+def _record_strategies(
+    conn: sqlite3.Connection,
+    event: Event,
+    attempt_uuid: str,
+    slug: str,
+    block: Any,
+) -> None:
+    """Fold a `problem_finished` payload's `strategies` block into three tables.
+
+    Names arrive as you typed them and the key is derived here rather than at the
+    finish prompt, so a change to `strategies.normalise` is one replay away from
+    applying to everything you ever wrote -- the same bargain the score and the
+    rating already make.
+
+    `INSERT OR IGNORE` throughout, because this runs under `replay` as well as
+    live: the first spelling of a strategy is the one that sticks, and the date a
+    problem first saw it is the date of the attempt that named it, not of the
+    most recent one.
+    """
+    if not isinstance(block, dict):
+        return
+    for role in strategies.ROLES:
+        for entry in strategies.clean(block.get(role) or []):
+            conn.execute(
+                "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
+                (entry.key, entry.name, event.ts),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO problem_strategies(slug, key, first_seen) VALUES(?,?,?)",
+                (slug, entry.key, event.ts),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO attempt_strategies"
+                "(attempt_uuid, attempt_id, slug, key, role) VALUES(?,?,?,?,?)",
+                (attempt_uuid, _attempt_id(conn, attempt_uuid), slug, entry.key, role),
+            )
+
+
 def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None:
     """Drop attempts and their submissions from the projections.
 
@@ -247,6 +285,13 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
     """
     for attempt_uuid in attempt_uuids:
         conn.execute("DELETE FROM submissions WHERE attempt_uuid = ?", (attempt_uuid,))
+        # The attempt's answer goes; the vocabulary and the problem's list of
+        # approaches stay. A strategy you named is a thing you learned about the
+        # problem, and it did not stop being true because the attempt that
+        # taught it to you should not have counted. A replay reaches the same
+        # place from the other direction: it skips the event entirely, so a
+        # strategy that *only* this attempt ever named is simply never created.
+        conn.execute("DELETE FROM attempt_strategies WHERE attempt_uuid = ?", (attempt_uuid,))
         conn.execute("DELETE FROM attempts WHERE uuid = ?", (attempt_uuid,))
 
 
@@ -376,8 +421,16 @@ def apply(
             # either axis: see the `attempts.optimality` comment.
             optimality=p.get("optimality"),
         )
+        # Before `_grade`, not after. The rating reads `worth_learning` to tell a
+        # suboptimal solve you diagnosed yourself from one you did not, so the
+        # rows have to exist by the time the card is folded. This ordering is the
+        # reason the answer rides on this payload instead of a later event.
+        _record_strategies(
+            conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
+        )
         # Every rating input is on the row by now: verdict and timing from this
-        # event, the hint tier from earlier `hint_revealed` events.
+        # event, the hint tier from earlier `hint_revealed` events, the strategy
+        # answer from the block just above.
         _grade(conn, p["attempt_uuid"], event, context)
 
     elif event.type == CODE_ARCHIVED:

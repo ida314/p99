@@ -291,9 +291,22 @@ like every capture step, and switchable off in the settings screen.
 Finish: how much help you needed, how well it would stick cold in a month, the
 time and space complexities you claim with a separate
 .I "was it optimal?"
-answer for each, and the LeetCode percentiles if you have them — then the two
-editor steps. The cost claims are recorded and shown back afterwards; none of
-them is scored and none of them moves a review.
+answer for each, and the LeetCode percentiles if you have them — then the
+approach you took, then the two editor steps. None of it is scored; the run
+score stays a function of measured facts. The time optimality answer is the one
+that moves a review, because a solution with the wrong asymptotics has not
+learned the pattern the schedule exists for.
+.TP
+.B space
+On the approach prompt: mark a strategy as the one you wrote.
+.B w
+marks one as worth learning — a better approach you can see and did not write,
+which keeps the grade a beaten solve would otherwise lose.
+.B i
+names a new one; the list is yours and starts empty. The prompt reads back what
+it derived about the solution, with the answers that produced it.
+.B esc
+skips it and costs nothing. Switchable off in the settings screen.
 .TP
 .B x
 Give up. Scores zero, and is still recorded.

@@ -26,9 +26,13 @@ from . import paths
 #    written to.
 # 6: mastery — `fsrs_cards` gained `rungs_left` and `mastered_at`, the counter
 #    that decides when a problem leaves the rotation and the date it did.
+# 7: solving strategies — three new projections holding the vocabulary of
+#    approaches you name yourself, and its per-problem and per-attempt links.
+#    The bump also forces the replay that regrades every card under the rating
+#    map's new optimality branch (see `srs.rate`).
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -155,6 +159,41 @@ CREATE TABLE IF NOT EXISTS settings (
   value        TEXT NOT NULL,
   updated_at   TEXT NOT NULL
 );
+
+-- Solving strategies: the approaches you name yourself, shared across problems.
+-- See `strategies` for why this is a vocabulary and not a per-problem note.
+--
+-- `key` is `strategies.normalise(name)`, so "Top-Down DP" and "top down dp" are
+-- one row. `name` is the first spelling you typed; nothing ever rewrites it.
+CREATE TABLE IF NOT EXISTS strategies (
+  key          TEXT PRIMARY KEY,          -- 'bottom-up-tabulation'
+  name         TEXT NOT NULL,             -- 'bottom-up tabulation'
+  first_seen   TEXT NOT NULL
+);
+
+-- Which strategies belong to which problem. Accumulates: every solve can add,
+-- nothing removes, because a strategy that worked once did not stop existing.
+CREATE TABLE IF NOT EXISTS problem_strategies (
+  slug         TEXT NOT NULL REFERENCES problems(slug),
+  key          TEXT NOT NULL REFERENCES strategies(key),
+  first_seen   TEXT NOT NULL,
+  PRIMARY KEY (slug, key)
+);
+
+-- What one attempt actually answered. `role` is `used` (what you wrote) or
+-- `worth_learning` (the better approach you could see and did not write) --
+-- the second is what `srs.rate` reads to tell a suboptimal solve you diagnosed
+-- yourself from one you did not.
+CREATE TABLE IF NOT EXISTS attempt_strategies (
+  attempt_uuid TEXT NOT NULL,
+  attempt_id   INTEGER REFERENCES attempts(id),
+  slug         TEXT NOT NULL,
+  key          TEXT NOT NULL REFERENCES strategies(key),
+  role         TEXT NOT NULL,             -- used|worth_learning
+  PRIMARY KEY (attempt_uuid, key)
+);
+CREATE INDEX IF NOT EXISTS attempt_strategies_key_idx  ON attempt_strategies(key);
+CREATE INDEX IF NOT EXISTS attempt_strategies_slug_idx ON attempt_strategies(slug);
 """
 
 # Phase 2 fills `fsrs_cards` and `queues`; the rest waits for Phase 3. All of
@@ -222,6 +261,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # slug list, so replaying the log reproduces the queue exactly rather than
 # regenerating it.
 PROJECTION_TABLES = (
+    "attempt_strategies",  # references attempts and strategies: children first
+    "problem_strategies",
+    "strategies",
     "submissions",  # references attempts: children first, see the docstring
     "attempts",
     "sessions",
@@ -234,7 +276,10 @@ PROJECTION_TABLES = (
 # `SCHEMA_VERSION` and listing the affected tables here is the entire migration
 # story, and it is this short only because projections are disposable: drop
 # them, recreate them from the DDL, and the next replay refills them from the
-# log. Nothing a user typed is ever in one of these tables.
+# log. Nothing here is authoritative: `strategies.name` is the one place a
+# projection holds a string you typed, and even that is a fold over the
+# `problem_finished` payloads that recorded it, so dropping the table loses
+# nothing the log cannot say again.
 # Order within a version matters: `migrate` drops with foreign keys on, so a
 # child table has to go before the parent it references.
 SHAPE_CHANGED_IN = {
@@ -243,6 +288,10 @@ SHAPE_CHANGED_IN = {
     4: ("submissions", "attempts", "sessions"),
     5: ("submissions", "attempts"),
     6: ("fsrs_cards",),
+    # New tables rather than changed ones, so there is nothing to drop -- but
+    # listing them keeps the version honest, and `DROP TABLE IF EXISTS` makes it
+    # free. The bump itself is what forces the replay `srs.rate` needs.
+    7: ("attempt_strategies", "problem_strategies", "strategies"),
 }
 
 

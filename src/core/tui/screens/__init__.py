@@ -8,6 +8,7 @@ from .settings import SettingsScreen
 from .setup import RunPlan, SetupScreen
 from .solve import SolveScreen
 from .statsscreen import StatsScreen
+from .strategy import StrategyModal
 from .summary import SummaryScreen
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "SetupScreen",
     "SolveScreen",
     "StatsScreen",
+    "StrategyModal",
     "SummaryScreen",
 ]

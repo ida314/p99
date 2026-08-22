@@ -508,12 +508,13 @@ class RunEngine:
         claimed_space_complexity: str | None = None,
         time_optimality: str | None = None,
         space_optimality: str | None = None,
+        strategies: dict[str, list[str]] | None = None,
     ) -> Attempt:
         a = self._require_attempt()
         if verdict == "gave_up":
             # Nothing you claim about a solution survives not having reached
-            # one, so the complexities and the optimality answers are dropped
-            # rather than carried onto an abandonment.
+            # one, so the complexities, the optimality answers and the strategy
+            # block are dropped rather than carried onto an abandonment.
             return self.abandon(timing=timing)
         a.final_timing = timing or a.timing()
         events.append(
@@ -532,6 +533,12 @@ class RunEngine:
                 "claimed_space_complexity": claimed_space_complexity,
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
+                # Names as you typed them, in two roles. Rides on this payload
+                # rather than a later event so that `events.apply` can write the
+                # rows before it grades the card -- `srs.rate` reads them.
+                # Omitted entirely when you skipped the prompt, so an old event
+                # and a skipped one are the same shape.
+                **({"strategies": strategies} if strategies else {}),
             },
         )
         a.finished = True

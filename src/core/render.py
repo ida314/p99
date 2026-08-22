@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from . import branding
+from . import branding, scoring
 
 from rich.console import Group, RenderableType
 from rich.text import Text
@@ -167,6 +167,82 @@ def _cost(complexity: Any, optimality: Any) -> str:
         OPTIMALITY_LABELS.get(optimality or "", ""),
     ]
     return "  ·  ".join(p for p in parts if p)
+
+
+# What `scoring.solution_quality` derived, in words. Short enough for a stat
+# line's 26-column detail field, and plain enough to be read by someone who has
+# never seen the four identifiers behind them.
+#
+# `alternative_valid_solution` says "optimal" first on purpose: it is not a
+# lesser grade than `optimal`, it is the same grade reached a different way, and
+# a label that led with "different" would read as a correction.
+QUALITY_LABELS = {
+    scoring.QUALITY_OPTIMAL: "optimal",
+    scoring.QUALITY_ALTERNATIVE: "optimal, a different route",
+    scoring.QUALITY_SUBOPTIMAL: "beaten, but you saw better",
+    scoring.QUALITY_BRUTEFORCE: "brute force only",
+}
+
+
+def quality_label(attempt: Mapping[str, Any]) -> str:
+    """The quality row's text, or "" when nothing was claimed.
+
+    Empty rather than "unknown": an unanswered optimality question is not a
+    claim, and a row saying so would be a row about the prompt rather than about
+    the solve.
+    """
+    return QUALITY_LABELS.get(attempt.get("solution_quality") or "", "")
+
+
+def quality_reason(attempt: Mapping[str, Any]) -> str:
+    """The inputs that decided the quality, so the derivation can be checked.
+
+    This exists because the value is derived and nothing stores it. A label on
+    its own is a claim you have to take on trust; the same label followed by
+    "not optimal · 1 better approach named" is a claim you can audit from the
+    screen it appears on.
+    """
+    if not attempt.get("solution_quality"):
+        return ""
+    bits = [OPTIMALITY_LABELS.get(attempt.get("time_optimality") or "", "")]
+    worth = list(attempt.get("strategies_worth_learning") or ())
+    used = list(attempt.get("strategies_used") or ())
+    if worth:
+        bits.append(f"{len(worth)} better approach{'es' if len(worth) != 1 else ''} named")
+    elif attempt.get("time_optimality") == "suboptimal":
+        bits.append("none named")
+    if attempt.get("solution_quality") == scoring.QUALITY_ALTERNATIVE and used:
+        bits.append("not the route you took last time")
+    return "  ·  ".join(b for b in bits if b)
+
+
+def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Everything a stat line says about a solution: what it cost, and how.
+
+    One call rather than two concatenated at three sites, so the summary, the
+    history detail and `p99 stats` cannot end up showing different halves of the
+    same answer.
+    """
+    return approach_rows(attempt) + strategy_rows(attempt)
+
+
+def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The stat line's strategy rows: what you used, what you saw, what it came to.
+
+    Same build-the-rows-or-emit-nothing rule as `approach_rows`, and for the
+    same reason -- a stat line should not grow three blank lines to say that you
+    skipped a prompt which was optional in the first place.
+
+    Labels are short because the stat line's label column is nine wide.
+    "approach" and "better" are what fit; `strategies.ROLE_LABELS` holds the
+    long forms for the screen that has room for them.
+    """
+    rows = [
+        ("approach", ", ".join(attempt.get("strategies_used") or ())),
+        ("better", ", ".join(attempt.get("strategies_worth_learning") or ())),
+        ("quality", quality_label(attempt)),
+    ]
+    return [row for row in rows if row[1]]
 
 
 def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:

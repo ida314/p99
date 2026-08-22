@@ -19,7 +19,9 @@ from ... import stats
 from ...render import distribution_panel, empty_state
 from ..vim import MOTIONS, VimMotion
 
-DIMENSIONS = ("pattern", "difficulty", "tag")
+# `strategy` last: it is empty until you have named a few, and a slice-by that
+# opens on nothing would read as a broken screen rather than an unused one.
+DIMENSIONS = ("pattern", "difficulty", "tag", "strategy")
 WINDOWS = (30, 60, 90, None)
 
 

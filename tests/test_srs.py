@@ -63,6 +63,15 @@ def test_a_new_card_never_reads_the_clock():
 
 # --- the rating map (spec §8) ----------------------------------------------
 
+#: What a solve has to say about itself to be eligible for Easy: optimal on
+#: time, and priced on both axes. Spelled once because every Easy case below
+#: needs all three and none of them is what that case is about.
+PRICED = {
+    "time_optimality": "optimal",
+    "claimed_complexity": "O(n)",
+    "claimed_space_complexity": "O(1)",
+}
+
 
 @pytest.mark.parametrize(
     "attempt, difficulty, expected",
@@ -86,7 +95,7 @@ def test_a_new_card_never_reads_the_clock():
         ({"verdict": "solved_after_description"}, "medium", Rating.Hard),
         ({"verdict": "solved_with_hints"}, "medium", Rating.Hard),
         (
-            {"verdict": "solved_unaided", "active_seconds": 100, "self_confidence": 4},
+            {"verdict": "solved_unaided", "active_seconds": 100, "self_confidence": 4, **PRICED},
             "medium",
             Rating.Easy,
         ),
@@ -97,22 +106,106 @@ def test_a_new_card_never_reads_the_clock():
         ({"verdict": "accepted", "active_seconds": PAR_MEDIUM}, "medium", Rating.Good),
         # Fast and clean. The self-report is no longer what unlocks this.
         (
-            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 3},
+            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 3, **PRICED},
             "medium",
             Rating.Easy,
         ),
-        ({"verdict": "accepted", "active_seconds": 100}, "medium", Rating.Easy),
+        ({"verdict": "accepted", "active_seconds": 100, **PRICED}, "medium", Rating.Easy),
         (
-            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 4},
+            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 4, **PRICED},
             "medium",
             Rating.Easy,
         ),
         # ...and a low self-report pulls a fast clean solve back down.
         (
-            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 2},
+            {"verdict": "accepted", "active_seconds": 100, "self_confidence": 2, **PRICED},
             "medium",
             Rating.Hard,
         ),
+        # --- the second axis: what the solution cost ------------------------
+        #
+        # An asymptotic gap you did not spot is a gap in the pattern, so a fast
+        # flawless solve that admits to being beaten is still Hard.
+        (
+            {"verdict": "accepted", "active_seconds": 100, "time_optimality": "suboptimal"},
+            "medium",
+            Rating.Hard,
+        ),
+        # ...unless you named the better approach yourself afterwards, which is
+        # the thing being trained. Okay, not Hard.
+        (
+            {
+                "verdict": "accepted",
+                "active_seconds": 100,
+                "time_optimality": "suboptimal",
+                "saw_better": 1,
+            },
+            "medium",
+            Rating.Good,
+        ),
+        # Spotting it does not launder away a slow solve or a revealed hint:
+        # the floor is the worst of every demote, not the last one to fire.
+        (
+            {
+                "verdict": "accepted",
+                "active_seconds": PAR_MEDIUM * 2,
+                "time_optimality": "suboptimal",
+                "saw_better": 1,
+            },
+            "medium",
+            Rating.Hard,
+        ),
+        (
+            {
+                "verdict": "accepted",
+                "active_seconds": 100,
+                "time_optimality": "suboptimal",
+                "saw_better": 1,
+                "self_confidence": 1,
+            },
+            "medium",
+            Rating.Hard,
+        ),
+        # `unsure` is the default answer and costs nothing. Being unsure is the
+        # honest state of most solves; it is not evidence of anything.
+        (
+            {"verdict": "accepted", "active_seconds": 100, "time_optimality": "unsure"},
+            "medium",
+            Rating.Good,
+        ),
+        # Easy also asks you to price it. A solution you cannot cost is one you
+        # pattern-matched, and half an answer is not an answer: time alone,
+        # space alone and neither all stop short of Easy.
+        (
+            {"verdict": "accepted", "active_seconds": 100, "time_optimality": "optimal"},
+            "medium",
+            Rating.Good,
+        ),
+        (
+            {
+                "verdict": "accepted",
+                "active_seconds": 100,
+                "time_optimality": "optimal",
+                "claimed_complexity": "O(n)",
+            },
+            "medium",
+            Rating.Good,
+        ),
+        (
+            {
+                "verdict": "accepted",
+                "active_seconds": 100,
+                "time_optimality": "optimal",
+                "claimed_complexity": "   ",
+                "claimed_space_complexity": "O(1)",
+            },
+            "medium",
+            Rating.Good,
+        ),
+        # An attempt written before any of this existed answers none of it, and
+        # grades exactly as it always did -- except that it cannot reach Easy,
+        # which now needs a claim nobody made.
+        ({"verdict": "accepted", "active_seconds": 100}, "medium", Rating.Good),
     ],
 )
 def test_rating_map(attempt, difficulty, expected):
@@ -135,9 +228,9 @@ def test_the_self_report_only_ever_costs_you():
     decides. A low one is the case the flattery does not explain, so it is allowed
     to demote.
     """
-    fast = {"verdict": "accepted", "active_seconds": 100}
+    fast = {"verdict": "accepted", "active_seconds": 100, **PRICED}
     # Nothing the self-report says can promote a solve the clock does not rate.
-    at_par = {"verdict": "accepted", "active_seconds": PAR_MEDIUM}
+    at_par = {"verdict": "accepted", "active_seconds": PAR_MEDIUM, **PRICED}
     assert srs.rate({**at_par, "self_confidence": 4}, "medium", WEIGHTS) == Rating.Good
     assert srs.rate({**at_par}, "medium", WEIGHTS) == Rating.Good
     # A high claim adds nothing to a fast solve that already earned Easy.
@@ -164,6 +257,20 @@ def test_par_is_difficulty_relative():
 
 
 def _solve(conn, slug, verdict="accepted", **kw):
+    """A solve that answered everything, unless the caller says otherwise.
+
+    The priced defaults are what make this an *Easy* solve rather than merely a
+    fast one: since the rating map grew its second axis, Easy needs a time
+    optimality claim and a cost on both axes. Every caller below that reasons
+    about the mastery ladder wants the top rung, and spelling three unrelated
+    kwargs at each of them would bury what each test is actually about.
+    """
+    kw = {
+        "time_optimality": "optimal",
+        "claimed_complexity": "O(n)",
+        "claimed_space_complexity": "O(1)",
+        **kw,
+    }
     eng = RunEngine(conn)
     eng.start_session([slug])
     eng.start_problem(slug)
@@ -689,3 +796,49 @@ def test_due_cards_come_back_weakest_first(conn):
 
     order = [r["slug"] for r in srs.due_cards(conn, at)]
     assert order == ["weak", "strong"]
+
+
+# --- the second axis, end to end --------------------------------------------
+
+
+def test_naming_the_better_approach_saves_a_beaten_solve(conn):
+    """The whole point of the `worth_learning` role, measured on the schedule.
+
+    Two identical solves, both admitting they were beaten on time. One names the
+    approach it should have taken; the other names nothing. The first found the
+    pattern late, the second missed it — so only the second comes back soon.
+    """
+    from core import strategies
+
+    beaten = dict(
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        claimed_space_complexity="O(1)",
+    )
+    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], ["hash map"]))
+    _solve(conn, "3sum", **beaten)
+
+    cards = _cards(conn)
+    diagnosed = srs.parse_ts(cards["two-sum"]["due"])
+    missed = srs.parse_ts(cards["3sum"]["due"])
+    assert diagnosed > missed
+
+
+def test_admitting_you_were_beaten_costs_a_grade(conn):
+    """An asymptotic gap is a gap in the pattern, however fast you closed it."""
+    _solve(conn, "two-sum")  # priced and optimal by default: Easy
+    _solve(conn, "3sum", time_optimality="suboptimal")
+
+    cards = _cards(conn)
+    assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
+
+
+def test_not_sure_is_free(conn):
+    """The default answer cannot cost you anything, or it stops being honest."""
+    unsure = srs.rate(
+        {"verdict": "accepted", "active_seconds": 100, "time_optimality": "unsure"},
+        "medium",
+        WEIGHTS,
+    )
+    silent = srs.rate({"verdict": "accepted", "active_seconds": 100}, "medium", WEIGHTS)
+    assert unsure == silent == Rating.Good

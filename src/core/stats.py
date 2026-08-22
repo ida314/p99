@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
-from . import scoring
+from . import scoring, strategies
 from .scoring import Weights, fmt_duration
 
 ATTEMPT_SELECT = """
@@ -42,6 +42,7 @@ def load_attempts(
     difficulty: str | None = None,
     slug: str | None = None,
     session_id: int | None = None,
+    strategy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Attempts joined with their catalog metadata, newest last."""
     where: list[str] = []
@@ -78,7 +79,69 @@ def load_attempts(
         row["tags"] = json.loads(row["tags"]) if row["tags"] else []
     if tag:
         rows = [r for r in rows if tag in r["tags"]]
+    _hydrate_strategies(conn, rows)
+    if strategy:
+        # After hydration, like the `tag` filter above it and for the same
+        # reason: the answer is not a column on `attempts`. Matched on the
+        # `used` role only -- an approach you named but did not write says
+        # nothing about how long writing it takes.
+        rows = [r for r in rows if strategy in (r.get("used_keys") or ())]
     return rows
+
+
+def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    """Attach the strategy answer, and the quality it implies, to each attempt.
+
+    Two queries for the whole result set rather than three per row. The second
+    one is deliberately unfiltered: `solution_quality` compares an attempt to
+    your *previous* route to the same problem, and that attempt is usually
+    outside whatever window the caller asked for -- a run summary showing
+    tonight's session still has to know what you did in March.
+
+    Every key it sets is derived. Nothing here is stored, so a change to
+    `scoring.solution_quality` corrects every screen at once.
+    """
+    if not rows:
+        return
+
+    answers: dict[str, dict[str, list[str]]] = {}
+    keys: dict[str, dict[str, list[str]]] = {}
+    for r in conn.execute(
+        "SELECT a.attempt_uuid AS uuid, a.role AS role, a.key AS key, s.name AS name "
+        "FROM attempt_strategies a JOIN strategies s ON s.key = a.key "
+        "ORDER BY s.name"
+    ).fetchall():
+        answers.setdefault(r["uuid"], {}).setdefault(r["role"], []).append(r["name"])
+        keys.setdefault(r["uuid"], {}).setdefault(r["role"], []).append(r["key"])
+
+    # Every `used` answer ever recorded, oldest first per problem, so "the route
+    # you took last time" is a scan rather than a query per row.
+    history: dict[str, list[tuple[int, frozenset[str]]]] = {}
+    for r in conn.execute(
+        "SELECT slug, attempt_id, key FROM attempt_strategies "
+        "WHERE role = ? AND attempt_id IS NOT NULL ORDER BY attempt_id",
+        (strategies.USED,),
+    ).fetchall():
+        seq = history.setdefault(r["slug"], [])
+        if seq and seq[-1][0] == r["attempt_id"]:
+            seq[-1] = (r["attempt_id"], seq[-1][1] | {r["key"]})
+        else:
+            seq.append((r["attempt_id"], frozenset({r["key"]})))
+
+    for row in rows:
+        answer = answers.get(row["uuid"], {})
+        row["strategies_used"] = answer.get(strategies.USED, [])
+        row["strategies_worth_learning"] = answer.get(strategies.WORTH_LEARNING, [])
+        row["used_keys"] = frozenset(keys.get(row["uuid"], {}).get(strategies.USED, ()))
+        row["saw_better"] = bool(row["strategies_worth_learning"])
+        # None, not the empty set, when there is no earlier answer: a first solve
+        # cannot be an alternative to anything.
+        prior = None
+        for attempt_id, used in history.get(row["slug"], ()):
+            if attempt_id >= row["id"]:
+                break
+            prior = used
+        row["solution_quality"] = scoring.solution_quality(row, prior_used=prior)
 
 
 def percentile(values: Sequence[float], p: float) -> float | None:
@@ -241,10 +304,22 @@ def distributions_by(
     weights: Weights | None = None,
     limit: int | None = None,
 ) -> list[Distribution]:
-    """Every non-empty slice along `dimension` ('pattern', 'difficulty', 'tag')."""
+    """Every non-empty slice along `dimension`.
+
+    'pattern', 'difficulty', 'tag' — and 'strategy', which is the one slice the
+    catalog did not supply. A pattern is where a problem sits in someone else's
+    list; a strategy is what you actually reached for, and "how long do my
+    top-down solves take" is a question only the second one can be asked.
+    """
     attempts = load_attempts(conn, days=days)
     keys: list[str]
-    if dimension == "tag":
+    if dimension == "strategy":
+        used: dict[str, int] = {}
+        for a in attempts:
+            for key in a.get("used_keys") or ():
+                used[key] = used.get(key, 0) + 1
+        keys = [k for k, _ in sorted(used.items(), key=lambda kv: (-kv[1], kv[0]))]
+    elif dimension == "tag":
         seen: dict[str, int] = {}
         for a in attempts:
             for t in a["tags"]:
@@ -263,7 +338,12 @@ def distributions_by(
     if limit:
         keys = keys[:limit]
 
-    kwarg = {"tag": "tag", "pattern": "pattern", "difficulty": "difficulty"}[dimension]
+    kwarg = {
+        "tag": "tag",
+        "pattern": "pattern",
+        "difficulty": "difficulty",
+        "strategy": "strategy",
+    }[dimension]
     return [
         distribution(
             conn,
@@ -663,6 +743,7 @@ def pattern_mastery(
         min_attempts=min_attempts,
         days=days,
     )
+
 
 
 @dataclass(frozen=True)

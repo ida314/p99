@@ -396,3 +396,57 @@ EndRunModal {
     height: auto;
     margin: 0 2 1 2;
 }
+
+/* The strategy prompt. Narrower than the finish modal and mostly list: it asks
+   one question, and the list is the answer. Height is capped so a vocabulary
+   that has grown to forty entries scrolls rather than pushing the buttons off
+   the bottom of an 80x24 terminal. */
+StrategyModal {
+    align: center middle;
+}
+
+#strategy-box {
+    width: 68;
+    height: auto;
+    max-height: 100%;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#strategy-box .field-label {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#strategy-list {
+    height: auto;
+    max-height: 12;
+    border: none;
+    background: $surface;
+}
+
+#strategy-box Input {
+    width: 1fr;
+    margin-top: 1;
+}
+
+/* The derived quality, and the inputs that decided it. Two lines, always
+   present: a line that appears and disappears would move the buttons under it
+   every time you press `w`. */
+#strategy-quality {
+    height: 2;
+    margin-top: 1;
+}
+
+#strategy-box .hint-bar {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+/* Docked for the same reason the finish modal's row is: the list above it
+   scrolls, and the way out has to stay on screen. */
+#strategy-box #confirm-buttons {
+    dock: bottom;
+    background: $surface;
+}

@@ -133,20 +133,26 @@ in settings and replaying reschedules all of it.
    complexity, each with its own *was it optimal?* answer. Two axes rather than
    one because the trade is the whole point — the hash map that buys O(n) time
    pays O(n) space for it, and one answer cannot record a decision made in two
-   directions. The cost claims are recorded and shown back in history and on the
-   run summary; none of it is scored and none of it moves a review, because a
-   bonus set before there is data to set it from is a guess with a number on it.
-   Both optimality answers default to *not sure*, separately — being certain
-   about time and having never thought about space is the normal state, and the
-   flattering answer is never the default here, for the same reason the verdict
-   starts on the worst thing already on the record.
-4. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
+   directions. Both optimality answers default to *not sure*, separately — being
+   certain about time and having never thought about space is the normal state,
+   and the flattering answer is never the default here, for the same reason the
+   verdict starts on the worst thing already on the record.
+
+   The time answer is the one thing here that **moves a review**. A solution that
+   passes every test with the wrong asymptotics has not learned the pattern, and
+   the pattern is what the schedule is for. Nothing is compared to a reference —
+   there isn't one — and nothing is scored: the run score stays a function of
+   measured facts, and what a solution costs is a claim, not a measurement. See
+   [Strategies](#strategies) for the one thing that buys the demotion back.
+4. **Name it** — which approach you took, and which better one you can see now.
+   The list is [yours](#strategies), it starts empty, and `esc` skips it.
+5. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
    rejected — a wrong answer is the only artifact of an attempt that stops
    existing the moment you fix it, and the diff against what finally passed is
    the lesson. Turn it off in settings if you would rather not be asked.
-5. **Summary** — the run's death screen, scored and ranked against every past run.
+6. **Summary** — the run's death screen, scored and ranked against every past run.
 
 A run does not have to end the day it starts. `z` **suspends** it: the problem
 on screen keeps its clock reading, its hint tier and its failed-submit count,
@@ -203,12 +209,50 @@ real points.
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, time and space cost, optimality, then capture |
+| `f` | finish — verdict, confidence, time and space cost, optimality, then the approach, then capture |
+| `space` | the approach you used (strategy prompt) |
+| `w` | an approach worth learning — the better one you did not write (strategy prompt) |
+| `i` | name a new approach; `enter` adds it (strategy prompt) |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
 | `d` | delete the highlighted run (history) |
 | `q` | end the run / back — on a live problem it asks: record it as `gave_up` (`y`) or throw it away and go (`x`) |
+
+## Strategies
+
+After a solve, p99 asks how you did it. Not from a menu it supplies — the list
+starts **empty** and fills with whatever you type into it: `bottom-up
+tabulation`, `monotonic stack`, `quickselect`, whatever you actually call the
+thing. `space` marks what you wrote, `w` marks a better approach you can see and
+did not write, `i` names a new one, `esc` skips the whole prompt and costs
+nothing.
+
+The vocabulary is **shared across problems**, not filed under one. Type
+"bottom-up tabulation" on `coin-change` and it is on offer for `house-robber`,
+which is the point: a technique you keep being slow under is a weak spot in its
+own right, and the stats screen slices solve times by strategy the same way it
+slices them by pattern. A pattern is where a problem sits in someone else's
+list; a strategy is what you reached for.
+
+The `w` flag is the one that touches the schedule. *"I wrote the O(n²) and then
+saw the sliding window"* is a solve that found the pattern late; *"I wrote the
+O(n²) and that is where I stopped"* is a solve that missed it. Only the second
+comes back soon. That is also why the question is "name it" rather than "did you
+see a better one?" — a yes is not schedulable and a name is.
+
+Nothing you name is ever shown back on the solve screen. Being told "you solved
+this with a monotonic stack" on a review is most of the answer, and it is the
+same spoiler your archived code is — which is why the past-attempts panel has
+never shown that either. Strategies appear on the run summary and in history,
+after the fact.
+
+The prompt reads back a one-word verdict on the solution as you answer —
+`optimal`, `optimal, a different route`, `beaten, but you saw better`, `brute
+force only` — with the answers that produced it on the line underneath, so you
+can see what it concluded and check it. It is derived on read and never stored,
+like every score here; *not sure* derives nothing at all, because it is not a
+claim. Turn the whole prompt off in settings.
 
 ## How it stores things
 
@@ -229,7 +273,16 @@ and close the gap.
 
 Scores are never stored. `attempts` holds measured facts only, and the scalar is
 a pure function over a versioned weights file (`src/core/data/scoring/v1.toml`),
-computed at read time. Editing the weights rescores all history instantly.
+computed at read time. Editing the weights rescores all history instantly. The
+same rule covers the quality verdict on a solution: it is read off the optimality
+answer and the strategies at display time, and there is no column for it.
+
+`strategies`, `problem_strategies` and `attempt_strategies` are projections too.
+They hold the one string in any projection that you typed rather than picked —
+the name of an approach — and even that is a fold over the `problem_finished`
+payloads that recorded it, so dropping the three and replaying loses nothing. The
+name is stored as you first spelled it and keyed on a normalised form, so
+"Top-Down DP" and "top down dp" are one entry with your spelling on it.
 
 `fsrs_cards` and `queues` are projections too. A card is a fold over the ratings
 your finished attempts imply, so replaying the log rebuilds every one of them —
@@ -358,7 +411,7 @@ landed at 23.4 kbps against a 24k target — but on a sustained tone plain VBR r
 to 38.3 kbps while constrained held 24.9, and the size you were promised should
 not depend on what the microphone picked up.
 
-## Three places this deviates from the spec
+## Four places this deviates from the spec
 
 Each is a case where the spec contradicts itself or contradicts this design's
 own rules; the resolution is documented in the code at the point of the decision.
@@ -378,7 +431,21 @@ own rules; the resolution is documented in the code at the point of the decision
    text renders, and tier 4 ending the attempt. Only the hint text is a
    placeholder, so `max_hint_tier` is honest in history from day one.
 
-3. **Tag mastery is computed, not stored.** §4 gives `tag_mastery` a table with
+3. **The rating map reads a second axis.** §8 grades a review on help and the
+   clock alone. That prices how much of the answer you were handed and how long
+   it took, and says nothing about whether the answer was the one the problem is
+   for — a passing O(n²) where O(n) was the point has not learned the pattern,
+   which is the thing being scheduled. So `srs.rate` also reads the time
+   optimality you answer at the finish prompt, in one direction (`suboptimal`
+   demotes, `unsure` is free), with `Easy` additionally requiring that you said
+   what the solution costs on both axes.
+
+   The exception is the part worth restating: naming the better approach
+   yourself keeps the grade. The gap you diagnosed is not the gap you missed.
+   `docs/spaced-repetition.md` has the reasoning and the measured effect on
+   existing history.
+
+4. **Tag mastery is computed, not stored.** §4 gives `tag_mastery` a table with
    an `ema_score` column. But that score is a function of the scoring weights,
    and this design's first rule is that scores are never stored — swap
    `v1.toml` for `v2.toml` and a projected mastery table would quietly disagree

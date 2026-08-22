@@ -63,6 +63,14 @@ enabled = true
 # submit and nothing else.
 on_failed_submit = true
 
+[strategy]
+# after every solve, name the approach you used and the better one you can see.
+# The list is yours: it starts empty and fills with whatever you type into it.
+# Flagging a better approach you did not write is also what tells the scheduler
+# that a suboptimal solve found the pattern late rather than missing it -- see
+# docs/spaced-repetition.md. Set to false to skip the prompt entirely.
+enabled = true
+
 [scoring]
 # which weights file in the package's data/scoring/ to compute scores with
 weights = "v1"
@@ -151,6 +159,14 @@ class CaptureConfig:
 
 
 @dataclass(frozen=True)
+class StrategyConfig:
+    #: Ask, after every solve, which approach you used and which better one you
+    #: can see. Off, the prompt never appears and nothing is recorded -- old
+    #: answers stay exactly where they are.
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     weights: str = "v1"
 
@@ -188,6 +204,7 @@ class CacheConfig:
 class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     srs: SrsConfig = field(default_factory=SrsConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
@@ -235,6 +252,7 @@ def _build(raw: dict[str, Any]) -> Config:
     return Config(
         session=pick(SessionConfig, "session"),
         capture=pick(CaptureConfig, "capture"),
+        strategy=pick(StrategyConfig, "strategy"),
         scoring=pick(ScoringConfig, "scoring"),
         srs=pick(SrsConfig, "srs"),
         stats=pick(StatsConfig, "stats"),
@@ -397,6 +415,12 @@ def options() -> tuple[Option, ...]:
             "recording quality",
             "mono Opus, as a ceiling — 24 kbps is 10.8 MB an hour, 12 is smaller and still clear",
             (12, 16, 24, 32, 48),
+        ),
+        Option(
+            "strategy.enabled",
+            "name your approach",
+            "after a solve, pick the strategy you used and the better one you can see",
+            (True, False),
         ),
     )
 

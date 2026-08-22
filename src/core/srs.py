@@ -216,15 +216,41 @@ def new_card(slug: str, at: datetime) -> Card:
 def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) -> Rating:
     """Grade one finished attempt as an FSRS rating.
 
-    Spec §8, with performance owning the decision and `self_confidence` able to
-    lower the result but never to raise it. The self-report is the thing FSRS
-    actually models, but it is also the thing you can flatter yourself with; the
-    clock and the hint tier cannot be argued with. See the branch below for why
-    that asymmetry is the whole of how the self-report is read.
+    Spec §8, extended along a second axis. The spec's map reads only how much
+    help you needed and how long you took; this one also reads whether the
+    solution you reached was the one the problem is for. Correctness, cost and
+    the shape of the implementation are three separate questions, and a solve
+    that passes every test with the wrong asymptotics has not learned the
+    pattern -- which is precisely what the card is scheduling.
 
-    This map is code, not parameters, so it applies whichever `data/srs/*.toml`
-    is selected -- the same way `scoring.help_tier` applies to every weights
-    file. Switching to v1 changes the model's constants, not this.
+    Nothing here compares your solution to a reference. There is no reference:
+    p99 stores no editorial and no canonical implementation, so a different
+    route to the same complexity costs exactly nothing. The only comparisons
+    made are against par, against your own previous attempt, and against the
+    answers you yourself gave at the finish prompt.
+
+    Written as a floor that demotions lower, rather than a chain of early
+    returns. With five conditions that can each cost you a grade, an early
+    return is a promotion that skips whatever came after it -- the confidence
+    demote used to be unreachable for any solve the optimality branch had
+    already spoken about.
+
+    The four grades, and the answers that reach them:
+
+      Again  not solved, or solved after seeing pseudocode or the
+             implementation (help tier >= 3)
+      Hard   any help at all, or slower than 1.5x par, or a self-report that it
+             would not stick, or an asymptotic gap you did not spot yourself
+      Good   correct; or suboptimal but you named the better approach after
+             solving, which is the thing being trained
+      Easy   fast, unaided, optimal on time, and you said what it costs on both
+             axes
+
+    Two of those inputs are new and both are absent from every attempt written
+    before them. `time_optimality` is NULL, so no demote fires and old history
+    grades as it always did -- except that it can no longer reach Easy, which
+    now requires a claim nobody made. That regrade is deliberate and measured;
+    see `docs/spaced-repetition.md`.
 
     The verdict ladder needs no branch of its own: it lands in `scoring.help_tier`
     alongside the hints, and the tier thresholds below already say what to do with
@@ -251,8 +277,24 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     if verdict not in scoring.CLEAN_VERDICTS or tier >= 3:
         return Rating.Again
 
+    worst = Rating.Good
+
     if tier >= 1 or active > 1.5 * par:
-        return Rating.Hard
+        worst = Rating.Hard
+
+    # The asymptotic gap. `suboptimal` here is your own answer to "was it
+    # optimal?", not a judgement anyone made about your code -- and `unsure`,
+    # which is the default, costs nothing. Volunteering that you were beaten is
+    # the report worth acting on; being unsure is the honest state of most
+    # solves and is not evidence of anything.
+    #
+    # Naming the better approach yourself is the exception, and it is the whole
+    # reason `worth_learning` exists as a separate role. "I wrote the O(n^2) and
+    # then saw the sliding window" is a solve that found the pattern late; "I
+    # wrote the O(n^2) and that is where I stopped" is a solve that missed it.
+    # Only the second one needs the problem back soon.
+    if attempt.get("time_optimality") == "suboptimal" and not attempt.get("saw_better"):
+        worst = Rating.Hard
 
     # The self-report is used in one direction only, and that asymmetry is the
     # point. A judgement made seconds after solving is inflated -- the solution
@@ -266,12 +308,27 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     # after producing one, is the one self-report the bias does not explain --
     # so it is the one worth acting on.
     if confidence is not None and int(confidence) <= 2:
-        return Rating.Hard
+        worst = Rating.Hard
 
-    if active <= 0.6 * par and tier == 0:
+    # Easy is the one promotion, and it now asks for the cost as well as the
+    # clock. "Can explain the complexity" is not decoration on a fast solve: a
+    # solution you cannot price is one you pattern-matched, and pattern-matching
+    # is exactly what a long interval will not survive. Both axes are required,
+    # because answering time and skipping space is answering half the question.
+    explained = bool(
+        str(attempt.get("claimed_complexity") or "").strip()
+        and str(attempt.get("claimed_space_complexity") or "").strip()
+    )
+    if (
+        worst is Rating.Good
+        and active <= 0.6 * par
+        and tier == 0
+        and attempt.get("time_optimality") == "optimal"
+        and explained
+    ):
         return Rating.Easy
 
-    return Rating.Good
+    return worst
 
 
 # --- the card projection ---------------------------------------------------
@@ -362,15 +419,24 @@ def grade_attempt(
     """Fold one finished attempt into its problem's card.
 
     Called from `events.apply` on `problem_finished` and `problem_abandoned`,
-    *after* the attempt row has been updated -- every input to the rating map is
-    on the row by then: the verdict and timing from the event being applied, the
-    hint tier from earlier `hint_revealed` events.
+    *after* the attempt row has been updated *and* its strategy rows written --
+    every input to the rating map is in place by then: the verdict, timing and
+    cost claims from the event being applied, the hint tier from earlier
+    `hint_revealed` events, and `saw_better` from the strategy block on the same
+    payload. `events.apply` owns that ordering.
 
     Returns the rating applied, or None if the attempt or its problem is
     missing. Reads no clock: `at` is the event's own timestamp.
     """
     row = conn.execute(
         "SELECT a.slug, a.verdict, a.active_seconds, a.max_hint_tier, a.self_confidence, "
+        "       a.time_optimality, a.claimed_complexity, a.claimed_space_complexity, "
+        # Aliased, like `p.difficulty AS problem_difficulty` elsewhere in here:
+        # an unnamed EXISTS comes back under its own SQL text as the column
+        # name, which `sqlite3.Row` cannot be asked for by any sane string.
+        "       EXISTS(SELECT 1 FROM attempt_strategies s "
+        "              WHERE s.attempt_uuid = a.uuid AND s.role = 'worth_learning') "
+        "         AS saw_better, "
         "       p.difficulty "
         "FROM attempts a LEFT JOIN problems p ON p.slug = a.slug "
         "WHERE a.uuid = ?",

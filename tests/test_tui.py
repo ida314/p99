@@ -10,9 +10,10 @@ from dataclasses import replace
 
 import pytest
 
-from textual.widgets import Input, OptionList, SelectionList, Static
+from textual.widgets import Input, OptionList, RadioSet, SelectionList, Static
 
 from core import branding, db, paths, stats
+from core.engine import RunEngine
 from core.tui.screens import home
 from core.tui.app import CoreApp
 from core.tui.screens import (
@@ -27,6 +28,7 @@ from core.tui.screens import (
     SetupScreen,
     SolveScreen,
     StatsScreen,
+    StrategyModal,
     SummaryScreen,
 )
 
@@ -38,6 +40,13 @@ active_list = "neetcode150"
 [capture]
 enabled = false
 language = "python"
+
+# The strategy prompt sits between the finish modal and the capture steps, so a
+# test that presses ctrl+s and expects a finished attempt has to say whether it
+# wants that screen. Off by default here; the tests that are about it turn it
+# back on with `strategy_app`.
+[strategy]
+enabled = false
 """
 
 
@@ -90,7 +99,15 @@ async def test_a_mastered_problem_shows_up_starred(app):
         eng = RunEngine(app.conn)
         eng.start_session(["two-sum"])
         eng.start_problem("two-sum")
-        eng.finish("solved_unaided", self_confidence=3)
+        # Priced on both axes and claimed optimal: that is what an Easy rating
+        # asks for now, and Easy is what masters in a single recall.
+        eng.finish(
+            "solved_unaided",
+            self_confidence=3,
+            time_optimality="optimal",
+            claimed_complexity="O(n)",
+            claimed_space_complexity="O(n)",
+        )
         eng.advance()
         eng.end_session()
     assert srs.is_mastered(srs.card_row(app.conn, "two-sum"))
@@ -281,7 +298,31 @@ planned_n = 1
 [capture]
 enabled = true
 language = "python"
+
+[strategy]
+enabled = false
 """
+
+
+STRATEGY_CONFIG = """
+[session]
+planned_n = 1
+
+[capture]
+enabled = false
+language = "python"
+
+[strategy]
+enabled = true
+"""
+
+
+@pytest.fixture
+def strategy_app(isolated_home):
+    """An app that asks which approach you took, and archives nothing."""
+    paths.ensure_dirs()
+    paths.config_file().write_text(STRATEGY_CONFIG)
+    return CoreApp(db.open_db())
 
 
 @pytest.fixture
@@ -1664,6 +1705,13 @@ speech_mode = true
 bitrate_kbps = 12
 input_format = "lavfi"
 device = "anullsrc"
+
+# The strategy prompt sits between the finish modal and the capture steps, so a
+# test that presses ctrl+s and expects a finished attempt has to say whether it
+# wants that screen. Off by default here; the tests that are about it turn it
+# back on with `strategy_app`.
+[strategy]
+enabled = false
 """
 
 # Same fake as tests/test_audio.py: writes to the last argument, then waits for
@@ -2106,3 +2154,269 @@ async def test_the_settings_action_row_is_not_a_value(app):
 
         # It sits directly under the switch it serves.
         assert screen.rows[row - 1].key == "cache.offline"
+
+
+# --- naming the approach ----------------------------------------------------
+
+
+async def _to_the_strategy_prompt(app, pilot, *, optimality_presses: int = 0):
+    """Start a run, finish the problem, and land on the strategy prompt.
+
+    `optimality_presses` moves the time ladder up from its `not sure` default:
+    one press is `not optimal`, two is `optimal`.
+    """
+    await pilot.press("n")
+    await pilot.pause()
+    await pilot.press("ctrl+s")
+    await pilot.pause()
+    await pilot.press("f")
+    await pilot.pause()
+    if optimality_presses:
+        app.screen.query_one("#time-optimality", RadioSet).focus()
+        for _ in range(optimality_presses):
+            await pilot.press("k")
+        await pilot.press("space")
+        await pilot.pause()
+    await pilot.press("ctrl+s")
+    await pilot.pause()
+    assert isinstance(app.screen, StrategyModal)
+    return app.screen
+
+
+async def _name_a_strategy(app, pilot, name: str):
+    """Type an approach into the box and press enter, the way a keyboard does.
+
+    `i` first, because that is what puts focus in the box: without it `enter`
+    bubbles to the OptionList behind it and nothing is added. The same
+    insert-mode switch every other screen in here uses.
+    """
+    await pilot.press("i")
+    app.screen.query_one("#strategy-new", Input).value = name
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def _option_prompts(screen) -> str:
+    """Every row of the strategy list, flattened. `_plain` only takes a Static."""
+    widget = screen.query_one("#strategy-list", OptionList)
+    return "\n".join(
+        str(getattr(widget.get_option_at_index(i).prompt, "plain", widget.get_option_at_index(i).prompt))
+        for i in range(widget.option_count)
+    )
+
+
+async def test_the_strategy_prompt_records_the_approach_you_name(strategy_app):
+    """Type an approach, and it lands in all three tables at once."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        # Nothing is on offer the first time; the box is the only way in.
+        assert "nothing named yet" in _option_prompts(screen)
+
+        await _name_a_strategy(app, pilot, "Bottom-Up Tabulation")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    conn = app.conn
+    assert conn.execute("SELECT key, name FROM strategies").fetchall()[0]["key"] == (
+        "bottom-up-tabulation"
+    )
+    # The name is the spelling you typed, not the key it was filed under.
+    assert conn.execute("SELECT name FROM strategies").fetchone()["name"] == (
+        "Bottom-Up Tabulation"
+    )
+    linked = conn.execute("SELECT slug, key FROM problem_strategies").fetchone()
+    assert linked["key"] == "bottom-up-tabulation"
+    answered = conn.execute("SELECT key, role FROM attempt_strategies").fetchone()
+    # Typed on the screen that asks what you wrote, so it is what you wrote.
+    assert (answered["key"], answered["role"]) == ("bottom-up-tabulation", "used")
+    assert conn.execute("SELECT verdict FROM attempts").fetchone()["verdict"] is not None
+
+
+async def test_skipping_the_strategy_prompt_costs_nothing(strategy_app):
+    """`esc` records no strategy and still finishes the attempt.
+
+    Skipping has to be free here for the same reason it is free at the two
+    editor steps: the moment it feels mandatory, the answer becomes noise.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+
+    conn = app.conn
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM strategies").fetchone()["n"] == 0
+    row = conn.execute("SELECT verdict, ended_at FROM attempts").fetchone()
+    assert row["verdict"] and row["ended_at"]
+
+
+async def test_saving_an_empty_answer_records_nothing_either(strategy_app):
+    """Looking at the list and picking nothing is not a fact about the solve."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert (
+        app.conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
+    )
+
+
+async def test_naming_an_approach_leaves_the_cursor_on_it(strategy_app):
+    """`w` right after `enter` has to flag what you just typed.
+
+    Without this the cursor stays where it was and `w` flags whatever is
+    alphabetically first — which writes a claim you never made, and the claim
+    moves a review.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "aaa first alphabetically")
+        await _name_a_strategy(app, pilot, "zzz last alphabetically")
+        await pilot.press("w")
+        await pilot.pause()
+        assert screen.roles == {
+            "aaa-first-alphabetically": "used",
+            "zzz-last-alphabetically": "worth_learning",
+        }
+
+
+async def test_the_two_roles_are_exclusive_and_each_undoes_itself(strategy_app):
+    """`space` and `w` toggle off, and one moves a row off the other."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "two pointers")
+        assert screen.roles == {"two-pointers": "used"}
+
+        # You cannot both have written a thing and be wishing you had.
+        await pilot.press("w")
+        assert screen.roles == {"two-pointers": "worth_learning"}
+        await pilot.press("w")
+        assert screen.roles == {}
+        await pilot.press("space")
+        assert screen.roles == {"two-pointers": "used"}
+        await pilot.press("space")
+        assert screen.roles == {}
+
+
+async def test_the_vocabulary_is_shared_across_problems_and_sorted(strategy_app):
+    """A strategy named on one problem is offered on the next, alphabetically."""
+    from core import events, strategies
+
+    from core import catalog
+
+    app = strategy_app
+    conn = app.conn
+    catalog.seed(conn, name="neetcode150")
+    # Two names on a different problem, deliberately out of alphabetical order.
+    for slug, names in (("valid-anagram", ["sorting"]), ("contains-duplicate", ["hash set"])):
+        eng = RunEngine(conn)
+        eng.start_session([slug])
+        eng.start_problem(slug)
+        eng.finish("solved_unaided", strategies=strategies.payload(names, []))
+        eng.advance()
+        eng.end_session()
+
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        offered = [s.name for s in screen.known]
+        assert offered == ["hash set", "sorting"]
+        # Offered, but not attached to this problem until you pick one.
+        assert not screen.roles
+        assert events  # the import is the point: nothing above needed the TUI
+
+
+async def test_the_quality_line_says_what_it_derived_and_why(strategy_app):
+    """The derived value is shown live, with the inputs that decided it.
+
+    A derived value nobody sees is a value nobody can catch being wrong, and
+    the moment the last input is still yours to change is this screen.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        # One press up the ladder from `not sure` is `not optimal`.
+        screen = await _to_the_strategy_prompt(app, pilot, optimality_presses=1)
+        line = _plain(screen.query_one("#strategy-quality"))
+        assert "brute force only" in line
+        assert "not optimal" in line
+        assert "none named" in line
+
+        await _name_a_strategy(app, pilot, "sliding window")
+        await pilot.press("w")
+        await pilot.pause()
+
+        line = _plain(screen.query_one("#strategy-quality"))
+        assert "beaten, but you saw better" in line
+        assert "1 better approach named" in line
+
+
+async def test_an_unclaimed_optimality_derives_no_quality_at_all(strategy_app):
+    """`not sure` is not a claim, so there is nothing to label."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        assert "not claimed" in _plain(screen.query_one("#strategy-quality"))
+
+
+async def test_the_quality_reaches_the_run_summary(strategy_app):
+    """What the prompt showed you live is still there on the death screen."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot, optimality_presses=1)
+        await _name_a_strategy(app, pilot, "sorting")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SummaryScreen)
+        lines = _plain(app.screen.query_one("#stat-lines", Static))
+        assert "brute force only" in lines
+        assert "sorting" in lines
+
+
+async def test_the_strategy_prompt_never_opens_on_a_surrender(strategy_app):
+    """There is no approach to record on an attempt that never reached one."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert not isinstance(app.screen, StrategyModal)
+
+
+async def test_the_strategy_buttons_stay_on_screen_on_a_short_terminal(isolated_home):
+    """A vocabulary of forty entries must scroll, not push the way out off-screen."""
+    from core import catalog, events, strategies
+
+    paths.ensure_dirs()
+    paths.config_file().write_text(STRATEGY_CONFIG)
+    app = CoreApp(db.open_db())
+    catalog.seed(app.conn, name="neetcode150")
+
+    eng = RunEngine(app.conn)
+    eng.start_session(["valid-anagram"])
+    eng.start_problem("valid-anagram")
+    eng.finish(
+        "solved_unaided",
+        strategies=strategies.payload([f"approach number {i:02d}" for i in range(40)], []),
+    )
+    eng.advance()
+    eng.end_session()
+    assert events
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        box = app.screen.query_one("#strategy-box")
+        assert box.region.bottom <= 24
+        for button in app.screen.query("Button"):
+            assert button.region.bottom <= 24, f"{button.id} is below the fold"
+            assert button.region.right <= box.region.right, f"{button.id} overflows"
