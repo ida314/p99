@@ -328,8 +328,13 @@ async def test_motions_never_pick_a_strategy(strategy_app):
 
 
 async def test_escape_leaves_the_strategy_box_before_it_leaves_the_screen(strategy_app):
-    """The way out of insert mode is never also the way out of the prompt."""
-    from core.tui.screens import StrategyModal
+    """The way out of insert mode is never also the way out of the prompt.
+
+    Two presses, two different meanings, and the order is the whole rule: the
+    first leaves the text box for the list, and only the second steps the
+    screen back to the verdict.
+    """
+    from core.tui.screens import FinishModal, StrategyModal
 
     app = strategy_app
     async with app.run_test() as pilot:
@@ -344,7 +349,7 @@ async def test_escape_leaves_the_strategy_box_before_it_leaves_the_screen(strate
 
         await pilot.press("escape")
         await pilot.pause()
-        assert not isinstance(app.screen, StrategyModal)
+        assert isinstance(app.screen, FinishModal)
 
 
 async def test_w_types_into_the_box_instead_of_flagging(strategy_app):

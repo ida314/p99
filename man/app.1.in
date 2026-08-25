@@ -304,9 +304,12 @@ marks one as worth learning — a better approach you can see and did not write,
 which keeps the grade a beaten solve would otherwise lose.
 .B i
 names a new one; the list is yours and starts empty. The prompt reads back what
-it derived about the solution, with the answers that produced it.
+it derived about the solution, with the answers that produced it. Saving with
+nothing picked records nothing.
 .B esc
-skips it and costs nothing. Switchable off in the settings screen.
+steps back to the verdict prompt, which reopens holding every answer you gave
+it — nothing is written until both prompts are done, so the attempt is still
+running behind them. Switchable off in the settings screen.
 .TP
 .B x
 Give up. Scores zero, and is still recorded.

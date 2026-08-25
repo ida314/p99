@@ -8,6 +8,8 @@ matters writes an event before it changes anything on screen.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.text import Text
 from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import Binding
@@ -22,7 +24,14 @@ from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
 from ...scoring import HINT_TIER_NAMES, fmt_duration
 from ..vim import MOTIONS, VimMotion
-from .finish import END_RUN_DISCARD, ConfirmModal, EndRunModal, FinishModal
+from .finish import (
+    END_RUN_DISCARD,
+    SIGNAL_BACK,
+    SIGNAL_DISCARD,
+    ConfirmModal,
+    EndRunModal,
+    FinishModal,
+)
 from .strategy import StrategyModal
 
 
@@ -550,26 +559,46 @@ class SolveScreen(VimMotion, Screen[None]):
             # running, and a stopped recorder could not have picked the rest of
             # it up. Stopping happens once the modal has committed to something.
             self._pause_recording(True)
-            result = await self.app.push_screen_wait(
-                FinishModal(
-                    attempt.problem.title,
-                    timing["active_seconds"],
-                    attempt.submissions,
-                    attempt.max_hint_tier,
-                )
-            )
-            if result is None:
-                self._pause_recording(False)
-                self._toast("back to the problem")
-                self._tick()
-                return
 
-            if result.get("discard"):
-                await self._do_throw_away()
-                return
+            # The post-solve prompts as a loop, not a chain. `esc` on the
+            # strategy screen steps back to the verdict rather than out to the
+            # problem, and stepping back has to be repeatable -- one back that
+            # works and a second that dumps you somewhere else is worse than
+            # none. Both screens are reopened carrying what they last held, so
+            # a round trip changes nothing. Safe because nothing is written
+            # until `engine.finish` below: everything above this point is a
+            # prompt, and the attempt is still live behind it.
+            answers: dict[str, Any] = {}
+            picked: dict[str, tuple[str, str]] = {}
+            while True:
+                result = await self.app.push_screen_wait(
+                    FinishModal(
+                        attempt.problem.title,
+                        timing["active_seconds"],
+                        attempt.submissions,
+                        attempt.max_hint_tier,
+                        answers=answers,
+                    )
+                )
+                if result is None:
+                    self._pause_recording(False)
+                    self._toast("back to the problem")
+                    self._tick()
+                    return
+
+                if result.get(SIGNAL_DISCARD):
+                    await self._do_throw_away()
+                    return
+
+                answers = result
+                chosen = await self._ask_strategies(result, picked)
+                if isinstance(chosen, dict) and chosen.get(SIGNAL_BACK):
+                    picked = chosen.get("picked") or {}
+                    self._toast("back to the verdict")
+                    continue
+                break
 
             cfg = self.app.config  # type: ignore[attr-defined]
-            picked = await self._ask_strategies(result)
             self.engine.finish(
                 result["verdict"],
                 timing=timing,
@@ -581,14 +610,14 @@ class SolveScreen(VimMotion, Screen[None]):
                 claimed_space_complexity=result.get("claimed_space_complexity"),
                 time_optimality=result.get("time_optimality"),
                 space_optimality=result.get("space_optimality"),
-                strategies=picked,
+                strategies=chosen,
             )
             self._stop_recording()
             await self._capture_flow()
         finally:
             self._busy = False
 
-    async def _ask_strategies(self, result: dict) -> dict[str, list[str]] | None:
+    async def _ask_strategies(self, result: dict, picked: dict) -> dict | None:
         """Name the approach, between the verdict prompt and the editor steps.
 
         Before `engine.finish`, not after: the rating reads whether you named a
@@ -598,6 +627,10 @@ class SolveScreen(VimMotion, Screen[None]):
         Only for a solve. There is no approach to record on an attempt that
         never reached one, which is the same reason `engine.finish` drops the
         complexity claims on the way to `abandon`.
+
+        Returns a payload block, None for nothing picked, or the `back` signal
+        the caller loops on. `picked` is what the screen last held, so a step
+        back and forward is a round trip.
         """
         attempt = self.engine.attempt
         cfg = self.app.config  # type: ignore[attr-defined]
@@ -606,7 +639,7 @@ class SolveScreen(VimMotion, Screen[None]):
         if result.get("verdict") not in scoring.CLEAN_VERDICTS:
             return None
         return await self.app.push_screen_wait(
-            StrategyModal(attempt.problem.title, attempt.problem.slug, result)
+            StrategyModal(attempt.problem.title, attempt.problem.slug, result, picked)
         )
 
     async def _do_throw_away(self) -> None:

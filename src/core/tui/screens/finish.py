@@ -63,6 +63,23 @@ OPTIMALITY_AXES = (
 END_RUN_RECORD = "record"
 END_RUN_DISCARD = "discard"
 
+#: Signal keys a post-solve modal can answer with instead of a set of answers.
+#: `discard` throws the attempt away; `back` steps one screen towards the
+#: problem. Both are named for the same reason as the two above: the branch that
+#: reads them and the modal that writes them are in different files.
+SIGNAL_DISCARD = "discard"
+SIGNAL_BACK = "back"
+
+
+def _pct_text(value: Any) -> str:
+    """A percentile back in the box you typed it into.
+
+    `%g` rather than `str`: the field is `type="number"` and `_pct` has already
+    turned "91" into 91.0, which would come back as "91.0" and read as a number
+    you did not enter.
+    """
+    return "" if value is None else f"{float(value):g}"
+
 
 class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     """Verdict, self-confidence, what you say the solution costs, the percentiles."""
@@ -85,16 +102,49 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         Binding("l", "axis(1)", "time / space", show=False),
     ]
 
-    def __init__(self, title: str, active_seconds: int, submissions: int, hint_tier: int):
+    def __init__(
+        self,
+        title: str,
+        active_seconds: int,
+        submissions: int,
+        hint_tier: int,
+        answers: dict[str, Any] | None = None,
+    ):
         super().__init__()
         self.problem_title = title
         self.active_seconds = active_seconds
         self.submissions = submissions
         self.hint_tier = hint_tier
+        #: What this prompt answered last time it was open, when the screen
+        #: after it sent you back here. Every widget below reads it before it
+        #: reads its own default, so stepping back and forward is a round trip
+        #: rather than a form you fill in twice.
+        self.answers = answers or {}
+
+    def _prior_index(self, key: str, options: tuple, fallback: int) -> int:
+        """Where an optimality ladder starts: your last answer, or its default.
+
+        One helper for both axes rather than the lookup written twice, because
+        they are the same question asked twice and spelling it per axis is how
+        one of them ends up quietly not restoring. The verdict and confidence
+        ladders each restore in their own way — the first has a default worth
+        computing, the second is a 1..4 offset.
+        """
+        value = self.answers.get(key)
+        if value is None:
+            return fallback
+        try:
+            return options.index(value)
+        except ValueError:
+            return fallback
 
     @property
     def _default_verdict(self) -> int:
         """Which verdict the cursor starts on.
+
+        A prior answer wins over all of it. Coming back from the next screen is
+        not a fresh prompt, and re-guessing at a verdict you already picked
+        would be the app arguing with you.
 
         Offline it starts on `ungraded`, because there was no judge to accept
         anything — and a default of "solved" is precisely how a plane's worth of
@@ -105,6 +155,8 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         logged either way, so this costs nothing to be honest about — it just
         saves a keystroke on the common case.
         """
+        if self.answers.get("verdict") in VERDICTS:
+            return VERDICTS.index(self.answers["verdict"])
         offline = getattr(getattr(self.app, "config", None), "cache", None)
         if offline is not None and offline.offline and "ungraded" in VERDICTS:
             return VERDICTS.index("ungraded")
@@ -127,25 +179,47 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 for i, v in enumerate(VERDICTS):
                     yield RadioButton(VERDICT_LABELS[v], value=(i == default))
             yield Static("if this came up cold in a month?", classes="field-label")
+            confidence = self.answers.get("self_confidence")
+            selected = int(confidence) - 1 if confidence else 2
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
-                    yield RadioButton(label, value=(i == 2))
+                    yield RadioButton(label, value=(i == selected))
             yield Static("what your solution costs — optional", classes="field-label")
             with Horizontal(id="complexity-row"):
-                yield Input(placeholder="time   O(n log n)", id="complexity")
-                yield Input(placeholder="space   O(1)", id="space-complexity")
+                yield Input(
+                    self.answers.get("claimed_complexity") or "",
+                    placeholder="time   O(n log n)",
+                    id="complexity",
+                )
+                yield Input(
+                    self.answers.get("claimed_space_complexity") or "",
+                    placeholder="space   O(1)",
+                    id="space-complexity",
+                )
             yield Static("was it optimal?", classes="field-label")
+            stored = tuple(value for value, _ in OPTIMALITY_OPTIONS)
             with Horizontal(id="optimality-row"):
-                for radio_id, axis, _ in OPTIMALITY_AXES:
+                for radio_id, axis, key in OPTIMALITY_AXES:
+                    chosen = self._prior_index(key, stored, OPTIMALITY_DEFAULT)
                     with Vertical(classes="optimality-axis"):
                         yield Static(axis, classes="axis-label")
                         with RadioSet(id=radio_id):
                             for i, (_, label) in enumerate(OPTIMALITY_OPTIONS):
-                                yield RadioButton(label, value=(i == OPTIMALITY_DEFAULT))
+                                yield RadioButton(label, value=(i == chosen))
             yield Static("leetcode percentiles — optional", classes="field-label")
             with Horizontal(id="optional-row"):
-                yield Input(placeholder="runtime %", id="runtime", type="number")
-                yield Input(placeholder="memory %", id="memory", type="number")
+                yield Input(
+                    _pct_text(self.answers.get("lc_runtime_pct")),
+                    placeholder="runtime %",
+                    id="runtime",
+                    type="number",
+                )
+                yield Input(
+                    _pct_text(self.answers.get("lc_memory_pct")),
+                    placeholder="memory %",
+                    id="memory",
+                    type="number",
+                )
             with Horizontal(id="confirm-buttons"):
                 yield Button("save  (ctrl+s)", variant="primary", id="save")
                 yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
@@ -229,7 +303,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         Only signals the intent — the caller confirms it and does the work, so
         the destructive step is never one keystroke deep inside a modal.
         """
-        self.dismiss({"discard": True})
+        self.dismiss({SIGNAL_DISCARD: True})
 
 
 class EndRunModal(ModalScreen[str | None]):

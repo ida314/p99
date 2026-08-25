@@ -14,6 +14,7 @@ from textual.widgets import Input, OptionList, RadioSet, SelectionList, Static
 
 from core import branding, db, paths, stats
 from core.engine import RunEngine
+from core.scoring import VERDICTS
 from core.tui.screens import home
 from core.tui.app import CoreApp
 from core.tui.screens import (
@@ -2233,16 +2234,110 @@ async def test_the_strategy_prompt_records_the_approach_you_name(strategy_app):
     assert conn.execute("SELECT verdict FROM attempts").fetchone()["verdict"] is not None
 
 
-async def test_skipping_the_strategy_prompt_costs_nothing(strategy_app):
-    """`esc` records no strategy and still finishes the attempt.
+async def test_escape_steps_back_to_the_verdict_not_out_to_the_problem(strategy_app):
+    """`esc` means back one screen here, the way it does on every other modal.
 
-    Skipping has to be free here for the same reason it is free at the two
-    editor steps: the moment it feels mandatory, the answer becomes noise.
+    Not out to the problem: the verdict you just gave is still yours, and
+    making the way back to it also throw it away would mean answering the whole
+    prompt again to change one radio.
     """
     app = strategy_app
     async with app.run_test() as pilot:
         await _to_the_strategy_prompt(app, pilot)
         await pilot.press("escape")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FinishModal)
+        # Still a live attempt. Nothing has been written by this point.
+        assert app.conn.execute("SELECT verdict FROM attempts").fetchone()["verdict"] is None
+
+
+async def test_stepping_back_keeps_every_answer_on_both_screens(strategy_app):
+    """A round trip is a round trip: neither prompt is refilled by hand."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        # Two presses up the time ladder is `optimal`; fill in the rest too.
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        finish = app.screen
+        finish.query_one("#complexity", Input).value = "O(n log n)"
+        finish.query_one("#space-complexity", Input).value = "O(1)"
+        finish.query_one("#runtime", Input).value = "91"
+        finish.query_one("#verdict", RadioSet).focus()
+        await pilot.press("j")
+        await pilot.press("space")  # solved with hints
+        finish.query_one("#time-optimality", RadioSet).focus()
+        await pilot.press("k")
+        await pilot.press("k")
+        await pilot.press("space")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        # A name typed here exists nowhere but this screen — nothing about the
+        # attempt is in the database yet — so it is the hardest thing to carry.
+        await _name_a_strategy(app, pilot, "Sliding Window")
+        await pilot.press("escape")
+        await pilot.pause()
+
+        finish = app.screen
+        assert isinstance(finish, FinishModal)
+        assert finish.query_one("#complexity", Input).value == "O(n log n)"
+        assert finish.query_one("#space-complexity", Input).value == "O(1)"
+        # 91, not 91.0: the box is a number field and it never held a decimal.
+        assert finish.query_one("#runtime", Input).value == "91"
+        assert VERDICTS[finish.query_one("#verdict", RadioSet).pressed_index] == (
+            "solved_with_hints"
+        )
+        assert finish.query_one("#time-optimality", RadioSet).pressed_index == 0
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        strategy = app.screen
+        assert isinstance(strategy, StrategyModal)
+        assert strategy.roles == {"sliding-window": "used"}
+        assert strategy.names["sliding-window"] == "Sliding Window"
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    conn = app.conn
+    row = conn.execute("SELECT verdict, claimed_complexity, time_optimality FROM attempts").fetchone()
+    assert (row["verdict"], row["claimed_complexity"], row["time_optimality"]) == (
+        "solved_with_hints",
+        "O(n log n)",
+        "optimal",
+    )
+    assert conn.execute("SELECT name FROM strategies").fetchone()["name"] == "Sliding Window"
+
+
+async def test_stepping_back_twice_still_lands_on_the_verdict(strategy_app):
+    """One back that works and a second that dumps you elsewhere is worse than none."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        for _ in range(2):
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, FinishModal)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert isinstance(app.screen, StrategyModal)
+
+
+async def test_saving_with_nothing_picked_is_the_skip(strategy_app):
+    """Skipping has to stay free — it is `ctrl+s` on an empty list now.
+
+    The moment it feels mandatory the answer becomes noise, which is the same
+    reason the two editor steps cost nothing to quit out of.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        await pilot.press("ctrl+s")
         await pilot.pause()
 
     conn = app.conn

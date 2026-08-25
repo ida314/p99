@@ -145,7 +145,10 @@ in settings and replaying reschedules all of it.
    measured facts, and what a solution costs is a claim, not a measurement. See
    [Strategies](#strategies) for the one thing that buys the demotion back.
 4. **Name it** — which approach you took, and which better one you can see now.
-   The list is [yours](#strategies), it starts empty, and `esc` skips it.
+   The list is [yours](#strategies) and it starts empty. `esc` steps back to
+   the verdict prompt with everything you answered still in it, because nothing
+   is written until both prompts are done — the attempt is still live behind
+   them. Save with nothing picked and nothing is recorded.
 5. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
    pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
@@ -213,6 +216,7 @@ real points.
 | `space` | the approach you used (strategy prompt) |
 | `w` | an approach worth learning — the better one you did not write (strategy prompt) |
 | `i` | name a new approach; `enter` adds it (strategy prompt) |
+| `esc` | back one screen — to the verdict prompt from the approach prompt, to the problem from the verdict prompt |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
@@ -225,8 +229,15 @@ After a solve, p99 asks how you did it. Not from a menu it supplies — the list
 starts **empty** and fills with whatever you type into it: `bottom-up
 tabulation`, `monotonic stack`, `quickselect`, whatever you actually call the
 thing. `space` marks what you wrote, `w` marks a better approach you can see and
-did not write, `i` names a new one, `esc` skips the whole prompt and costs
-nothing.
+did not write, `i` names a new one, and saving with nothing picked records
+nothing — skipping stays free.
+
+`esc` goes **back to the verdict prompt**, not out to the problem, and both
+prompts reopen holding exactly what you last put in them, down to a strategy
+you typed here and nowhere else. That is a real step back rather than an undo:
+nothing about the attempt is written until you are through both screens, so
+until then the verdict is still a prompt and the problem is still running
+behind it.
 
 The vocabulary is **shared across problems**, not filed under one. Type
 "bottom-up tabulation" on `coin-change` and it is on offer for `house-robber`,
