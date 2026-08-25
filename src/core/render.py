@@ -227,18 +227,23 @@ def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The stat line's strategy rows: what you used, what you saw, what it came to.
+    """The stat line's strategy rows: what you used, what else works, what it came to.
 
     Same build-the-rows-or-emit-nothing rule as `approach_rows`, and for the
     same reason -- a stat line should not grow three blank lines to say that you
     skipped a prompt which was optional in the first place.
 
     Labels are short because the stat line's label column is nine wide.
-    "approach" and "better" are what fit; `strategies.ROLE_LABELS` holds the
-    long forms for the screen that has room for them.
+    "approach", "also" and "better" are what fit; `strategies.ROLE_LABELS` holds
+    the long forms for the screen that has room for them.
+
+    "also" is the equal alternative you named and did not write. It is on the
+    line and in nothing else: `quality_reason` never counts it, because an equal
+    route is not evidence of a gap and a solve that named one was not beaten.
     """
     rows = [
         ("approach", ", ".join(attempt.get("strategies_used") or ())),
+        ("also", ", ".join(attempt.get("strategies_also_works") or ())),
         ("better", ", ".join(attempt.get("strategies_worth_learning") or ())),
         ("quality", quality_label(attempt)),
     ]
@@ -265,6 +270,105 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
     legacy = _cost(attempt.get("claimed_complexity"), attempt.get("optimality"))
     return [("approach", legacy)] if legacy else []
+
+
+# --- the approach library --------------------------------------------------
+
+
+#: The role a library row was last named in. The strategy screen's own words,
+#: deliberately: "solved by" is what you answered there, and a library that
+#: renamed your answer would be describing a different one.
+#:
+#: "written" was tried here and is wrong — it collides with the code column, so
+#: a row could read `written  …  —`, claiming a file that does not exist. What
+#: the role says is how you *named* it; whether it exists is the last column's
+#: job alone.
+LIBRARY_ROLE_LABELS = {
+    "used": "solved by",
+    "also_works": "also works",
+    "worth_learning": "worth learning",
+}
+
+
+def approach_library(approaches: Sequence[Any]) -> list[Text]:
+    """One line per approach to a problem: what it is, and whether it exists.
+
+    The empty cells carry the message. An approach with no cost claim and no
+    code is one you named and never wrote, and the row saying so plainly is the
+    reason to draw it at all -- a library of only the things you have already
+    done would have nothing to tell you.
+
+    Nothing is invented to fill a column: an approach written by an attempt that
+    wrote two has no claim of its own, and a dash is what that looks like. See
+    the `solutions` DDL for why it does not inherit one.
+
+    Kept under 80 columns in total, because this renders in `p99 approaches` as
+    well as in the TUI and a wrapped row loses the column that says whether the
+    code exists -- the one column the whole screen is for.
+    """
+    rows: list[Text] = []
+    for a in approaches:
+        line = Text("  ")
+        line.append(a.name[:25], style="bold" if a.written else "")
+        line.append(" " * max(1, 26 - len(a.name[:25])))
+
+        role = LIBRARY_ROLE_LABELS.get(a.role or "", "")
+        line.append(f"{role:<15}", style="bright_black")
+
+        claim = _cost(None, a.time_optimality) or "—"
+        if a.space_optimality:
+            claim = f"{claim}  ·  {OPTIMALITY_LABELS.get(a.space_optimality, '')}"
+        line.append(f"{claim:<22}", style="bright_black")
+
+        if a.written:
+            line.append("code", style="green")
+            if a.attempt_id:
+                line.append(f"  #{a.attempt_id}", style="bright_black")
+        else:
+            line.append("—", style="bright_black")
+        rows.append(line)
+    if not rows:
+        rows.append(Text("  nothing named on this problem yet", style="bright_black"))
+    return rows
+
+
+def approach_coverage_table(coverage: Sequence[Any], single_route: int) -> Group:
+    """How wide each approach reaches, and how much of that reach you have written.
+
+    The gap between the two numbers is the column worth reading. An approach you
+    can name on six problems and have written on one is a technique you
+    recognise rather than one you can produce, and an interview asks for the
+    second thing.
+
+    `single_route` sits underneath rather than in the table: it is a count of
+    problems, not of approaches, and putting a different unit in the same column
+    would make the table lie.
+    """
+    rows: list[RenderableType] = [Text("  approaches", style="bold")]
+    if not coverage:
+        rows.append(Text("  nothing named yet", style="bright_black"))
+        return Group(*rows)
+
+    header = Text("  ")
+    header.append(f"{'':<28}{'problems':>9}{'written':>9}", style="bright_black")
+    rows.append(header)
+    for entry in coverage:
+        line = Text("  ")
+        line.append(f"{entry.name[:27]:<28}")
+        line.append(f"{entry.problems:>9}", style="bright_black")
+        line.append(
+            f"{entry.written:>9}",
+            style="bright_black" if entry.written else "yellow",
+        )
+        rows.append(line)
+    rows.append(Text(""))
+    rows.append(
+        Text(
+            f"  {single_route} problems have exactly one approach named.",
+            style="bright_black italic",
+        )
+    )
+    return Group(*rows)
 
 
 # --- what happened last time -----------------------------------------------

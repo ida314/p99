@@ -10,6 +10,7 @@ from textual.app import App
 from .. import branding, catalog, config as config_module, db, engine as engine_module, paths, scoring
 from ..engine import RunEngine
 from .screens import (
+    ApproachesScreen,
     FetchScreen,
     HistoryScreen,
     HomeScreen,
@@ -171,6 +172,9 @@ class CoreApp(App):
 
     def action_mastered(self) -> None:
         self.push_screen(MasteredScreen())
+
+    def action_approaches(self) -> None:
+        self.push_screen(ApproachesScreen())
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen())

@@ -26,6 +26,7 @@ from pathlib import Path
 from . import branding, config, paths
 from .catalog import Problem
 from .scoring import VERDICT_LABELS, fmt_duration
+from .strategies import Strategy
 
 COMMENT_PREFIX = {
     "py": "#",
@@ -83,8 +84,20 @@ def editor_available() -> bool:
     return bool(cmd) and shutil.which(cmd[0]) is not None
 
 
-def _code_header(problem: Problem, attempt: dict, ext: str, status: str, prompt: str) -> str:
-    """The three pre-filled comment lines every code buffer opens with."""
+def _code_header(
+    problem: Problem,
+    attempt: dict,
+    ext: str,
+    status: str,
+    prompt: str,
+    approach: str | None = None,
+) -> str:
+    """The pre-filled comment lines every code buffer opens with.
+
+    Three of them, or four when the buffer is for a named approach. The extra
+    line is not decoration: with two buffers open in a row for the same problem,
+    it is the only thing on screen that says which one you are in.
+    """
     prefix = COMMENT_PREFIX.get(ext, "#")
     started = attempt.get("started_at")
     when = ""
@@ -96,14 +109,18 @@ def _code_header(problem: Problem, attempt: dict, ext: str, status: str, prompt:
     tier = int(attempt.get("max_hint_tier") or 0)
     hints = f"hints: tier {tier}" if tier else "hints: none"
     duration = fmt_duration(attempt.get("active_seconds"))
+    approach_line = f"{prefix} approach: {approach}\n" if approach else ""
     return (
         f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
         f"{prefix} {when} | {duration} | {hints} | {status}\n"
+        f"{approach_line}"
         f"{prefix} {prompt} :wq to save, :q! to skip.\n\n"
     )
 
 
-def solution_header(problem: Problem, attempt: dict, ext: str) -> str:
+def solution_header(
+    problem: Problem, attempt: dict, ext: str, approach: str | None = None
+) -> str:
     """The pre-filled comment header on the solution buffer."""
     return _code_header(
         problem,
@@ -111,6 +128,7 @@ def solution_header(problem: Problem, attempt: dict, ext: str) -> str:
         ext,
         VERDICT_LABELS.get(attempt.get("verdict") or "", "UNRESOLVED"),
         "paste your solution below.",
+        approach,
     )
 
 
@@ -203,16 +221,59 @@ def capture_solution(
     attempt: dict,
     attempt_id: int,
     language: str | None = None,
+    approach: Strategy | None = None,
 ) -> CaptureResult:
-    """Step 1 — archive the solution to `code/<slug>/<attempt_id>.<ext>`."""
+    """Step 1 — archive the solution to `code/<slug>/<attempt_id>.<ext>`.
+
+    Called once per approach you said you wrote, so one solve can produce
+    several files. The unnamed case is the original one and lands in the
+    original place; a named one gets the approach in its filename and in its
+    header, and is skippable on its own with `:q!` like everything else here.
+    Skipping one and writing the other is a normal night, not an error.
+    """
     cfg = config.load()
     lang = language or cfg.capture.language
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
-    header = solution_header(problem, attempt, ext)
-    dest = paths.unclaimed(paths.code_path(problem.slug, attempt_id, ext))
+    header = solution_header(problem, attempt, ext, approach.name if approach else None)
+    dest = (
+        paths.approach_code_path(problem.slug, attempt_id, approach.key, ext)
+        if approach
+        else paths.code_path(problem.slug, attempt_id, ext)
+    )
     return _run_capture(
-        f"{problem.slug}.{ext}",
+        f"{problem.slug}.{ext}" if approach is None else f"{problem.slug}-{approach.key}.{ext}",
+        header,
+        paths.unclaimed(dest),
+        lambda text: not _strip_comments(text, prefix),
+    )
+
+
+def capture_library_solution(
+    problem: Problem,
+    approach: Strategy,
+    language: str | None = None,
+) -> CaptureResult:
+    """The same buffer, for an approach no attempt ever wrote.
+
+    The header carries no clock, no hint tier and no verdict, because there was
+    no attempt to have any: this is you sitting down with a route you named
+    months ago and finally writing it. Everything else is identical, skipping
+    included.
+    """
+    cfg = config.load()
+    lang = language or cfg.capture.language
+    ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
+    prefix = COMMENT_PREFIX.get(ext, "#")
+    header = (
+        f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
+        f"{prefix} approach: {approach.name}\n"
+        f"{prefix} not from an attempt — nothing here is timed or scored.\n"
+        f"{prefix} paste your solution below. :wq to save, :q! to skip.\n\n"
+    )
+    dest = paths.unclaimed(paths.library_code_path(problem.slug, approach.key, ext))
+    return _run_capture(
+        f"{problem.slug}-{approach.key}.{ext}",
         header,
         dest,
         lambda text: not _strip_comments(text, prefix),

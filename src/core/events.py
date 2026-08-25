@@ -31,6 +31,9 @@ PROBLEM_ABANDONED = "problem_abandoned"
 PROBLEM_FINISHED = "problem_finished"
 CODE_ARCHIVED = "code_archived"
 SUBMISSION_ARCHIVED = "submission_archived"
+#: Code for one approach to a problem, written outside any attempt -- the
+#: library screen filling in a route you named and never sat down and wrote.
+SOLUTION_ARCHIVED = "solution_archived"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
@@ -60,6 +63,7 @@ EVENT_TYPES = frozenset(
         PROBLEM_FINISHED,
         CODE_ARCHIVED,
         SUBMISSION_ARCHIVED,
+        SOLUTION_ARCHIVED,
         NOTE_WRITTEN,
         AUDIO_RECORDED,
         SESSION_ENDED,
@@ -276,6 +280,83 @@ def _record_strategies(
             )
 
 
+def _sole_used_key(conn: sqlite3.Connection, attempt_uuid: str) -> str | None:
+    """The one approach this attempt wrote, or None if it wrote none or several.
+
+    "None if several" is the whole point rather than a shortcut. An attempt that
+    named two approaches archived two files, and nothing in a payload written
+    before the approach column existed says which file is which -- so the honest
+    answer is to attribute neither.
+    """
+    rows = conn.execute(
+        "SELECT key FROM attempt_strategies WHERE attempt_uuid = ? AND role = ?",
+        (attempt_uuid, strategies.USED),
+    ).fetchall()
+    return rows[0]["key"] if len(rows) == 1 else None
+
+
+def _record_solution(
+    conn: sqlite3.Connection,
+    event: Event,
+    slug: str,
+    key: str,
+    name: str,
+    code_path: str | None,
+    language: str | None,
+    attempt_uuid: str | None = None,
+) -> None:
+    """Put one written approach in the library.
+
+    Newest write wins, and that is not history being rewritten: every attempt
+    keeps its own file on disk under its own id, and this row is a pointer at
+    the most recent of them. What it replaces is a pointer, not a solution.
+
+    The cost claim is inherited from the attempt, and only when that attempt
+    wrote exactly one approach -- otherwise one answer would be copied onto two
+    solutions, and at most one of them could be the code it describes. An
+    approach added from the library has no attempt and so has no claim at all,
+    which reads the same way on screen: an empty cell, not a guess.
+    """
+    if not slug or not key or not code_path:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
+        (key, name, event.ts),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO problem_strategies(slug, key, first_seen) VALUES(?,?,?)",
+        (slug, key, event.ts),
+    )
+    claim: sqlite3.Row | None = None
+    if attempt_uuid and _sole_used_key(conn, attempt_uuid) == key:
+        claim = conn.execute(
+            "SELECT time_optimality, space_optimality FROM attempts WHERE uuid = ?",
+            (attempt_uuid,),
+        ).fetchone()
+    conn.execute(
+        "INSERT INTO solutions"
+        "(slug, key, code_path, language, attempt_uuid, attempt_id,"
+        " time_optimality, space_optimality, written_at) VALUES(?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(slug, key) DO UPDATE SET "
+        "code_path = excluded.code_path, language = excluded.language, "
+        "attempt_uuid = excluded.attempt_uuid, attempt_id = excluded.attempt_id, "
+        "time_optimality = excluded.time_optimality, "
+        "space_optimality = excluded.space_optimality, "
+        "written_at = excluded.written_at",
+        (
+            slug,
+            key,
+            code_path,
+            language,
+            attempt_uuid,
+            _attempt_id(conn, attempt_uuid) if attempt_uuid else None,
+            claim["time_optimality"] if claim else None,
+            claim["space_optimality"] if claim else None,
+            event.ts,
+        ),
+    )
+
+
 def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None:
     """Drop attempts and their submissions from the projections.
 
@@ -292,6 +373,13 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
         # place from the other direction: it skips the event entirely, so a
         # strategy that *only* this attempt ever named is simply never created.
         conn.execute("DELETE FROM attempt_strategies WHERE attempt_uuid = ?", (attempt_uuid,))
+        # The library row goes with it, and this one is not a judgement call:
+        # `code_archived` carries a top-level `attempt_uuid`, so `replay` skips
+        # the event outright and never creates the row at all. Keeping it here
+        # would make the live projection disagree with the replayed one, which
+        # is the one invariant this whole design rests on. The file on disk
+        # stays, like every other piece of archived writing.
+        conn.execute("DELETE FROM solutions WHERE attempt_uuid = ?", (attempt_uuid,))
         conn.execute("DELETE FROM attempts WHERE uuid = ?", (attempt_uuid,))
 
 
@@ -434,12 +522,58 @@ def apply(
         _grade(conn, p["attempt_uuid"], event, context)
 
     elif event.type == CODE_ARCHIVED:
-        _update_attempt(
-            conn,
-            p["attempt_uuid"],
-            code_path=p.get("code_path"),
-            language=p.get("language"),
+        # `attempts.code_path` is the attempt's headline file, and with several
+        # approaches archived off one solve there are several to choose from.
+        # First one saved wins, guarded on the column rather than on a counter
+        # so a replay makes the same choice in the same order.
+        conn.execute(
+            "UPDATE attempts SET code_path = ? WHERE uuid = ? AND code_path IS NULL",
+            (p.get("code_path"), p["attempt_uuid"]),
         )
+        _update_attempt(conn, p["attempt_uuid"], language=p.get("language"))
+        # The approach this file is for. Named on the payload since the library
+        # existed; before that, inferred -- an attempt that wrote exactly one
+        # approach wrote it in this file, and there is nothing to be ambiguous
+        # about. That inference is what gives the library its back catalogue
+        # without a migration and without touching a single logged payload.
+        named = strategies.clean([p["approach"]]) if p.get("approach") else []
+        entry = named[0] if named else None
+        if entry is None:
+            key = _sole_used_key(conn, p["attempt_uuid"])
+            row = (
+                conn.execute("SELECT name FROM strategies WHERE key = ?", (key,)).fetchone()
+                if key
+                else None
+            )
+            entry = strategies.Strategy(key=key, name=row["name"]) if row else None
+        if entry is not None:
+            _record_solution(
+                conn,
+                event,
+                p.get("slug", ""),
+                entry.key,
+                entry.name,
+                p.get("code_path"),
+                p.get("language"),
+                attempt_uuid=p["attempt_uuid"],
+            )
+
+    elif event.type == SOLUTION_ARCHIVED:
+        # An approach filled in from the library, with no attempt behind it.
+        # It joins the problem's list and the vocabulary exactly as one named at
+        # a finish prompt does -- what it does not get is an `attempt_strategies`
+        # row, because there was no attempt for it to be an answer about.
+        named = strategies.clean([p.get("approach") or ""])
+        if named:
+            _record_solution(
+                conn,
+                event,
+                p.get("slug", ""),
+                named[0].key,
+                named[0].name,
+                p.get("code_path"),
+                p.get("language"),
+            )
 
     elif event.type == SUBMISSION_ARCHIVED:
         conn.execute(

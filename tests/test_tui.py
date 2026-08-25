@@ -13,11 +13,13 @@ import pytest
 from textual.widgets import Input, OptionList, RadioSet, SelectionList, Static
 
 from core import branding, db, paths, stats
+from core.render import approach_library
 from core.engine import RunEngine
 from core.scoring import VERDICTS
 from core.tui.screens import home
 from core.tui.app import CoreApp
 from core.tui.screens import (
+    ApproachesScreen,
     EndRunModal,
     FetchScreen,
     FinishModal,
@@ -316,6 +318,38 @@ language = "python"
 [strategy]
 enabled = true
 """
+
+
+LIBRARY_CONFIG = """
+[session]
+planned_n = 1
+
+[capture]
+enabled = true
+language = "python"
+per_approach = true
+
+[strategy]
+enabled = true
+"""
+
+
+@pytest.fixture
+def library_app(isolated_home, monkeypatch, env_editor):
+    """Both halves on: name the approaches, then archive one file per approach."""
+    import contextlib
+
+    paths.ensure_dirs()
+    paths.config_file().write_text(LIBRARY_CONFIG)
+
+    editor = isolated_home / "fake-editor"
+    editor.write_text("#!/bin/sh\nprintf 'return 42\\n' >> \"$1\"\n")
+    editor.chmod(0o755)
+    monkeypatch.setenv(env_editor, str(editor))
+
+    app = CoreApp(db.open_db())
+    monkeypatch.setattr(type(app), "editor_context", lambda self: contextlib.nullcontext())
+    return app
 
 
 @pytest.fixture
@@ -2413,14 +2447,17 @@ async def test_the_vocabulary_is_shared_across_problems_and_sorted(strategy_app)
         eng = RunEngine(conn)
         eng.start_session([slug])
         eng.start_problem(slug)
-        eng.finish("solved_unaided", strategies=strategies.payload(names, []))
+        eng.finish("solved_unaided", strategies=strategies.payload(names))
         eng.advance()
         eng.end_session()
 
     async with app.run_test() as pilot:
         screen = await _to_the_strategy_prompt(app, pilot)
-        offered = [s.name for s in screen.known]
-        assert offered == ["hash set", "sorting"]
+        # Named elsewhere, so they are offered under the second heading rather
+        # than the first -- the split is what says which of these this problem
+        # has actually seen, and this problem has seen neither.
+        assert [s.name for s in screen.elsewhere] == ["hash set", "sorting"]
+        assert screen.here == []
         # Offered, but not attached to this problem until you pick one.
         assert not screen.roles
         assert events  # the import is the point: nothing above needed the TUI
@@ -2502,7 +2539,7 @@ async def test_the_strategy_buttons_stay_on_screen_on_a_short_terminal(isolated_
     eng.start_problem("valid-anagram")
     eng.finish(
         "solved_unaided",
-        strategies=strategies.payload([f"approach number {i:02d}" for i in range(40)], []),
+        strategies=strategies.payload([f"approach number {i:02d}" for i in range(40)]),
     )
     eng.advance()
     eng.end_session()
@@ -2515,3 +2552,152 @@ async def test_the_strategy_buttons_stay_on_screen_on_a_short_terminal(isolated_
         for button in app.screen.query("Button"):
             assert button.region.bottom <= 24, f"{button.id} is below the fold"
             assert button.region.right <= box.region.right, f"{button.id} overflows"
+
+
+async def test_the_strategy_list_separates_this_problem_from_the_vocabulary(strategy_app):
+    """Two sections, and a name you type lands under the first one.
+
+    The headings are drawn rows, so they have to be unselectable: a cursor that
+    can sit on `on this problem` is a cursor that makes `space` do nothing,
+    which reads as a broken key rather than a wrong row.
+    """
+    from core import catalog, strategies
+
+    app = strategy_app
+    conn = app.conn
+    catalog.seed(conn, name="neetcode150")
+    eng = RunEngine(conn)
+    eng.start_session(["valid-anagram"])
+    eng.start_problem("valid-anagram")
+    eng.finish("solved_unaided", strategies=strategies.payload(["sorting"]))
+    eng.advance()
+    eng.end_session()
+
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "hash map")
+
+        prompts = _option_prompts(screen)
+        assert "on this problem" in prompts
+        assert "elsewhere in your vocabulary" in prompts
+        # Typed here, so it is this problem's — above the heading that separates
+        # it from everything you have only ever named somewhere else.
+        assert prompts.index("hash map") < prompts.index("elsewhere in your vocabulary")
+        assert prompts.index("sorting") > prompts.index("elsewhere in your vocabulary")
+
+        widget = screen.query_one("#strategy-list", OptionList)
+        assert widget.get_option_at_index(widget.highlighted).id == "hash-map"
+        headings = [
+            i
+            for i in range(widget.option_count)
+            if widget.get_option_at_index(i).id is None
+        ]
+        assert headings and all(widget.get_option_at_index(i).disabled for i in headings)
+
+
+async def test_an_equal_alternative_is_its_own_answer(strategy_app):
+    """`a` is a third role, not a second way of saying `worth learning`."""
+    from core import catalog
+
+    app = strategy_app
+    catalog.seed(app.conn, name="neetcode150")
+
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "hash map")
+        await _name_a_strategy(app, pilot, "sorting")
+        # `sorting` was typed last and the cursor is on it: mark it the equal.
+        await pilot.press("a")
+        assert screen.roles == {"hash-map": "used", "sorting": "also_works"}
+
+        # The mark is a `Text` and not console markup, or `[a]` would be parsed
+        # as a tag and the row would show no marker at all.
+        assert "[a] sorting" in _option_prompts(screen)
+        assert "also works" in _option_prompts(screen)
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    roles = {
+        r["key"]: r["role"]
+        for r in app.conn.execute("SELECT key, role FROM attempt_strategies")
+    }
+    assert roles == {"hash-map": "used", "sorting": "also_works"}
+
+
+async def test_each_approach_you_wrote_is_archived_as_its_own_file(library_app):
+    """Two approaches, two buffers, two files — and two rows in the library.
+
+    The thing this stops being possible is two routes through a problem sharing
+    one archived file, which is what naming both of them used to produce.
+    """
+    from pathlib import Path
+
+    app = library_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "hash map")
+        await _name_a_strategy(app, pilot, "sorting")
+        assert screen.roles == {"hash-map": "used", "sorting": "used"}
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, SummaryScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    rows = {r["key"]: r for r in app.conn.execute("SELECT * FROM solutions")}
+    assert set(rows) == {"hash-map", "sorting"}
+    for key, row in rows.items():
+        path = Path(row["code_path"])
+        assert path.exists()
+        assert path.name == f"{attempt['id']}-{key}.py"
+        assert f"# approach: {rows[key]['key'].replace('-', ' ')}" in path.read_text()
+    # The attempt still points at one of them, and it is the first one written.
+    assert attempt["code_path"] == rows["hash-map"]["code_path"]
+
+
+async def test_the_library_screen_writes_code_for_an_approach_you_never_wrote(library_app):
+    """`e` closes the gap the library exists to show you.
+
+    No attempt, no score, no schedule — the row simply stops being empty.
+    """
+    from pathlib import Path
+
+    app = library_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "hash map")
+        await _name_a_strategy(app, pilot, "sorting")
+        await pilot.press("a")  # sorting: an equal alternative, not written
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("enter")  # off the summary, back home
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ApproachesScreen)
+        rendered = "\n".join(
+            str(getattr(r, "plain", r))
+            for r in approach_library(screen.approaches)
+        )
+        assert "hash map" in rendered and "sorting" in rendered
+        assert "also works" in rendered
+
+        cards_before = app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"]
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM solutions WHERE key = 'sorting'").fetchone()
+    assert row["attempt_uuid"] is None
+    path = Path(row["code_path"])
+    assert path.exists() and path.name == "approach-sorting.py"
+    assert "not from an attempt" in path.read_text()
+    # Nothing about the schedule moved: this is a record, not a review.
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == cards_before
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 1

@@ -62,6 +62,11 @@ enabled = true
 # with :q! like every other capture step. Set to false to log the failed
 # submit and nothing else.
 on_failed_submit = true
+# open one editor buffer per approach you marked as used, so each route through
+# the problem is archived as its own file and lands in the problem's approach
+# library. Naming one approach is unchanged either way: one buffer, as always.
+# Set to false to always get exactly one buffer per solve.
+per_approach = true
 
 [strategy]
 # after every solve, name the approach you used and the better one you can see.
@@ -152,6 +157,10 @@ class CaptureConfig:
     language: str = "python"
     enabled: bool = True
     on_failed_submit: bool = True
+    #: One editor buffer per approach you said you wrote, rather than one for
+    #: the solve. Off, you get a single buffer whatever you named -- which is
+    #: the right trade on a night when you named three and want to be in bed.
+    per_approach: bool = True
 
     @property
     def ext(self) -> str:
@@ -420,6 +429,12 @@ def options() -> tuple[Option, ...]:
             "strategy.enabled",
             "name your approach",
             "after a solve, pick the strategy you used and the better one you can see",
+            (True, False),
+        ),
+        Option(
+            "capture.per_approach",
+            "a buffer per approach",
+            "archive each approach you wrote as its own file, in the problem's library",
             (True, False),
         ),
     )

@@ -583,7 +583,17 @@ class RunEngine:
         )
         self.attempt = None
 
-    def archive_code(self, path: str, language: str | None = None) -> None:
+    def archive_code(
+        self, path: str, language: str | None = None, approach: str | None = None
+    ) -> None:
+        """Attach one archived file to the current attempt.
+
+        Called once per approach you wrote, so an attempt can have several.
+        `approach` is the name as you typed it, not a key: the key is derived in
+        `events._record_solution`, on the same bargain as every other projection
+        -- a change to `strategies.normalise` is one replay from applying to
+        everything already logged.
+        """
         a = self._require_attempt()
         events.append(
             self.conn,
@@ -593,6 +603,7 @@ class RunEngine:
                 "slug": a.problem.slug,
                 "code_path": path,
                 "language": language,
+                "approach": approach,
             },
         )
 

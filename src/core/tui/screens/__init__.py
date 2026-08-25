@@ -1,3 +1,4 @@
+from .approaches import ApproachesScreen
 from .fetch import FetchScreen
 from .finish import ConfirmModal, EndRunModal, FinishModal
 from .history import HistoryScreen
@@ -12,6 +13,7 @@ from .strategy import StrategyModal
 from .summary import SummaryScreen
 
 __all__ = [
+    "ApproachesScreen",
     "ConfirmModal",
     "EndRunModal",
     "FetchScreen",

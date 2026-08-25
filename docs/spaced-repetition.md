@@ -85,7 +85,13 @@ one exception:
   O(n²) and that is where I stopped" is a solve that missed it. Only the second
   needs the problem back soon. The difference is a strategy flagged `worth
   learning` at the prompt after the verdict, and it is the whole reason that
-  prompt has two roles instead of one.
+  prompt has more than one role.
+- **The third role is invisible here, on purpose.** `also works` names an equal
+  alternative — "there is a monotonic stack solution and mine is a heap and both
+  are fine." `srs.rate` never reads it. It is not a diagnosis of a gap, so it
+  cannot buy back the `suboptimal` demote the way `worth learning` does; and it
+  is not an admission of one, so it cannot cost a grade either. It goes to the
+  approach library and nowhere near the scheduler.
 - **Easy asks you to price it.** A solution you cannot cost is one you
   pattern-matched, and pattern-matching is what a long interval will not
   survive. Both axes, because answering time and skipping space is answering

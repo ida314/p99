@@ -18,7 +18,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import audio, branding, cache, capture, scoring, stats
+from ... import audio, branding, cache, capture, scoring, stats, strategies
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
@@ -613,7 +613,7 @@ class SolveScreen(VimMotion, Screen[None]):
                 strategies=chosen,
             )
             self._stop_recording()
-            await self._capture_flow()
+            await self._capture_flow(chosen=chosen if isinstance(chosen, dict) else None)
         finally:
             self._busy = False
 
@@ -705,14 +705,39 @@ class SolveScreen(VimMotion, Screen[None]):
         finally:
             self._busy = False
 
-    async def _capture_flow(self, advance: bool = True) -> None:
-        """Both `$EDITOR` handoffs, then move to the next problem (spec §7)."""
+    def _approach_buffers(self, chosen: dict | None) -> list[strategies.Strategy | None]:
+        """Which solution buffers this solve opens, in order.
+
+        `[None]` is the original behaviour and still the common case: one
+        unnamed buffer, landing in the file `attempts.code_path` has always
+        pointed at. Naming two approaches opens two, because two routes written
+        into one file is exactly the thing the library exists to stop being.
+
+        Ordered as the strategy screen listed them (alphabetical), so the second
+        buffer is never a surprise about which one you are in — and the header
+        says so as well.
+        """
+        cfg = self.app.config  # type: ignore[attr-defined]
+        if not cfg.capture.per_approach or not chosen:
+            return [None]
+        used = strategies.clean(chosen.get(strategies.USED) or [])
+        return list(used) or [None]
+
+    async def _capture_flow(self, advance: bool = True, chosen: dict | None = None) -> None:
+        """Both `$EDITOR` handoffs, then move to the next problem (spec §7).
+
+        The solution step is one handoff per approach you said you wrote; the
+        reflection note is one for the solve, because a night has one reflection
+        in it however many ways you solved the problem.
+        """
         attempt = self.engine.attempt
         if attempt is None:
             return
         cfg = self.app.config  # type: ignore[attr-defined]
         row = self.engine.attempt_row() or {}
-        code = note = capture.CaptureResult(False)
+        note = capture.CaptureResult(False)
+        saved_code = 0
+        buffers = self._approach_buffers(chosen)
         blocked = ""
 
         if not cfg.capture.enabled:
@@ -722,11 +747,17 @@ class SolveScreen(VimMotion, Screen[None]):
         else:
             try:
                 with self.app.editor_context():
-                    code = capture.capture_solution(
-                        attempt.problem, row, attempt.id, cfg.capture.language
-                    )
-                    if code.saved and code.path:
-                        self.engine.archive_code(str(code.path), cfg.capture.language)
+                    for approach in buffers:
+                        code = capture.capture_solution(
+                            attempt.problem, row, attempt.id, cfg.capture.language, approach
+                        )
+                        if code.saved and code.path:
+                            saved_code += 1
+                            self.engine.archive_code(
+                                str(code.path),
+                                cfg.capture.language,
+                                approach.name if approach else None,
+                            )
 
                     note = capture.capture_note(attempt.problem, attempt.id)
                     if note.saved and note.path:
@@ -743,9 +774,14 @@ class SolveScreen(VimMotion, Screen[None]):
             # silently dropping them for weeks is the worst outcome here.
             self._toast(f"no code or note captured: {blocked}", "yellow")
         else:
+            if saved_code > 1:
+                archived = f"{saved_code} approaches archived"
+            elif saved_code:
+                archived = "code archived"
+            else:
+                archived = "code skipped"
             self._toast(
-                f"{'code archived' if code.saved else 'code skipped'} · "
-                f"{'note written' if note.saved else 'note skipped'}"
+                f"{archived} · {'note written' if note.saved else 'note skipped'}"
             )
 
         if advance:

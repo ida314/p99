@@ -144,13 +144,14 @@ in settings and replaying reschedules all of it.
    there isn't one — and nothing is scored: the run score stays a function of
    measured facts, and what a solution costs is a claim, not a measurement. See
    [Strategies](#strategies) for the one thing that buys the demotion back.
-4. **Name it** — which approach you took, and which better one you can see now.
-   The list is [yours](#strategies) and it starts empty. `esc` steps back to
-   the verdict prompt with everything you answered still in it, because nothing
-   is written until both prompts are done — the attempt is still live behind
-   them. Save with nothing picked and nothing is recorded.
-5. **Capture** — two `$EDITOR` handoffs: your solution, then a reflection note
-   pre-filled with three questions. Both skippable with `:q!`, and skipping
+4. **Name it** — which approach you took, which equally good one you did not,
+   and which better one you can see now. The list is [yours](#strategies) and it
+   starts empty. `esc` steps back to the verdict prompt with everything you
+   answered still in it, because nothing is written until both prompts are done
+   — the attempt is still live behind them. Save with nothing picked and nothing
+   is recorded.
+5. **Capture** — one `$EDITOR` handoff per approach you said you wrote, then a
+   reflection note pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
    rejected — a wrong answer is the only artifact of an attempt that stops
    existing the moment you fix it, and the diff against what finally passed is
@@ -214,8 +215,11 @@ real points.
 | `s` | log a failed submit, then paste the code behind it (solve) |
 | `f` | finish — verdict, confidence, time and space cost, optimality, then the approach, then capture |
 | `space` | the approach you used (strategy prompt) |
+| `a` | an approach that also works — an equal one you did not write (strategy prompt) |
 | `w` | an approach worth learning — the better one you did not write (strategy prompt) |
 | `i` | name a new approach; `enter` adds it (strategy prompt) |
+| `a` | the approach library — every route you know through a problem (home) |
+| `e` | write the code for an approach you have never written (approaches) |
 | `esc` | back one screen — to the verdict prompt from the approach prompt, to the problem from the verdict prompt |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
@@ -228,9 +232,13 @@ real points.
 After a solve, p99 asks how you did it. Not from a menu it supplies — the list
 starts **empty** and fills with whatever you type into it: `bottom-up
 tabulation`, `monotonic stack`, `quickselect`, whatever you actually call the
-thing. `space` marks what you wrote, `w` marks a better approach you can see and
-did not write, `i` names a new one, and saving with nothing picked records
-nothing — skipping stays free.
+thing. `space` marks what you wrote, `a` marks an equally good one you did not,
+`w` marks a *better* one you can see and did not write, `i` names a new one, and
+saving with nothing picked records nothing — skipping stays free.
+
+The list comes in two sections: the approaches this problem already has, then
+the rest of your vocabulary. After a few months the second one is long, and the
+handful that matter here are the ones this problem has seen.
 
 `esc` goes **back to the verdict prompt**, not out to the problem, and both
 prompts reopen holding exactly what you last put in them, down to a strategy
@@ -252,6 +260,13 @@ O(n²) and that is where I stopped"* is a solve that missed it. Only the second
 comes back soon. That is also why the question is "name it" rather than "did you
 see a better one?" — a yes is not schedulable and a name is.
 
+`a` is deliberately the one role that touches **nothing**. *"There is a monotonic
+stack solution and mine is a heap and they are both fine in front of an
+interviewer"* is a fact about the problem, not a confession about the solve, and
+reading it as one would hand a beaten solve credit it did not earn or take a
+grade off one that was never beaten. It goes to the [library](#the-approach-
+library) and nowhere near the scheduler.
+
 Nothing you name is ever shown back on the solve screen. Being told "you solved
 this with a monotonic stack" on a review is most of the answer, and it is the
 same spoiler your archived code is — which is why the past-attempts panel has
@@ -264,6 +279,34 @@ force only` — with the answers that produced it on the line underneath, so you
 can see what it concluded and check it. It is derived on read and never stored,
 like every score here; *not sure* derives nothing at all, because it is not a
 claim. Turn the whole prompt off in settings.
+
+## The approach library
+
+`a` from the home screen. One problem, every route you know through it — the
+approach, whether it was written, what it cost, and the attempt that produced
+it. A problem you have solved three ways has three files here, each labelled
+with the technique it is.
+
+The **empty rows are the point**. An approach you named and never wrote is still
+part of what you know about that problem, and the row saying so plainly is the
+thing you would open the screen to find. `e` closes the gap: it opens `$EDITOR`
+on the first unwritten approach, and what you save is archived against the
+problem and the approach with no attempt behind it — because there wasn't one.
+It scores nothing and schedules nothing for exactly that reason.
+
+Nothing here is due. The card stays the **problem's**, not the approach's, and
+naming a second route does not shorten an interval or add a second thing to
+review. This is a record you go to, not a queue that comes to you.
+
+Which is also why it is a screen you walk out of a run to reach. Being told
+"you solved this with a monotonic stack" mid-solve is most of the answer, and
+the solve screen withholds approach names for the same reason it withholds your
+archived code.
+
+Under `by strategy`, the stats screen shows the same library from the other
+side: how many problems name each approach, and how many of those you have
+actually written. The gap between the two is a technique you recognise rather
+than one you can produce, and an interview asks for the second thing.
 
 ## How it stores things
 
@@ -288,12 +331,21 @@ computed at read time. Editing the weights rescores all history instantly. The
 same rule covers the quality verdict on a solution: it is read off the optimality
 answer and the strategies at display time, and there is no column for it.
 
-`strategies`, `problem_strategies` and `attempt_strategies` are projections too.
+`strategies`, `problem_strategies`, `attempt_strategies` and `solutions` are
+projections too.
 They hold the one string in any projection that you typed rather than picked —
 the name of an approach — and even that is a fold over the `problem_finished`
 payloads that recorded it, so dropping the three and replaying loses nothing. The
 name is stored as you first spelled it and keyed on a normalised form, so
 "Top-Down DP" and "top down dp" are one entry with your spelling on it.
+
+`solutions` is one row per problem-and-approach that has code, and it is a
+pointer rather than an archive: every attempt keeps its own file on disk under
+its own id, and the row names the most recent of them. It fills itself for
+history nobody labelled — a solve that named exactly one approach wrote it in
+the one file it archived, and there is nothing ambiguous to be careful about. A
+solve that named two gets no claim copied onto either file, because one answer
+cannot describe two solutions.
 
 `fsrs_cards` and `queues` are projections too. A card is a fold over the ratings
 your finished attempts imply, so replaying the log rebuilds every one of them —

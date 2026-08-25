@@ -29,6 +29,7 @@ from . import (
     scoring,
     srs,
     stats,
+    strategies,
 )
 
 console = Console()
@@ -139,9 +140,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     sessions = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
     attempts = conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"]
     cards = conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"]
+    solutions = conn.execute("SELECT COUNT(*) AS n FROM solutions").fetchone()["n"]
     console.print(
         f"replayed [bold]{n}[/bold] events → {sessions} sessions, "
-        f"{attempts} attempts, {cards} cards"
+        f"{attempts} attempts, {cards} cards, {solutions} archived approaches"
     )
     return 0
 
@@ -161,6 +163,33 @@ def cmd_mastered(args: argparse.Namespace) -> int:
     console.print("  [bold]mastered problems[/bold]")
     console.print(render.mastered_table(rows, size, datetime.now(timezone.utc)))
     console.print()
+    return 0
+
+
+def cmd_approaches(args: argparse.Namespace) -> int:
+    """The approach library, through the same renderer as the TUI's `a`.
+
+    A problem's whole list, or every problem's when you name none. Read-only:
+    `e` writes code for an approach and that needs an editor handoff, which is
+    the TUI's job — this is the half you can pipe into something.
+    """
+    conn = db.open_db()
+    slugs = (
+        [args.slug]
+        if args.slug
+        else [r["slug"] for r in strategies.problems_with_approaches(conn)]
+    )
+    if not slugs:
+        console.print()
+        console.print("  no approaches named yet")
+        console.print()
+        return 0
+    console.print()
+    for slug in slugs:
+        console.print(f"  [bold]{slug}[/bold]")
+        for line in render.approach_library(strategies.library(conn, slug)):
+            console.print(line)
+        console.print()
     return 0
 
 
@@ -412,6 +441,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mastered = sub.add_parser("mastered", help="problems that have left the rotation")
     p_mastered.set_defaults(func=cmd_mastered)
+
+    p_approaches = sub.add_parser("approaches", help="every route you know through a problem")
+    p_approaches.add_argument("slug", nargs="?", help="one problem; omit for all of them")
+    p_approaches.set_defaults(func=cmd_approaches)
 
     p_replay = sub.add_parser("replay", help="rebuild projections from the event log")
     p_replay.set_defaults(func=cmd_replay)

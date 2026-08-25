@@ -131,6 +131,7 @@ def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
     for row in rows:
         answer = answers.get(row["uuid"], {})
         row["strategies_used"] = answer.get(strategies.USED, [])
+        row["strategies_also_works"] = answer.get(strategies.ALSO_WORKS, [])
         row["strategies_worth_learning"] = answer.get(strategies.WORTH_LEARNING, [])
         row["used_keys"] = frozenset(keys.get(row["uuid"], {}).get(strategies.USED, ()))
         row["saw_better"] = bool(row["strategies_worth_learning"])
@@ -622,6 +623,62 @@ def problem_history(
         )
         for row in rows
     ]
+
+
+@dataclass(frozen=True)
+class ApproachCoverage:
+    """One approach, across every problem you have named it on.
+
+    `written` is how many of those have code archived against them. The gap
+    between the two numbers is the interesting one: an approach you can name on
+    six problems and have written on one is a technique you recognise rather
+    than one you can produce, and recognising is not what an interview asks for.
+    """
+
+    key: str
+    name: str
+    problems: int
+    written: int
+
+    @property
+    def unwritten(self) -> int:
+        return self.problems - self.written
+
+
+def approach_coverage(conn: sqlite3.Connection) -> list[ApproachCoverage]:
+    """Every approach in the vocabulary, widest first.
+
+    Derived at read time from the two projections, like everything else here --
+    there is no counter anywhere that a replay could leave stale.
+    """
+    return [
+        ApproachCoverage(
+            key=r["key"], name=r["name"], problems=r["problems"], written=r["written"]
+        )
+        for r in conn.execute(
+            "SELECT s.key AS key, s.name AS name, COUNT(*) AS problems, "
+            "SUM(CASE WHEN sol.key IS NULL THEN 0 ELSE 1 END) AS written "
+            "FROM problem_strategies ps "
+            "JOIN strategies s ON s.key = ps.key "
+            "LEFT JOIN solutions sol ON sol.slug = ps.slug AND sol.key = ps.key "
+            "GROUP BY s.key ORDER BY problems DESC, s.name ASC"
+        ).fetchall()
+    ]
+
+
+def single_route_problems(conn: sqlite3.Connection) -> int:
+    """How many attempted problems you know exactly one approach to.
+
+    Not a criticism of any one of them -- most problems have one honest answer.
+    It is a count worth seeing next to the coverage table, because the problems
+    with a second route are the ones where naming it cost you nothing.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM ("
+        "  SELECT slug FROM problem_strategies GROUP BY slug HAVING COUNT(*) = 1"
+        ")"
+    ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 @dataclass(frozen=True)

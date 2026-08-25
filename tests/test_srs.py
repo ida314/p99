@@ -815,13 +815,36 @@ def test_naming_the_better_approach_saves_a_beaten_solve(conn):
         claimed_complexity="O(n^2)",
         claimed_space_complexity="O(1)",
     )
-    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], ["hash map"]))
+    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], worth_learning=["hash map"]))
     _solve(conn, "3sum", **beaten)
 
     cards = _cards(conn)
     diagnosed = srs.parse_ts(cards["two-sum"]["due"])
     missed = srs.parse_ts(cards["3sum"]["due"])
     assert diagnosed > missed
+
+
+def test_an_equal_alternative_changes_no_schedule(conn):
+    """`also_works` is the one strategy role the scheduler must not read.
+
+    Two identical beaten solves. One says "there is another route and it is
+    about as good"; the other says nothing. That is a fact about the problem's
+    library, not a diagnosis of the gap — so unlike `worth_learning` above, it
+    buys back nothing, and the two cards come back on the same day.
+    """
+    from core import strategies
+
+    beaten = dict(
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        claimed_space_complexity="O(1)",
+    )
+    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], also_works=["sorting"]))
+    _solve(conn, "3sum", **beaten)
+
+    cards = _cards(conn)
+    assert cards["two-sum"]["due"] == cards["3sum"]["due"]
+    assert cards["two-sum"]["stability"] == cards["3sum"]["stability"]
 
 
 def test_admitting_you_were_beaten_costs_a_grade(conn):

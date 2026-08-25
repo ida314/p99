@@ -4,14 +4,26 @@ Runs once per solve, after the verdict prompt and before the two `$EDITOR`
 handoffs. It is the answer to "can you identify a meaningfully better approach?"
 asked in the only form worth recording -- not a yes, but a name.
 
-Two roles, and the difference between them is what the scheduler reads:
+Three roles, and the differences between them are what the rest of the app
+reads:
 
   space  what you wrote
+  a      an equal alternative you did not write
   w      the better approach you can see now, and did not write
 
 A solve that was beaten on time and named the better approach found the pattern
 late. One that was beaten and named nothing missed it. Only the second needs the
 problem back soon, and `srs.rate` is what tells them apart.
+
+`a` is the one role nothing grades. "There is a monotonic stack solution and
+mine is a heap and they are both fine" is a fact about the problem, and the
+place it goes is the problem's approach library -- not the scheduler, which
+would read it as an admission that you were beaten.
+
+The list is in two sections: the approaches this problem already has, then the
+rest of your vocabulary. Same list as before, with the boundary drawn: after a
+few months the second section is long, and the handful of names that matter here
+are the ones this problem has already seen.
 
 `esc` steps back to the verdict prompt with everything you answered still in it,
 because `esc` means "back one screen" on every other modal in here and this one
@@ -20,8 +32,8 @@ is committed after this screen, not before -- so the step back is real rather
 than an undo. Skipping still costs nothing: save with nothing picked and nothing
 is recorded, which is the same outcome the old `esc` had.
 
-The list is alphabetical and starts empty: there is no supplied taxonomy of
-techniques here, because the vocabulary that helps is the one in the words you
+Each section is alphabetical and both start empty: there is no supplied taxonomy
+of techniques here, because the vocabulary that helps is the one in the words you
 already use.
 """
 
@@ -45,13 +57,20 @@ from ..vim import MOTIONS, VimMotion
 #: `render.mastered_prefix` pads instead of omitting.
 MARKS = {
     strategies.USED: ("[x]", "bold green"),
+    strategies.ALSO_WORKS: ("[a]", "cyan"),
     strategies.WORTH_LEARNING: ("[>]", "yellow"),
     None: ("[ ]", "bright_black"),
 }
 
+#: The two section headers, in order. Drawn as disabled rows so `j` and `k`
+#: step over them: a cursor that can land on a heading is a cursor that makes
+#: `space` do nothing, which reads as a broken key rather than a wrong row.
+HERE = "on this problem"
+ELSEWHERE = "elsewhere in your vocabulary"
+
 
 class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
-    """Pick the approaches you used, and the ones worth learning.
+    """Pick the approaches you used, the equal ones, and the ones worth learning.
 
     Dismisses with a `strategies.payload()` block, with `{SIGNAL_BACK: True}` to
     reopen the verdict prompt, or with None when nothing was picked -- because
@@ -62,9 +81,10 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
     BINDINGS = [
         *MOTIONS,
         Binding("space", "toggle_used", "used"),
-        # Free of the motion set, and the one letter this screen binds. `h`/`l`
+        # Free of the motion set, and the two letters this screen binds. `h`/`l`
         # are not bound at all here: there is nothing sideways on this screen,
         # and a motion that does nothing is better than one that guesses.
+        Binding("a", "toggle_also", "also works"),
         Binding("w", "toggle_worth", "worth learning"),
         Binding("i", "focus_filter", "add one", show=False),
         Binding("slash", "focus_filter", "add one", show=False),
@@ -88,10 +108,12 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         # A plain dict rather than a row: this screen runs before anything is
         # written, and the attempt it describes does not exist yet.
         self.attempt = dict(attempt or {})
-        #: Every strategy on offer, alphabetical. Seeded from the problem's own
-        #: list and the whole vocabulary, because a technique you named on
-        #: another problem is exactly the one worth being offered here.
-        self.known: list[strategies.Strategy] = []
+        #: The two sections, each alphabetical: the approaches this problem
+        #: already has, then the rest of the vocabulary. A technique you named
+        #: on another problem is exactly the one worth being offered here, and
+        #: it stays offered -- it just stops being the first thing you read.
+        self.here: list[strategies.Strategy] = []
+        self.elsewhere: list[strategies.Strategy] = []
         #: Held on the screen rather than in the widget, like `SetupScreen.chosen`
         #: -- an OptionList only knows the rows it is currently showing, so
         #: filtering would silently drop every pick that scrolled out of view.
@@ -117,7 +139,7 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             yield Input(placeholder="name another approach…  enter adds it", id="strategy-new")
             yield Static(id="strategy-quality", classes="panel")
             yield Static(
-                "  space used    w worth learning    i add one"
+                "  space used    a also works    w worth learning    i add one"
                 "    ctrl+s save    esc back to the verdict",
                 classes="hint-bar",
             )
@@ -127,34 +149,42 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
 
     def on_mount(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
-        self.known = self._merge(
-            strategies.for_problem(conn, self.slug), strategies.vocabulary(conn)
+        here = strategies.for_problem(conn, self.slug)
+        self.here = self._sorted(here)
+        self.elsewhere = self._sorted(
+            [s for s in strategies.vocabulary(conn) if s.key not in {e.key for e in here}]
         )
-        self.names = {s.key: s.name for s in self.known}
+        self.names = {s.key: s.name for s in (*self.here, *self.elsewhere)}
         # Anything picked before a step back, including a name that only exists
-        # because you typed it: it is in `_restore` and not yet in `known`, so
-        # it has to be put back on the list as well as back in the roles.
+        # because you typed it: it is in `_restore` and not yet on either list,
+        # so it has to be put back on one as well as back in the roles. It goes
+        # in the top section, which is where you put it: you typed it here, on
+        # this problem, moments ago.
         for key, (role, name) in self._restore.items():
             if key not in self.names:
-                self.known = self._merge(self.known, [strategies.Strategy(key=key, name=name)])
-                self.names[key] = name
+                self._add_here(strategies.Strategy(key=key, name=name))
             self.roles[key] = role
         self._populate()
         self._refresh_quality()
         self.query_one("#strategy-list", OptionList).focus()
 
     @staticmethod
-    def _merge(*groups: list[strategies.Strategy]) -> list[strategies.Strategy]:
-        """One alphabetical list, deduped by key, this problem's entries first.
+    def _sorted(group: list[strategies.Strategy]) -> list[strategies.Strategy]:
+        """One alphabetical section, deduped by key.
 
         First-wins on the dedupe rather than last, so a strategy already on this
         problem keeps the spelling it was recorded under here.
         """
         seen: dict[str, strategies.Strategy] = {}
-        for group in groups:
-            for entry in group:
-                seen.setdefault(entry.key, entry)
+        for entry in group:
+            seen.setdefault(entry.key, entry)
         return sorted(seen.values(), key=lambda s: s.name.lower())
+
+    def _add_here(self, entry: strategies.Strategy) -> None:
+        """Put a newly named approach in the top section and remember its name."""
+        self.here = self._sorted([*self.here, entry])
+        self.elsewhere = [s for s in self.elsewhere if s.key != entry.key]
+        self.names[entry.key] = entry.name
 
     # --- the list --------------------------------------------------------
 
@@ -177,13 +207,30 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             line.append(strategies.ROLE_LABELS[role], style="bright_black")
         return line
 
-    def _visible(self) -> list[str]:
-        """Keys to draw, filtered by whatever is in the box, alphabetical."""
+    def _header(self, title: str) -> Text:
+        """A section heading, indented to sit under the marks rather than beside."""
+        return Text(f"  {title}", style="bold bright_black")
+
+    def _visible(self) -> list[tuple[str | None, Text]]:
+        """The rows to draw: `(key, label)` pairs, with `(None, heading)` headers.
+
+        Filtered by whatever is in the box, and a section that filters down to
+        nothing loses its heading with it -- a heading over no rows is a claim
+        that there is something under it.
+        """
         needle = self.query_one("#strategy-new", Input).value.strip().lower()
-        keys = [s.key for s in self.known]
-        if not needle:
-            return keys
-        return [k for k in keys if needle in self.names.get(k, k).lower()]
+        rows: list[tuple[str | None, Text]] = []
+        for title, group in ((HERE, self.here), (ELSEWHERE, self.elsewhere)):
+            keys = [
+                s.key
+                for s in group
+                if not needle or needle in self.names.get(s.key, s.key).lower()
+            ]
+            if not keys:
+                continue
+            rows.append((None, self._header(title)))
+            rows.extend((k, self._label(k)) for k in keys)
+        return rows
 
     def _populate(self, focus_key: str | None = None) -> None:
         """Redraw the list. `focus_key` parks the cursor on one row.
@@ -194,15 +241,24 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         down. `focus_key` is the other half -- naming a new approach has to land
         the cursor *on* it, or the next `w` flags whatever happened to be
         alphabetically first instead.
+
+        Indices here are into the *option list*, which has headings in it. They
+        are not indices into the keys, and conflating the two is how the cursor
+        ends up one row above whatever you just typed.
         """
         widget = self.query_one("#strategy-list", OptionList)
         highlighted = widget.highlighted
         self._syncing = True
         try:
             widget.clear_options()
-            keys = self._visible()
-            if keys:
-                widget.add_options([Option(self._label(k), id=k) for k in keys])
+            rows = self._visible()
+            if rows:
+                widget.add_options(
+                    [
+                        Option(label, id=key, disabled=key is None)
+                        for key, label in rows
+                    ]
+                )
             else:
                 # Not an empty widget: the first time through, the only thing
                 # this screen can tell you is how to put something in it.
@@ -222,12 +278,24 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             self._syncing = False
         if not widget.option_count:
             return
+        keys = [key for key, _ in rows]
         if focus_key is not None and focus_key in keys:
             widget.highlighted = keys.index(focus_key)
         elif highlighted is not None:
             widget.highlighted = min(highlighted, widget.option_count - 1)
         else:
             widget.highlighted = 0
+        # Never leave the cursor on a heading. It can land on one from either
+        # branch above -- a clamp onto the last row of a list that just shrank,
+        # or row 0 of a list whose first row is a heading, which is every list
+        # this screen draws. Forwards first, then backwards, so the nudge is
+        # always onto the section the heading introduces.
+        at = widget.highlighted or 0
+        if keys and keys[at] is None:
+            after = [i for i, key in enumerate(keys) if key is not None and i > at]
+            before = [i for i, key in enumerate(keys) if key is not None and i < at]
+            if after or before:
+                widget.highlighted = after[0] if after else before[-1]
 
     def _current_key(self) -> str | None:
         widget = self.query_one("#strategy-list", OptionList)
@@ -252,6 +320,7 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         facts = {
             **self.attempt,
             "strategies_used": self._named(strategies.USED),
+            "strategies_also_works": self._named(strategies.ALSO_WORKS),
             "strategies_worth_learning": self._named(strategies.WORTH_LEARNING),
             "used_keys": frozenset(self._keys(strategies.USED)),
             "saw_better": bool(self._keys(strategies.WORTH_LEARNING)),
@@ -304,6 +373,9 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
     def action_toggle_used(self) -> None:
         self._toggle(strategies.USED)
 
+    def action_toggle_also(self) -> None:
+        self._toggle(strategies.ALSO_WORKS)
+
     def action_toggle_worth(self) -> None:
         self._toggle(strategies.WORTH_LEARNING)
 
@@ -331,8 +403,7 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             return
         new = entry[0]
         if new.key not in self.names:
-            self.known = self._merge(self.known, [new])
-            self.names[new.key] = new.name
+            self._add_here(new)
         self.roles[new.key] = strategies.USED
         self._syncing = True
         try:
@@ -358,7 +429,9 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
 
     def action_save(self) -> None:
         block = strategies.payload(
-            self._named(strategies.USED), self._named(strategies.WORTH_LEARNING)
+            self._named(strategies.USED),
+            also_works=self._named(strategies.ALSO_WORKS),
+            worth_learning=self._named(strategies.WORTH_LEARNING),
         )
         self.dismiss(None if strategies.is_empty(block) else block)
 

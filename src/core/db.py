@@ -30,9 +30,13 @@ from . import paths
 #    approaches you name yourself, and its per-problem and per-attempt links.
 #    The bump also forces the replay that regrades every card under the rating
 #    map's new optimality branch (see `srs.rate`).
+# 8: the approach library — `solutions`, one row per problem-and-approach that
+#    has code behind it. The bump forces the replay that fills it, including the
+#    attribution of every solution archived before the column existed (see
+#    `events._record_solution`).
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -194,6 +198,37 @@ CREATE TABLE IF NOT EXISTS attempt_strategies (
 );
 CREATE INDEX IF NOT EXISTS attempt_strategies_key_idx  ON attempt_strategies(key);
 CREATE INDEX IF NOT EXISTS attempt_strategies_slug_idx ON attempt_strategies(slug);
+
+-- The approach library: the code you wrote for one approach to one problem.
+--
+-- Only approaches that have code get a row. The library screen reads
+-- `problem_strategies LEFT JOIN solutions`, so an approach you named and never
+-- wrote still lists -- with an empty cell, which is the gap you would open the
+-- screen to close.
+--
+-- One row per (slug, key) and the newest write wins. That is not a rewrite of
+-- history: every attempt keeps its own file on disk under its own id, and this
+-- is a pointer at the latest of them. The attempt columns are null for a
+-- solution added from the library screen, where there was no attempt.
+--
+-- The optimality columns are inherited from the attempt that wrote the code,
+-- and only when that attempt wrote exactly one approach -- see
+-- `events._record_solution`. An attempt that wrote two has one answer and two
+-- solutions, and copying the answer onto both would attribute a claim to code
+-- it may not describe.
+CREATE TABLE IF NOT EXISTS solutions (
+  slug             TEXT NOT NULL REFERENCES problems(slug),
+  key              TEXT NOT NULL REFERENCES strategies(key),
+  code_path        TEXT,
+  language         TEXT,
+  attempt_uuid     TEXT,
+  attempt_id       INTEGER REFERENCES attempts(id),
+  time_optimality  TEXT,
+  space_optimality TEXT,
+  written_at       TEXT NOT NULL,
+  PRIMARY KEY (slug, key)
+);
+CREATE INDEX IF NOT EXISTS solutions_attempt_idx ON solutions(attempt_uuid);
 """
 
 # Phase 2 fills `fsrs_cards` and `queues`; the rest waits for Phase 3. All of
@@ -261,6 +296,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # slug list, so replaying the log reproduces the queue exactly rather than
 # regenerating it.
 PROJECTION_TABLES = (
+    "solutions",           # references attempts and strategies: children first
     "attempt_strategies",  # references attempts and strategies: children first
     "problem_strategies",
     "strategies",
@@ -292,6 +328,10 @@ SHAPE_CHANGED_IN = {
     # listing them keeps the version honest, and `DROP TABLE IF EXISTS` makes it
     # free. The bump itself is what forces the replay `srs.rate` needs.
     7: ("attempt_strategies", "problem_strategies", "strategies"),
+    # Another new table, and again the bump is doing the real work: the replay
+    # it forces is what backfills `solutions` from every `code_archived` event
+    # already in the log.
+    8: ("solutions",),
 }
 
 

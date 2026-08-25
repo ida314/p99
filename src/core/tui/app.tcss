@@ -387,6 +387,46 @@ EndRunModal {
     border-left: tall $accent;
 }
 
+/* --- the approach library ---------------------------------------------- */
+
+/* Same two-pane shape as history, and the same reasoning about widths: the
+   problem list is a fixed column, the approaches take the rest. Wider than
+   #run-list because a problem title plus its written/named ratio is longer
+   than a run's rank line. */
+#approach-body {
+    height: 1fr;
+}
+
+#approach-problems {
+    width: 38;
+    border: round $panel;
+    margin: 1 0 1 1;
+}
+
+#approach-problems:focus {
+    border: round $accent;
+}
+
+#approach-detail {
+    width: 1fr;
+    margin: 1 0 1 1;
+    border-left: tall $panel;
+    scrollbar-size-vertical: 1;
+}
+
+#approach-detail:focus {
+    border-left: tall $accent;
+}
+
+/* Every row render.approach_library emits carries its own leading spaces, so
+   this borrows no columns of its own -- the same rule #run-detail follows. */
+#approach-list {
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
 #stats-body {
     height: 1fr;
     margin: 1 0;
