@@ -35,23 +35,23 @@ from rich.text import Text
 #: column-major, so `j` still walks the order written here and `l` steps across.
 MENU = [
     ("n", "new_run", "new run"),
-    ("d", "queue", "queue"),
+    ("q", "queue", "queue"),
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
     # Beside stats because it is the same kind of thing — a record to look at,
     # not an action. `m` for mastered: `r` is already runs and `t` is stats.
     ("m", "mastered", "mastered"),
     # Beside mastered for the same reason mastered sits beside stats: it is a
-    # record to read, not an action. `a` because `s` is settings and this menu
-    # already binds `d` to the queue and `t` to stats -- the letter is the
-    # shortcut, not an abbreviation of the word.
+    # record to read, not an action. `a` because `s` is settings and `t` is
+    # already stats -- the letter is the shortcut, not an abbreviation of the
+    # word.
     ("a", "solutions", "solutions"),
     # The offline cache is not here. It is packing, not practice, and it lives
     # one row under the `offline` switch on the settings screen — the switch is
     # useless without it, and turning offline mode on without warming the cache
     # first is the one way to reach a plane with nothing to open.
     ("s", "settings", "settings"),
-    ("q", "quit", "quit"),
+    ("ctrl+c", "quit", "quit"),
 ]
 
 
@@ -66,15 +66,18 @@ class HomeScreen(VimMotion, Screen):
         # the key does not appear and vanish under your fingers; it bells when
         # there isn't.
         Binding("c", "resume_run", "resume run"),
-        # `d` for due. Not `q` (quit) and not a motion key; the queue is the one
-        # screen you are meant to reach without thinking about it.
-        Binding("d", "queue", "queue"),
+        # `q` for queue. It used to be `d` (due) because `q` meant quit, and
+        # that had it backwards: the queue is the screen you open every day
+        # without thinking about it, and quitting is the thing you do once. So
+        # the queue takes the letter of its own name and quit moves to `ctrl+c`,
+        # which is how you leave a terminal program anyway.
+        Binding("q", "queue", "queue"),
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
         Binding("m", "mastered", "mastered"),
         Binding("a", "solutions", "solutions"),
         Binding("s", "settings", "settings"),
-        Binding("q", "quit", "quit"),
+        Binding("ctrl+c", "quit", "quit"),
         # `l` used to be a second `enter`, which quietly broke the one rule
         # `vim.py` sets for these two keys: they may only ever mean left and
         # right, and whatever `l` does `h` has to undo. With two columns they

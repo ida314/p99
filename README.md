@@ -198,7 +198,7 @@ real points.
 |---|---|
 | `n` | new run (home) |
 | `c` | resume the suspended run, on the problem it was left on (home) |
-| `d` | today's queue — due reviews and new coverage (home) |
+| `q` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
 | `m` | mastered problems — what has left the rotation (home) |
@@ -226,7 +226,8 @@ real points.
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
 | `d` | delete the highlighted run (history) |
-| `q` | end the run / back — on a live problem it asks: record it as `gave_up` (`y`) or throw it away and go (`x`) |
+| `q` | end the run / back — on a live problem it asks: record it as `gave_up` (`y`) or throw it away and go (`x`); on home it opens the queue |
+| `ctrl+c` | quit (home) |
 
 ## Strategies
 

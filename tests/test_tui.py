@@ -67,6 +67,20 @@ async def test_home_screen_boots_and_seeds_the_catalog(app):
         await pilot.pause()
 
 
+async def test_ctrl_c_quits_and_q_no_longer_does(app):
+    """`q` is the queue now; the way out is the one every terminal program has."""
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert not app.is_running
+
+
 async def test_stats_and_history_open_on_an_empty_database(app):
     async with app.run_test() as pilot:
         await pilot.press("t")
@@ -758,9 +772,9 @@ async def test_the_difficulty_marker_is_not_eaten_as_markup(app):
 # --- the queue screen (spec §15 Phase 2, item 9) ---------------------------
 
 
-async def test_d_opens_the_queue_and_it_is_never_empty(app):
+async def test_q_opens_the_queue_and_it_is_never_empty(app):
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         assert isinstance(app.screen, QueueScreen)
         # Generated on open: a morning queue that asks you to press a key first
@@ -774,7 +788,7 @@ async def test_d_opens_the_queue_and_it_is_never_empty(app):
 
 async def test_the_queue_starts_a_run(app):
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         slugs = app.screen.queue.slugs
 
@@ -791,7 +805,7 @@ async def test_unchecking_a_row_shortens_the_run_but_not_the_queue(app):
     import json
 
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         screen = app.screen
         queued = screen.queue.slugs
@@ -817,7 +831,7 @@ async def test_unchecking_a_row_shortens_the_run_but_not_the_queue(app):
 
 async def test_an_empty_queue_selection_starts_nothing(app):
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         await pilot.press("ctrl+x")
         await pilot.pause()
@@ -837,7 +851,7 @@ async def test_an_empty_queue_selection_starts_nothing(app):
 
 async def test_regenerating_rechecks_everything(app):
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         await pilot.press("ctrl+x")
         await pilot.pause()
@@ -848,7 +862,7 @@ async def test_regenerating_rechecks_everything(app):
 
 async def test_regenerating_keeps_one_row_per_day(app):
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         await pilot.press("ctrl+r")
         await pilot.pause()
@@ -857,7 +871,12 @@ async def test_regenerating_keeps_one_row_per_day(app):
 
 
 async def test_the_queue_does_not_open_mid_run(app):
-    """Same guard `n` has: one run at a time."""
+    """Same guard `n` has: one run at a time.
+
+    Driven through the action rather than the key: `q` on the solve screen is
+    end run, so pressing it here would test that screen's binding, not this
+    guard.
+    """
     async with app.run_test() as pilot:
         await pilot.press("n")
         await pilot.pause()
@@ -865,7 +884,7 @@ async def test_the_queue_does_not_open_mid_run(app):
         await pilot.pause()
         assert isinstance(app.screen, SolveScreen)
 
-        await pilot.press("d")
+        app.action_queue()
         await pilot.pause()
         assert isinstance(app.screen, SolveScreen)
 
@@ -873,7 +892,7 @@ async def test_the_queue_does_not_open_mid_run(app):
 async def test_motions_do_not_start_a_run_from_the_queue(app):
     """`j`/`k`/`g`/`G` are motions on every screen, this one included."""
     async with app.run_test() as pilot:
-        await pilot.press("d")
+        await pilot.press("q")
         await pilot.pause()
         for key in ("j", "k", "g", "G", "ctrl+d", "ctrl+u"):
             await pilot.press(key)
