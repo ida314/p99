@@ -11,23 +11,24 @@ Shared across problems, not scoped to one. The same technique turning up on
 failing under is a weak spot in its own right, which a per-problem note could
 never say.
 
-Three roles per attempt, and the differences between them are the whole point:
+One role now: `used`, what you wrote this time. The prompt that asks it is a
+question about *you* -- which technique did you reach for -- and the answer is a
+word from a vocabulary that spans every problem you have ever solved.
 
-  used            what you wrote this time
-  also_works      an equal alternative you did not write
-  worth_learning  the better approach you can see now, and did not write
+Everything about the *problem* moved out. "There is also a monotonic stack
+solution, and it is the optimal one, and I have never written it" is not a fact
+about tonight's attempt at all; it is a standing fact about the problem, true
+before you sat down and true after. It lives in `problem_solutions` -- see the
+`solutions` prompt that follows this one -- where it can carry its own optimality
+and its own code, neither of which a per-attempt answer could ever hold.
 
-`worth_learning` is how "can you identify a meaningfully better approach?" gets
-asked without asking it. Naming the approach is what makes it schedulable, and it
-is also what separates a suboptimal solve you diagnosed yourself from one you
-didn't -- see `srs.rate`.
-
-`also_works` is deliberately *not* that. "There is a monotonic stack solution and
-mine is a heap and they are both fine" is a fact about the problem, not evidence
-that you were beaten -- so it is read by nothing that grades anything. Folding it
-into `worth_learning` would make the record claim an asymptotic gap that nobody
-reported, and would hand a suboptimal solve the demote-cancelling credit that
-role exists to grant.
+`worth_learning` is **legacy**: it was a second role here before the solutions
+page existed, and attempts recorded under it keep it forever. It still renders
+and it still grades -- `srs.rate` reads `saw_better`, which is now "you named a
+better approach" *or* "this problem has an optimal solution that is not the one
+you wrote", so an old answer and a new one reach the same place. Nothing new is
+ever written under it, exactly as `scoring.VERDICT_LABELS` keeps the retired
+verdicts renderable while `scoring.VERDICTS` gates what you can pick.
 
 Nothing here writes. Like `scoring` and `catalog`, this module is a pure function
 plus reads; the write path is `events.apply` folding a `problem_finished` payload.
@@ -38,25 +39,33 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
-#: What you wrote.
+#: What you wrote. The only role a new attempt can record.
 USED = "used"
-#: An approach of equal standing you did not write. Not a better one -- the
-#: other route through the same problem that would have been just as good in
-#: front of an interviewer, and that you want the problem to remember it has.
-ALSO_WORKS = "also_works"
-#: The better approach you can see now and did not write.
+#: Legacy: the better approach you could see and did not write, asked here
+#: before the solutions page existed. Still folded, still rendered, still read
+#: by `saw_better` -- never written by anything new.
 WORTH_LEARNING = "worth_learning"
-#: Strongest claim first. `payload` resolves a name in two roles by this order,
-#: and `is_empty` folds over it.
-ROLES = (USED, ALSO_WORKS, WORTH_LEARNING)
+#: Every role the log can contain, for folding and rendering.
+ROLES = (USED, WORTH_LEARNING)
+#: What the prompt can put you in. `ROLES` is what history can hold; this is
+#: what tonight can add to it -- the same split `scoring.VERDICTS` makes against
+#: `scoring.VERDICT_LABELS`.
+SELECTABLE_ROLES = (USED,)
 
 ROLE_LABELS = {
     USED: "solved by",
-    ALSO_WORKS: "also works",
     WORTH_LEARNING: "worth learning",
 }
+
+#: What a solution costs, relative to the best this problem admits. The same
+#: three words `attempts.time_optimality` uses, deliberately: one vocabulary for
+#: one question, whether it is asked about a solve or about a solution.
+OPTIMAL = "optimal"
+SUBOPTIMAL = "suboptimal"
+UNSURE = "unsure"
+OPTIMALITIES = (OPTIMAL, SUBOPTIMAL, UNSURE)
 
 # Long enough for "bottom-up tabulation over the coin axis", short enough that a
 # pasted paragraph cannot become a permanent row in the vocabulary.
@@ -103,6 +112,41 @@ def clean(names: Iterable[str]) -> list[Strategy]:
     return out
 
 
+@dataclass(frozen=True)
+class Solution:
+    """One way this problem can be solved.
+
+    Not a fact about an attempt. A problem admits the approaches it admits
+    whether or not you have ever taken them, and this row says so: `optimality`
+    is what that route costs, `code_path` is your write-up of it if you have one,
+    and both are empty on a way you have only ever heard of.
+
+    `attempt_id` is the solve that last wrote it, which is null for a route you
+    added to the list without sitting the problem. `written` is the question the
+    screen actually asks -- is there code here -- and it is deliberately not
+    "have you ever solved it this way": you can write an approach up months after
+    the solve, and the file is what makes it worth coming back to.
+    """
+
+    key: str
+    name: str
+    optimality: str | None = None
+    code_path: str | None = None
+    language: str | None = None
+    attempt_id: int | None = None
+    #: The complexity you typed at the finish prompt of the solve that wrote
+    #: this. Shown, never asked for twice -- the solutions page has no
+    #: complexity field of its own, because it would be asking again for
+    #: something the verdict prompt already has.
+    complexity: str | None = None
+    space_complexity: str | None = None
+    first_seen: str = ""
+
+    @property
+    def written(self) -> bool:
+        return bool(self.code_path)
+
+
 # --- reads -----------------------------------------------------------------
 #
 # All of these order by `name`, not by key and not by when you added it. The
@@ -123,113 +167,73 @@ def vocabulary(conn: sqlite3.Connection) -> list[Strategy]:
 
 
 def for_problem(conn: sqlite3.Connection, slug: str) -> list[Strategy]:
-    """The strategies recorded against one problem, in either role."""
+    """The strategies recorded against one problem, in any role or as a solution."""
     return _rows(
         conn,
         "SELECT s.key AS key, s.name AS name, ps.first_seen AS first_seen "
-        "FROM problem_strategies ps JOIN strategies s ON s.key = ps.key "
+        "FROM problem_solutions ps JOIN strategies s ON s.key = ps.key "
         "WHERE ps.slug = ? ORDER BY s.name",
         (slug,),
     )
 
 
-@dataclass(frozen=True)
-class Approach:
-    """One row of a problem's library: an approach, and the code for it if any.
-
-    `role` is the role this approach was named in most recently *on this
-    problem*, which is not a fact about the approach itself -- the same
-    monotonic stack can be what you wrote here and what you wish you had written
-    there. It is None for one added from the library screen, where there was no
-    attempt to name it in a role.
-
-    `code_path` may be None: an approach you named and never wrote is still part
-    of the problem's library, and the empty cell is the point of listing it.
-    """
-
-    key: str
-    name: str
-    role: str | None
-    first_seen: str
-    code_path: str | None = None
-    language: str | None = None
-    attempt_id: int | None = None
-    time_optimality: str | None = None
-    space_optimality: str | None = None
-    written_at: str | None = None
-
-    @property
-    def written(self) -> bool:
-        return bool(self.code_path)
-
-
-#: A problem's approaches, with the solution attached where one exists.
+#: One problem's ways, with the code and the cost claim on each.
 #:
-#: A LEFT JOIN rather than a read of `solutions` alone, because the library has
-#: to be able to show you the approach you named and never wrote -- that gap is
-#: the thing you would go to the screen to close.
-_LIBRARY_SQL = """
+#: The complexity columns come off the attempt that wrote the file, because that
+#: is where you typed them and asking twice for the same number is how a prompt
+#: earns being skipped. They are read-only here.
+_SOLUTIONS_SQL = """
 SELECT s.key AS key, s.name AS name, ps.first_seen AS first_seen,
-       (SELECT a.role FROM attempt_strategies a
-         WHERE a.slug = ps.slug AND a.key = ps.key
-         ORDER BY a.attempt_id DESC LIMIT 1) AS role,
-       sol.code_path AS code_path, sol.language AS language,
-       sol.attempt_id AS attempt_id,
-       sol.time_optimality AS time_optimality,
-       sol.space_optimality AS space_optimality,
-       sol.written_at AS written_at
-  FROM problem_strategies ps
+       ps.optimality AS optimality, ps.code_path AS code_path,
+       ps.language AS language, ps.attempt_id AS attempt_id,
+       a.claimed_complexity AS complexity,
+       a.claimed_space_complexity AS space_complexity
+  FROM problem_solutions ps
   JOIN strategies s ON s.key = ps.key
-  LEFT JOIN solutions sol ON sol.slug = ps.slug AND sol.key = ps.key
+  LEFT JOIN attempts a ON a.id = ps.attempt_id
  WHERE ps.slug = ?
  ORDER BY s.name
 """
 
 
-def library(conn: sqlite3.Connection, slug: str) -> list[Approach]:
-    """Every approach recorded against one problem, written or not."""
+def solutions(conn: sqlite3.Connection, slug: str) -> list[Solution]:
+    """Every way this problem can be solved that you have recorded."""
     return [
-        Approach(
+        Solution(
             key=r["key"],
             name=r["name"],
-            role=r["role"],
-            first_seen=r["first_seen"],
+            optimality=r["optimality"],
             code_path=r["code_path"],
             language=r["language"],
             attempt_id=r["attempt_id"],
-            time_optimality=r["time_optimality"],
-            space_optimality=r["space_optimality"],
-            written_at=r["written_at"],
+            complexity=r["complexity"],
+            space_complexity=r["space_complexity"],
+            first_seen=r["first_seen"],
         )
-        for r in conn.execute(_LIBRARY_SQL, (slug,)).fetchall()
+        for r in conn.execute(_SOLUTIONS_SQL, (slug,)).fetchall()
     ]
 
 
-def problems_with_approaches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Every problem that has named at least one approach, most recent first.
+def problems_with_solutions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every problem with at least one recorded way, most recently added first.
 
-    Ordered by when the problem last gained one rather than alphabetically: the
-    library is a thing you come back to right after a solve, and the problem you
-    just worked on should be the row the cursor is already sitting on.
+    Ordered by when the problem last gained one rather than alphabetically: this
+    is a list you come back to right after a solve, and the problem you just
+    worked on should be the row the cursor is already sitting on.
     """
     return conn.execute(
         "SELECT ps.slug AS slug, p.title AS title, p.difficulty AS difficulty, "
-        "COUNT(*) AS approaches, "
-        "SUM(CASE WHEN sol.key IS NULL THEN 0 ELSE 1 END) AS written, "
-        "MAX(ps.first_seen) AS last_named "
-        "FROM problem_strategies ps "
+        "COUNT(*) AS ways, "
+        "SUM(CASE WHEN ps.code_path IS NULL THEN 0 ELSE 1 END) AS written, "
+        "SUM(CASE WHEN ps.optimality = 'optimal' THEN 1 ELSE 0 END) AS optimal, "
+        "MAX(ps.updated_at) AS last_touched "
+        "FROM problem_solutions ps "
         "JOIN problems p ON p.slug = ps.slug "
-        "LEFT JOIN solutions sol ON sol.slug = ps.slug AND sol.key = ps.key "
-        "GROUP BY ps.slug ORDER BY last_named DESC, p.title ASC"
+        "GROUP BY ps.slug ORDER BY last_touched DESC, p.title ASC"
     ).fetchall()
 
 
-def payload(
-    used: Iterable[str],
-    *,
-    also_works: Iterable[str] = (),
-    worth_learning: Iterable[str] = (),
-) -> dict[str, list[str]]:
+def payload(used: Iterable[str]) -> dict[str, list[str]]:
     """The `strategies` block of a `problem_finished` payload.
 
     Names, not keys: the log records what you typed, and the key is derived on
@@ -237,24 +241,41 @@ def payload(
     away from being applied to everything you ever wrote, which is the same
     bargain every other derived thing in here makes.
 
-    A name in several roles keeps the first one `ROLES` lists. You cannot
-    simultaneously have written a thing and be wishing you had written it, and
-    letting both through would make `saw_better` true for a solve that spotted
-    nothing. The same collapse settles `also_works` against `worth_learning`:
-    an approach cannot be both an equal and an improvement, and the weaker claim
-    is the one to drop.
-
-    Keyword-only past `used`, so the two-argument calls this replaced fail loudly
-    instead of quietly filing every "better approach" as an equal one.
+    One role. `worth_learning` used to be the second parameter here and is now
+    something the log can contain but nothing can produce -- what it was reaching
+    for is a property of the problem, and `solutions_payload` is where that
+    goes.
     """
-    by_role = {USED: clean(used), ALSO_WORKS: clean(also_works), WORTH_LEARNING: clean(worth_learning)}
-    block: dict[str, list[str]] = {}
-    taken: set[str] = set()
-    for role in ROLES:
-        kept = [s for s in by_role[role] if s.key not in taken]
-        taken.update(s.key for s in kept)
-        block[role] = [s.name for s in kept]
-    return block
+    return {USED: [entry.name for entry in clean(used)]}
+
+
+def solutions_payload(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The `solutions` block of a `problem_finished` payload.
+
+    One entry per way this problem can be solved, as `{"name", "optimality"}`.
+    Deduped by key with the first spelling winning, the same rule `clean` applies
+    everywhere else, so a list holding both "Two Pointers" and "two pointers"
+    records one way rather than two rows that disagree about the same route.
+
+    An optimality outside `OPTIMALITIES` is dropped rather than stored: the
+    column feeds `saw_better`, and a value nothing recognises would sit in it
+    forever meaning neither yes nor no.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        named = clean([str(entry.get("name") or "")])
+        if not named or named[0].key in seen:
+            continue
+        seen.add(named[0].key)
+        optimality = entry.get("optimality")
+        out.append(
+            {
+                "name": named[0].name,
+                "optimality": optimality if optimality in OPTIMALITIES else None,
+            }
+        )
+    return out
 
 
 def is_empty(block: Mapping[str, list[str]] | None) -> bool:

@@ -80,18 +80,21 @@ one exception:
   that you were beaten is a report worth acting on. `unsure` is the default
   answer, is the honest state of most solves, and costs nothing — if it did,
   it would stop being honest.
-- **The exception is naming the better approach.** "I wrote the O(n²) and then
-  saw the sliding window" is a solve that found the pattern late; "I wrote the
-  O(n²) and that is where I stopped" is a solve that missed it. Only the second
-  needs the problem back soon. The difference is a strategy flagged `worth
-  learning` at the prompt after the verdict, and it is the whole reason that
-  prompt has more than one role.
-- **The third role is invisible here, on purpose.** `also works` names an equal
-  alternative — "there is a monotonic stack solution and mine is a heap and both
-  are fine." `srs.rate` never reads it. It is not a diagnosis of a gap, so it
-  cannot buy back the `suboptimal` demote the way `worth learning` does; and it
-  is not an admission of one, so it cannot cost a grade either. It goes to the
-  approach library and nowhere near the scheduler.
+- **The exception is knowing there was better.** "I wrote the O(n²) and there is
+  a sliding window" is a solve that found the pattern late; "I wrote the O(n²)
+  and that is all I know about this problem" is a solve that missed it. Only the
+  second needs the problem back soon.
+
+  What counts as knowing has moved once. It began as a `worth learning` role on
+  the prompt after the verdict; it is now the **solutions page** — the problem's
+  own list of ways — carrying an optimal one that is not the one you wrote.
+  `srs.grade_attempt` reads both, because an attempt recorded under the old role
+  cannot be asked to fill in a page that did not exist, and its answer is not
+  worth less for having been given in the old words.
+
+  The move is not cosmetic. A role on a finish prompt can only be answered in
+  the ninety seconds after a solve; a page can be edited two months later, when
+  you actually notice the better route, and every attempt after that reads it.
 - **Easy asks you to price it.** A solution you cannot cost is one you
   pattern-matched, and pattern-matching is what a long interval will not
   survive. Both axes, because answering time and skipping space is answering

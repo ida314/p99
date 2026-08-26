@@ -304,11 +304,11 @@ async def _open_strategy_prompt(app, pilot):
 
 
 async def test_motions_never_pick_a_strategy(strategy_app):
-    """`w` is the only letter this screen binds. Every motion has to stay one.
+    """`space` is the only key this screen binds. Every motion has to stay one.
 
     A reflex `j` that quietly marks the highlighted approach as the one you
-    wrote would put a claim in the log that you never made — and the claim moves
-    a review, so it is not a cosmetic mistake.
+    wrote would put a claim in the log that you never made — and the claim
+    reaches the problem's list of ways, so it is not a cosmetic mistake.
     """
     app = strategy_app
     async with app.run_test() as pilot:
@@ -318,13 +318,13 @@ async def test_motions_never_pick_a_strategy(strategy_app):
         screen.query_one("#strategy-new", Input).value = "binary search"
         await pilot.press("enter")
         await pilot.pause()
-        screen.roles.clear()
+        screen.chosen.clear()
         screen._populate()
 
         for key in ("j", "k", "g", "g", "G", "ctrl+d", "ctrl+u", "ctrl+f", "ctrl+b", "h", "l"):
             await pilot.press(key)
             await pilot.pause()
-        assert screen.roles == {}
+        assert screen.chosen == set()
 
 
 async def test_escape_leaves_the_strategy_box_before_it_leaves_the_screen(strategy_app):
@@ -352,8 +352,8 @@ async def test_escape_leaves_the_strategy_box_before_it_leaves_the_screen(strate
         assert isinstance(app.screen, FinishModal)
 
 
-async def test_w_types_into_the_box_instead_of_flagging(strategy_app):
-    """With focus in the text box, `w` is a letter. It is only a key outside it."""
+async def test_letters_type_into_the_box_instead_of_acting(strategy_app):
+    """With focus in the text box, every letter is a letter."""
     app = strategy_app
     async with app.run_test() as pilot:
         screen = await _open_strategy_prompt(app, pilot)
@@ -361,4 +361,4 @@ async def test_w_types_into_the_box_instead_of_flagging(strategy_app):
         await pilot.press("w")
         await pilot.pause()
         assert screen.query_one("#strategy-new", Input).value == "w"
-        assert screen.roles == {}
+        assert screen.chosen == set()

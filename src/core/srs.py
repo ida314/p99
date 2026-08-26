@@ -288,11 +288,16 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     # the report worth acting on; being unsure is the honest state of most
     # solves and is not evidence of anything.
     #
-    # Naming the better approach yourself is the exception, and it is the whole
-    # reason `worth_learning` exists as a separate role. "I wrote the O(n^2) and
-    # then saw the sliding window" is a solve that found the pattern late; "I
-    # wrote the O(n^2) and that is where I stopped" is a solve that missed it.
-    # Only the second one needs the problem back soon.
+    # Knowing there was better is the exception, and it is the whole reason
+    # `saw_better` exists. "I wrote the O(n^2) and then saw the sliding window"
+    # is a solve that found the pattern late; "I wrote the O(n^2) and that is
+    # where I stopped" is a solve that missed it. Only the second one needs the
+    # problem back soon.
+    #
+    # What counts as knowing has moved. It used to be a second role on the
+    # strategy prompt; it is now the problem's own list of ways carrying an
+    # optimal one you did not write -- a better record of the same fact, since
+    # it survives being noticed on a later solve. `grade_attempt` reads both.
     if attempt.get("time_optimality") == "suboptimal" and not attempt.get("saw_better"):
         worst = Rating.Hard
 
@@ -419,11 +424,11 @@ def grade_attempt(
     """Fold one finished attempt into its problem's card.
 
     Called from `events.apply` on `problem_finished` and `problem_abandoned`,
-    *after* the attempt row has been updated *and* its strategy rows written --
-    every input to the rating map is in place by then: the verdict, timing and
-    cost claims from the event being applied, the hint tier from earlier
-    `hint_revealed` events, and `saw_better` from the strategy block on the same
-    payload. `events.apply` owns that ordering.
+    *after* the attempt row has been updated *and* both the strategy and the
+    solutions blocks have been folded -- every input to the rating map is in
+    place by then: the verdict, timing and cost claims from the event being
+    applied, the hint tier from earlier `hint_revealed` events, and `saw_better`
+    from the two blocks on the same payload. `events.apply` owns that ordering.
 
     Returns the rating applied, or None if the attempt or its problem is
     missing. Reads no clock: `at` is the event's own timestamp.
@@ -431,11 +436,24 @@ def grade_attempt(
     row = conn.execute(
         "SELECT a.slug, a.verdict, a.active_seconds, a.max_hint_tier, a.self_confidence, "
         "       a.time_optimality, a.claimed_complexity, a.claimed_space_complexity, "
+        # `saw_better` asks one question through two doors, because it has been
+        # answered two ways over this app's life. The legacy door is the
+        # `worth_learning` role, retired from the prompt and kept in the log
+        # forever. The live door is the problem's own list: an optimal way is
+        # recorded here that is not the one you wrote. Both mean "you knew there
+        # was better", and an attempt graded before the solutions page existed
+        # has to keep grading the way it always did -- see `strategies`.
+        #
         # Aliased, like `p.difficulty AS problem_difficulty` elsewhere in here:
         # an unnamed EXISTS comes back under its own SQL text as the column
         # name, which `sqlite3.Row` cannot be asked for by any sane string.
-        "       EXISTS(SELECT 1 FROM attempt_strategies s "
-        "              WHERE s.attempt_uuid = a.uuid AND s.role = 'worth_learning') "
+        "       (EXISTS(SELECT 1 FROM attempt_strategies s "
+        "               WHERE s.attempt_uuid = a.uuid AND s.role = 'worth_learning') "
+        "        OR EXISTS(SELECT 1 FROM problem_solutions ps "
+        "                  WHERE ps.slug = a.slug AND ps.optimality = 'optimal' "
+        "                    AND ps.key NOT IN (SELECT u.key FROM attempt_strategies u "
+        "                                       WHERE u.attempt_uuid = a.uuid "
+        "                                         AND u.role = 'used'))) "
         "         AS saw_better, "
         "       p.difficulty "
         "FROM attempts a LEFT JOIN problems p ON p.slug = a.slug "

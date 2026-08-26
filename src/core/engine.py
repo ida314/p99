@@ -509,12 +509,13 @@ class RunEngine:
         time_optimality: str | None = None,
         space_optimality: str | None = None,
         strategies: dict[str, list[str]] | None = None,
+        solutions: list[dict] | None = None,
     ) -> Attempt:
         a = self._require_attempt()
         if verdict == "gave_up":
             # Nothing you claim about a solution survives not having reached
-            # one, so the complexities, the optimality answers and the strategy
-            # block are dropped rather than carried onto an abandonment.
+            # one, so the complexities, the optimality answers and both post-
+            # solve blocks are dropped rather than carried onto an abandonment.
             return self.abandon(timing=timing)
         a.final_timing = timing or a.timing()
         events.append(
@@ -533,12 +534,18 @@ class RunEngine:
                 "claimed_space_complexity": claimed_space_complexity,
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
-                # Names as you typed them, in two roles. Rides on this payload
+                # The approach you wrote, as you typed it. Rides on this payload
                 # rather than a later event so that `events.apply` can write the
                 # rows before it grades the card -- `srs.rate` reads them.
                 # Omitted entirely when you skipped the prompt, so an old event
                 # and a skipped one are the same shape.
                 **({"strategies": strategies} if strategies else {}),
+                # The problem's own list of ways, with what each one costs. Same
+                # payload for the same reason, and a sharper one: `saw_better`
+                # asks whether an optimal way is recorded here that is not the
+                # one you wrote, so these rows have to exist before the fold
+                # reaches `_grade`.
+                **({"solutions": solutions} if solutions else {}),
             },
         )
         a.finished = True

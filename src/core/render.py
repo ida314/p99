@@ -207,10 +207,16 @@ def quality_reason(attempt: Mapping[str, Any]) -> str:
     bits = [OPTIMALITY_LABELS.get(attempt.get("time_optimality") or "", "")]
     worth = list(attempt.get("strategies_worth_learning") or ())
     used = list(attempt.get("strategies_used") or ())
+    # Two ways of having known better, and the line says which one it read.
+    # `worth` is the retired role, still on old attempts and still counted in
+    # the words it was given in; `saw_better` without it is the problem's own
+    # list carrying an optimal way that is not the one you wrote.
     if worth:
         bits.append(f"{len(worth)} better approach{'es' if len(worth) != 1 else ''} named")
+    elif attempt.get("saw_better"):
+        bits.append("an optimal way is recorded that you did not write")
     elif attempt.get("time_optimality") == "suboptimal":
-        bits.append("none named")
+        bits.append("no optimal way recorded")
     if attempt.get("solution_quality") == scoring.QUALITY_ALTERNATIVE and used:
         bits.append("not the route you took last time")
     return "  ·  ".join(b for b in bits if b)
@@ -227,23 +233,21 @@ def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The stat line's strategy rows: what you used, what else works, what it came to.
+    """The stat line's strategy rows: what you used, and what it came to.
 
     Same build-the-rows-or-emit-nothing rule as `approach_rows`, and for the
     same reason -- a stat line should not grow three blank lines to say that you
     skipped a prompt which was optional in the first place.
 
     Labels are short because the stat line's label column is nine wide.
-    "approach", "also" and "better" are what fit; `strategies.ROLE_LABELS` holds
-    the long forms for the screen that has room for them.
-
-    "also" is the equal alternative you named and did not write. It is on the
-    line and in nothing else: `quality_reason` never counts it, because an equal
-    route is not evidence of a gap and a solve that named one was not beaten.
+    "approach" and "better" are what fit; `strategies.ROLE_LABELS` holds the
+    long forms for the screen that has room for them.
     """
     rows = [
         ("approach", ", ".join(attempt.get("strategies_used") or ())),
-        ("also", ", ".join(attempt.get("strategies_also_works") or ())),
+        # Legacy only. Nothing writes this role any more, and the row is here so
+        # that attempts recorded under it still read back the way they were
+        # given -- see `strategies`.
         ("better", ", ".join(attempt.get("strategies_worth_learning") or ())),
         ("quality", quality_label(attempt)),
     ]
@@ -272,63 +276,77 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     return [("approach", legacy)] if legacy else []
 
 
-# --- the approach library --------------------------------------------------
+# --- the ways a problem can be solved --------------------------------------
 
 
-#: The role a library row was last named in. The strategy screen's own words,
-#: deliberately: "solved by" is what you answered there, and a library that
-#: renamed your answer would be describing a different one.
-#:
-#: "written" was tried here and is wrong — it collides with the code column, so
-#: a row could read `written  …  —`, claiming a file that does not exist. What
-#: the role says is how you *named* it; whether it exists is the last column's
-#: job alone.
-LIBRARY_ROLE_LABELS = {
-    "used": "solved by",
-    "also_works": "also works",
-    "worth_learning": "worth learning",
+#: What a recorded way costs, in the words the rest of the app already uses.
+#: `None` is not "not sure": one is a question nobody has answered, the other is
+#: an answer. The dash says the first and `OPTIMALITY_LABELS` says the second.
+SOLUTION_OPTIMALITY_STYLE = {
+    "optimal": "green",
+    "suboptimal": "yellow",
+    "unsure": "bright_black",
 }
 
 
-def approach_library(approaches: Sequence[Any]) -> list[Text]:
-    """One line per approach to a problem: what it is, and whether it exists.
+def solution_row(
+    name: str,
+    optimality: str | None,
+    *,
+    wrote_it: bool = False,
+    complexity: str | None = None,
+    written: bool = False,
+    attempt_id: int | None = None,
+) -> Text:
+    """One way of solving one problem, as a row.
 
-    The empty cells carry the message. An approach with no cost claim and no
-    code is one you named and never wrote, and the row saying so plainly is the
-    reason to draw it at all -- a library of only the things you have already
-    done would have nothing to tell you.
+    Shared by the prompt after a solve and the browsable screen, so the list you
+    edit and the list you read back can never drift into two different shapes.
 
-    Nothing is invented to fill a column: an approach written by an attempt that
-    wrote two has no claim of its own, and a dash is what that looks like. See
-    the `solutions` DDL for why it does not inherit one.
+    Four columns and every one of them can be empty. A way you have only ever
+    heard of is a name and three dashes, and that row is the reason the screen
+    exists -- a list of just the things you have already done would have nothing
+    to tell you.
 
-    Kept under 80 columns in total, because this renders in `p99 approaches` as
-    well as in the TUI and a wrapped row loses the column that says whether the
-    code exists -- the one column the whole screen is for.
+    Under 78 columns, because this renders in `p99 solutions` too and a wrapped
+    row loses the last column, which is the one that says whether the code is
+    there.
     """
-    rows: list[Text] = []
-    for a in approaches:
-        line = Text("  ")
-        line.append(a.name[:25], style="bold" if a.written else "")
-        line.append(" " * max(1, 26 - len(a.name[:25])))
+    line = Text("  ")
+    # A pointer, not a checkbox: nothing here is toggled by pressing it, and the
+    # column exists only to say which of these you wrote tonight.
+    line.append("→ " if wrote_it else "  ", style="bold green" if wrote_it else "")
+    line.append(name[:24], style="bold" if written else "")
+    line.append(" " * max(1, 26 - len(name[:24])))
 
-        role = LIBRARY_ROLE_LABELS.get(a.role or "", "")
-        line.append(f"{role:<15}", style="bright_black")
+    line.append(f"{(complexity or '—')[:13]:<14}", style="bright_black")
 
-        claim = _cost(None, a.time_optimality) or "—"
-        if a.space_optimality:
-            claim = f"{claim}  ·  {OPTIMALITY_LABELS.get(a.space_optimality, '')}"
-        line.append(f"{claim:<22}", style="bright_black")
+    label = OPTIMALITY_LABELS.get(optimality or "", "—")
+    line.append(f"{label:<13}", style=SOLUTION_OPTIMALITY_STYLE.get(optimality or "", "bright_black"))
 
-        if a.written:
-            line.append("code", style="green")
-            if a.attempt_id:
-                line.append(f"  #{a.attempt_id}", style="bright_black")
-        else:
-            line.append("—", style="bright_black")
-        rows.append(line)
+    if written:
+        line.append("code", style="green")
+        if attempt_id:
+            line.append(f"  #{attempt_id}", style="bright_black")
+    else:
+        line.append("—", style="bright_black")
+    return line
+
+
+def solution_list(solutions: Sequence[Any]) -> list[Text]:
+    """A problem's whole list, for the screen that only reads it."""
+    rows = [
+        solution_row(
+            name=s.name,
+            optimality=s.optimality,
+            complexity=s.complexity,
+            written=s.written,
+            attempt_id=s.attempt_id,
+        )
+        for s in solutions
+    ]
     if not rows:
-        rows.append(Text("  nothing named on this problem yet", style="bright_black"))
+        rows.append(Text("  no ways recorded for this problem yet", style="bright_black"))
     return rows
 
 
@@ -364,7 +382,7 @@ def approach_coverage_table(coverage: Sequence[Any], single_route: int) -> Group
     rows.append(Text(""))
     rows.append(
         Text(
-            f"  {single_route} problems have exactly one approach named.",
+            f"  {single_route} problems have exactly one way recorded.",
             style="bright_black italic",
         )
     )

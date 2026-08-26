@@ -31,9 +31,13 @@ PROBLEM_ABANDONED = "problem_abandoned"
 PROBLEM_FINISHED = "problem_finished"
 CODE_ARCHIVED = "code_archived"
 SUBMISSION_ARCHIVED = "submission_archived"
-#: Code for one approach to a problem, written outside any attempt -- the
-#: library screen filling in a route you named and never sat down and wrote.
+#: Code for one way of solving a problem, written outside any attempt -- the
+#: solutions screen filling in a route you named and never sat down and wrote.
 SOLUTION_ARCHIVED = "solution_archived"
+#: What one way of solving a problem costs, changed from the solutions screen
+#: rather than at a finish prompt. An event and not an in-place update, because
+#: it feeds `saw_better` and everything that feeds a rating has to be replayable.
+SOLUTION_UPDATED = "solution_updated"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
@@ -64,6 +68,7 @@ EVENT_TYPES = frozenset(
         CODE_ARCHIVED,
         SUBMISSION_ARCHIVED,
         SOLUTION_ARCHIVED,
+        SOLUTION_UPDATED,
         NOTE_WRITTEN,
         AUDIO_RECORDED,
         SESSION_ENDED,
@@ -249,17 +254,24 @@ def _record_strategies(
     slug: str,
     block: Any,
 ) -> None:
-    """Fold a `problem_finished` payload's `strategies` block into three tables.
+    """Fold a `problem_finished` payload's `strategies` block.
 
     Names arrive as you typed them and the key is derived here rather than at the
     finish prompt, so a change to `strategies.normalise` is one replay away from
     applying to everything you ever wrote -- the same bargain the score and the
     rating already make.
 
-    `INSERT OR IGNORE` throughout, because this runs under `replay` as well as
-    live: the first spelling of a strategy is the one that sticks, and the date a
-    problem first saw it is the date of the attempt that named it, not of the
-    most recent one.
+    Iterates `strategies.ROLES`, not `SELECTABLE_ROLES`: a new answer only ever
+    carries `used`, but the log still holds `worth_learning` answers given before
+    the solutions page existed, and a fold that stopped reading them would erase
+    them on the next replay. History is not rewritten here; it is simply no
+    longer added to.
+
+    Every named strategy also becomes a row on the problem's list of ways --
+    including a legacy `worth_learning` one, which was always a way to solve the
+    problem and is now finally somewhere that can say so. No optimality: naming
+    an approach is not claiming a cost for it, and the solutions block right
+    after this is what does the claiming.
     """
     if not isinstance(block, dict):
         return
@@ -269,14 +281,72 @@ def _record_strategies(
                 "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
                 (entry.key, entry.name, event.ts),
             )
-            conn.execute(
-                "INSERT OR IGNORE INTO problem_strategies(slug, key, first_seen) VALUES(?,?,?)",
-                (slug, entry.key, event.ts),
-            )
+            _touch_solution(conn, event, slug, entry.key)
             conn.execute(
                 "INSERT OR IGNORE INTO attempt_strategies"
                 "(attempt_uuid, attempt_id, slug, key, role) VALUES(?,?,?,?,?)",
                 (attempt_uuid, _attempt_id(conn, attempt_uuid), slug, entry.key, role),
+            )
+
+
+def _touch_solution(conn: sqlite3.Connection, event: Event, slug: str, key: str) -> None:
+    """Make sure this problem's list has a row for this way. Claims nothing.
+
+    `INSERT OR IGNORE` on the way in and a bare `updated_at` bump after, so the
+    row keeps the date it was first recorded and the problem still sorts to the
+    top of the solutions screen when you touch it tonight.
+    """
+    if not slug or not key:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO problem_solutions(slug, key, first_seen, updated_at) "
+        "VALUES(?,?,?,?)",
+        (slug, key, event.ts, event.ts),
+    )
+    conn.execute(
+        "UPDATE problem_solutions SET updated_at = ? WHERE slug = ? AND key = ?",
+        (event.ts, slug, key),
+    )
+
+
+def _record_solutions(
+    conn: sqlite3.Connection,
+    event: Event,
+    slug: str,
+    entries: Any,
+) -> None:
+    """Fold the `solutions` block: the ways this problem can be solved.
+
+    Runs after `_record_strategies` and before `_grade`, and both halves of that
+    matter. After, because the strategy you used is already a row by then and
+    this only has to set its cost. Before, because `srs.rate` reads `saw_better`,
+    which is now partly a question about this table -- "is there an optimal way
+    here that is not the one I wrote".
+
+    An entry with no optimality still creates its row. "There is a monotonic
+    stack solution" is worth recording on its own, and being made to price it
+    before you may write it down is how a list stops getting written down.
+    """
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        named = strategies.clean([str(entry.get("name") or "")])
+        if not named:
+            continue
+        key, name = named[0].key, named[0].name
+        conn.execute(
+            "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
+            (key, name, event.ts),
+        )
+        _touch_solution(conn, event, slug, key)
+        optimality = entry.get("optimality")
+        if optimality in strategies.OPTIMALITIES:
+            conn.execute(
+                "UPDATE problem_solutions SET optimality = ?, updated_at = ? "
+                "WHERE slug = ? AND key = ?",
+                (optimality, event.ts, slug, key),
             )
 
 
@@ -295,7 +365,7 @@ def _sole_used_key(conn: sqlite3.Connection, attempt_uuid: str) -> str | None:
     return rows[0]["key"] if len(rows) == 1 else None
 
 
-def _record_solution(
+def _record_solution_code(
     conn: sqlite3.Connection,
     event: Event,
     slug: str,
@@ -305,17 +375,16 @@ def _record_solution(
     language: str | None,
     attempt_uuid: str | None = None,
 ) -> None:
-    """Put one written approach in the library.
+    """Attach an archived file to one way of solving one problem.
 
     Newest write wins, and that is not history being rewritten: every attempt
     keeps its own file on disk under its own id, and this row is a pointer at
     the most recent of them. What it replaces is a pointer, not a solution.
 
-    The cost claim is inherited from the attempt, and only when that attempt
-    wrote exactly one approach -- otherwise one answer would be copied onto two
-    solutions, and at most one of them could be the code it describes. An
-    approach added from the library has no attempt and so has no claim at all,
-    which reads the same way on screen: an empty cell, not a guess.
+    Touches no optimality. What a route costs is something you say on the
+    solutions page; writing the code for it says nothing about whether it is the
+    best one, and a fold that guessed here would be inventing the claim the
+    column exists to hold.
     """
     if not slug or not key or not code_path:
         return
@@ -323,36 +392,18 @@ def _record_solution(
         "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
         (key, name, event.ts),
     )
+    _touch_solution(conn, event, slug, key)
     conn.execute(
-        "INSERT OR IGNORE INTO problem_strategies(slug, key, first_seen) VALUES(?,?,?)",
-        (slug, key, event.ts),
-    )
-    claim: sqlite3.Row | None = None
-    if attempt_uuid and _sole_used_key(conn, attempt_uuid) == key:
-        claim = conn.execute(
-            "SELECT time_optimality, space_optimality FROM attempts WHERE uuid = ?",
-            (attempt_uuid,),
-        ).fetchone()
-    conn.execute(
-        "INSERT INTO solutions"
-        "(slug, key, code_path, language, attempt_uuid, attempt_id,"
-        " time_optimality, space_optimality, written_at) VALUES(?,?,?,?,?,?,?,?,?) "
-        "ON CONFLICT(slug, key) DO UPDATE SET "
-        "code_path = excluded.code_path, language = excluded.language, "
-        "attempt_uuid = excluded.attempt_uuid, attempt_id = excluded.attempt_id, "
-        "time_optimality = excluded.time_optimality, "
-        "space_optimality = excluded.space_optimality, "
-        "written_at = excluded.written_at",
+        "UPDATE problem_solutions SET code_path = ?, language = ?, "
+        "attempt_uuid = ?, attempt_id = ?, updated_at = ? WHERE slug = ? AND key = ?",
         (
-            slug,
-            key,
             code_path,
             language,
             attempt_uuid,
             _attempt_id(conn, attempt_uuid) if attempt_uuid else None,
-            claim["time_optimality"] if claim else None,
-            claim["space_optimality"] if claim else None,
             event.ts,
+            slug,
+            key,
         ),
     )
 
@@ -379,7 +430,25 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
         # would make the live projection disagree with the replayed one, which
         # is the one invariant this whole design rests on. The file on disk
         # stays, like every other piece of archived writing.
-        conn.execute("DELETE FROM solutions WHERE attempt_uuid = ?", (attempt_uuid,))
+        # The problem's list keeps its rows and loses this attempt's pointer.
+        #
+        # The row stays for the reason the comment above gives: a way to solve
+        # the problem did not stop being one because the attempt that named it
+        # should not have counted. The *pointer* goes because `code_archived`
+        # carries a top-level `attempt_uuid`, so `replay` skips it outright and
+        # never attaches the file -- nulling it here is the live path moving
+        # towards the replayed one rather than away.
+        #
+        # The two still do not land in exactly the same place: a replay skips the
+        # `problem_finished` too, so a way that *only* this attempt ever named is
+        # never created at all. That gap is inherited, deliberate, and the same
+        # one `strategies` has had since v7. The file on disk stays either way,
+        # like every other piece of archived writing.
+        conn.execute(
+            "UPDATE problem_solutions SET code_path = NULL, language = NULL, "
+            "attempt_uuid = NULL, attempt_id = NULL WHERE attempt_uuid = ?",
+            (attempt_uuid,),
+        )
         conn.execute("DELETE FROM attempts WHERE uuid = ?", (attempt_uuid,))
 
 
@@ -516,9 +585,15 @@ def apply(
         _record_strategies(
             conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
         )
-        # Every rating input is on the row by now: verdict and timing from this
-        # event, the hint tier from earlier `hint_revealed` events, the strategy
-        # answer from the block just above.
+        # Then the problem's own list, which is what `saw_better` now asks about:
+        # is there an optimal way here that is not the one you wrote. Both blocks
+        # ride this payload for the same reason -- a later event would need a
+        # regrade, and the top-level `attempt_uuid` means the existing tombstone
+        # skip already covers them.
+        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
+        # Every rating input is in place by now: verdict and timing from this
+        # event, the hint tier from earlier `hint_revealed` events, and both
+        # halves of `saw_better` from the two blocks just above.
         _grade(conn, p["attempt_uuid"], event, context)
 
     elif event.type == CODE_ARCHIVED:
@@ -547,7 +622,7 @@ def apply(
             )
             entry = strategies.Strategy(key=key, name=row["name"]) if row else None
         if entry is not None:
-            _record_solution(
+            _record_solution_code(
                 conn,
                 event,
                 p.get("slug", ""),
@@ -565,7 +640,7 @@ def apply(
         # row, because there was no attempt for it to be an answer about.
         named = strategies.clean([p.get("approach") or ""])
         if named:
-            _record_solution(
+            _record_solution_code(
                 conn,
                 event,
                 p.get("slug", ""),
@@ -574,6 +649,13 @@ def apply(
                 p.get("code_path"),
                 p.get("language"),
             )
+
+    elif event.type == SOLUTION_UPDATED:
+        # One row's cost claim, set from the solutions screen. It reuses the
+        # `solutions` block shape rather than inventing a second one, so the
+        # prompt after a solve and the screen you open a month later fold
+        # through exactly the same code.
+        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
 
     elif event.type == SUBMISSION_ARCHIVED:
         conn.execute(

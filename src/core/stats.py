@@ -128,13 +128,25 @@ def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
         else:
             seq.append((r["attempt_id"], frozenset({r["key"]})))
 
+    # Which problems have an optimal way recorded, and under which keys. One
+    # query for the whole result set: `saw_better` asks it of every row.
+    optimal: dict[str, set[str]] = {}
+    for r in conn.execute(
+        "SELECT slug, key FROM problem_solutions WHERE optimality = ?",
+        (strategies.OPTIMAL,),
+    ).fetchall():
+        optimal.setdefault(r["slug"], set()).add(r["key"])
+
     for row in rows:
         answer = answers.get(row["uuid"], {})
         row["strategies_used"] = answer.get(strategies.USED, [])
-        row["strategies_also_works"] = answer.get(strategies.ALSO_WORKS, [])
         row["strategies_worth_learning"] = answer.get(strategies.WORTH_LEARNING, [])
         row["used_keys"] = frozenset(keys.get(row["uuid"], {}).get(strategies.USED, ()))
-        row["saw_better"] = bool(row["strategies_worth_learning"])
+        # The same two doors `srs.grade_attempt` reads, so the screen and the
+        # scheduler can never disagree about whether you knew there was better.
+        row["saw_better"] = bool(row["strategies_worth_learning"]) or bool(
+            optimal.get(row["slug"], set()) - row["used_keys"]
+        )
         # None, not the empty set, when there is no earlier answer: a first solve
         # cannot be an alternative to anything.
         prior = None
@@ -648,7 +660,7 @@ class ApproachCoverage:
 def approach_coverage(conn: sqlite3.Connection) -> list[ApproachCoverage]:
     """Every approach in the vocabulary, widest first.
 
-    Derived at read time from the two projections, like everything else here --
+    Derived at read time from the projections, like everything else here --
     there is no counter anywhere that a replay could leave stale.
     """
     return [
@@ -657,25 +669,24 @@ def approach_coverage(conn: sqlite3.Connection) -> list[ApproachCoverage]:
         )
         for r in conn.execute(
             "SELECT s.key AS key, s.name AS name, COUNT(*) AS problems, "
-            "SUM(CASE WHEN sol.key IS NULL THEN 0 ELSE 1 END) AS written "
-            "FROM problem_strategies ps "
+            "SUM(CASE WHEN ps.code_path IS NULL THEN 0 ELSE 1 END) AS written "
+            "FROM problem_solutions ps "
             "JOIN strategies s ON s.key = ps.key "
-            "LEFT JOIN solutions sol ON sol.slug = ps.slug AND sol.key = ps.key "
             "GROUP BY s.key ORDER BY problems DESC, s.name ASC"
         ).fetchall()
     ]
 
 
 def single_route_problems(conn: sqlite3.Connection) -> int:
-    """How many attempted problems you know exactly one approach to.
+    """How many problems you know exactly one way to solve.
 
     Not a criticism of any one of them -- most problems have one honest answer.
     It is a count worth seeing next to the coverage table, because the problems
-    with a second route are the ones where naming it cost you nothing.
+    with a second route are the ones where recording it cost you nothing.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM ("
-        "  SELECT slug FROM problem_strategies GROUP BY slug HAVING COUNT(*) = 1"
+        "  SELECT slug FROM problem_solutions GROUP BY slug HAVING COUNT(*) = 1"
         ")"
     ).fetchone()
     return int(row["n"]) if row else 0

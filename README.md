@@ -143,20 +143,22 @@ in settings and replaying reschedules all of it.
    the pattern is what the schedule is for. Nothing is compared to a reference —
    there isn't one — and nothing is scored: the run score stays a function of
    measured facts, and what a solution costs is a claim, not a measurement. See
-   [Strategies](#strategies) for the one thing that buys the demotion back.
-4. **Name it** — which approach you took, which equally good one you did not,
-   and which better one you can see now. The list is [yours](#strategies) and it
-   starts empty. `esc` steps back to the verdict prompt with everything you
-   answered still in it, because nothing is written until both prompts are done
-   — the attempt is still live behind them. Save with nothing picked and nothing
-   is recorded.
-5. **Capture** — one `$EDITOR` handoff per approach you said you wrote, then a
+   [the solutions page](#the-solutions-page) for the one thing that buys the
+   demotion back.
+4. **Name it** — which approach you wrote, from a vocabulary that is
+   [yours](#strategies) and starts empty.
+5. **Price the problem** — the [ways this problem can be solved](#the-solutions-page),
+   optimal and not, with the one you just wrote already on the list. `esc` steps
+   back one screen at a time — solutions to approach to verdict — carrying every
+   answer, because nothing is written until all three are done and the attempt is
+   still live behind them. Save with nothing changed and nothing is recorded.
+6. **Capture** — one `$EDITOR` handoff per approach you said you wrote, then a
    reflection note pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
    rejected — a wrong answer is the only artifact of an attempt that stops
    existing the moment you fix it, and the diff against what finally passed is
    the lesson. Turn it off in settings if you would rather not be asked.
-6. **Summary** — the run's death screen, scored and ranked against every past run.
+7. **Summary** — the run's death screen, scored and ranked against every past run.
 
 A run does not have to end the day it starts. `z` **suspends** it: the problem
 on screen keeps its clock reading, its hint tier and its failed-submit count,
@@ -213,14 +215,13 @@ real points.
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, time and space cost, optimality, then the approach, then capture |
-| `space` | the approach you used (strategy prompt) |
-| `a` | an approach that also works — an equal one you did not write (strategy prompt) |
-| `w` | an approach worth learning — the better one you did not write (strategy prompt) |
-| `i` | name a new approach; `enter` adds it (strategy prompt) |
-| `a` | the approach library — every route you know through a problem (home) |
-| `e` | write the code for an approach you have never written (approaches) |
-| `esc` | back one screen — to the verdict prompt from the approach prompt, to the problem from the verdict prompt |
+| `f` | finish — verdict, confidence, cost, optimality, then the approach, then the problem's ways, then capture |
+| `space` | the approach you wrote (strategy prompt) |
+| `o` | what a way costs — optimal / not optimal / not sure / unclaimed (solutions prompt, solutions screen) |
+| `i` | name a new approach or a new way; `enter` adds it (both prompts) |
+| `a` | the solutions screen — every way you know to solve a problem (home) |
+| `e` | write the code for a way you have never written (solutions screen) |
+| `esc` | back one screen — every post-solve prompt steps back to the one before it, and the verdict prompt back to the problem |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
@@ -229,23 +230,11 @@ real points.
 
 ## Strategies
 
-After a solve, p99 asks how you did it. Not from a menu it supplies — the list
-starts **empty** and fills with whatever you type into it: `bottom-up
+After a solve, p99 asks which approach you wrote. Not from a menu it supplies —
+the list starts **empty** and fills with whatever you type into it: `bottom-up
 tabulation`, `monotonic stack`, `quickselect`, whatever you actually call the
-thing. `space` marks what you wrote, `a` marks an equally good one you did not,
-`w` marks a *better* one you can see and did not write, `i` names a new one, and
-saving with nothing picked records nothing — skipping stays free.
-
-The list comes in two sections: the approaches this problem already has, then
-the rest of your vocabulary. After a few months the second one is long, and the
-handful that matter here are the ones this problem has seen.
-
-`esc` goes **back to the verdict prompt**, not out to the problem, and both
-prompts reopen holding exactly what you last put in them, down to a strategy
-you typed here and nowhere else. That is a real step back rather than an undo:
-nothing about the attempt is written until you are through both screens, so
-until then the verdict is still a prompt and the problem is still running
-behind it.
+thing. `space` marks it, `i` names a new one, and saving with nothing picked
+records nothing — skipping stays free.
 
 The vocabulary is **shared across problems**, not filed under one. Type
 "bottom-up tabulation" on `coin-change` and it is on offer for `house-robber`,
@@ -254,18 +243,13 @@ own right, and the stats screen slices solve times by strategy the same way it
 slices them by pattern. A pattern is where a problem sits in someone else's
 list; a strategy is what you reached for.
 
-The `w` flag is the one that touches the schedule. *"I wrote the O(n²) and then
-saw the sliding window"* is a solve that found the pattern late; *"I wrote the
-O(n²) and that is where I stopped"* is a solve that missed it. Only the second
-comes back soon. That is also why the question is "name it" rather than "did you
-see a better one?" — a yes is not schedulable and a name is.
-
-`a` is deliberately the one role that touches **nothing**. *"There is a monotonic
-stack solution and mine is a heap and they are both fine in front of an
-interviewer"* is a fact about the problem, not a confession about the solve, and
-reading it as one would hand a beaten solve credit it did not earn or take a
-grade off one that was never beaten. It goes to the [library](#the-approach-
-library) and nowhere near the scheduler.
+It used to ask more than that. A second role named the better approach you could
+see and had not written. That was an answer about the *problem* wearing an
+attempt's clothes, and it now lives on [the solutions page](#the-solutions-page),
+where a way to solve the problem can carry its own cost and its own code — and
+where you can add it two months later, when you notice it, instead of only in
+the ninety seconds after a solve. Attempts recorded under the old role keep it
+and keep grading off it; nothing new is written there.
 
 Nothing you name is ever shown back on the solve screen. Being told "you solved
 this with a monotonic stack" on a review is most of the answer, and it is the
@@ -273,40 +257,61 @@ same spoiler your archived code is — which is why the past-attempts panel has
 never shown that either. Strategies appear on the run summary and in history,
 after the fact.
 
-The prompt reads back a one-word verdict on the solution as you answer —
-`optimal`, `optimal, a different route`, `beaten, but you saw better`, `brute
-force only` — with the answers that produced it on the line underneath, so you
-can see what it concluded and check it. It is derived on read and never stored,
-like every score here; *not sure* derives nothing at all, because it is not a
-claim. Turn the whole prompt off in settings.
+## The solutions page
 
-## The approach library
+The second prompt after a solve, and a screen of its own on `a` from home. Where
+the strategy prompt asks about you, this asks about the **problem**: the ways it
+can be solved, optimal and not, whether or not you have ever written them.
 
-`a` from the home screen. One problem, every route you know through it — the
-approach, whether it was written, what it cost, and the attempt that produced
-it. A problem you have solved three ways has three files here, each labelled
-with the technique it is.
+```
+longest-increasing-subsequence
+→ bottom-up tabulation      O(n²)         not optimal   code  #14
+  patience sorting          —             optimal       —
+  segment tree              —             optimal       —
+  brute force               —             —             —
+```
 
-The **empty rows are the point**. An approach you named and never wrote is still
-part of what you know about that problem, and the row saying so plainly is the
-thing you would open the screen to find. `e` closes the gap: it opens `$EDITOR`
-on the first unwritten approach, and what you save is archived against the
-problem and the approach with no attempt behind it — because there wasn't one.
-It scores nothing and schedules nothing for exactly that reason.
+A problem admits the approaches it admits. "There is an O(n log n) route through
+this and I wrote the O(n²)" was true before you sat down and is true after, and
+it stays true on every future attempt — so it belongs to the problem, not to one
+evening's answer. The list is cumulative: it opens holding everything you have
+recorded before, with tonight's approach already on it, already carrying the cost
+you claimed at the verdict prompt. A normal night is reading it and pressing
+`ctrl+s`.
 
-Nothing here is due. The card stays the **problem's**, not the approach's, and
-naming a second route does not shorten an interval or add a second thing to
-review. This is a record you go to, not a queue that comes to you.
+The **not-optimal rows are not clutter**, and neither are the empty ones. "The
+O(n²) DP is the one I can always produce and the O(n log n) patience-sort is the
+one I have to think about" is the shape of what you know about a problem, and a
+list that kept only the best answer would throw away the half you actually reach
+for under pressure. A row with no code is the gap you would open the screen to
+close.
 
-Which is also why it is a screen you walk out of a run to reach. Being told
-"you solved this with a monotonic stack" mid-solve is most of the answer, and
-the solve screen withholds approach names for the same reason it withholds your
-archived code.
+`o` cycles a row: optimal → not optimal → not sure → unclaimed. **Unclaimed is
+not "not sure"** — one is a question nobody has answered, the other is an
+answer — which is also why only a real claim carries over from the verdict
+prompt, whose default is "not sure".
 
-Under `by strategy`, the stats screen shows the same library from the other
-side: how many problems name each approach, and how many of those you have
-actually written. The gap between the two is a technique you recognise rather
-than one you can produce, and an interview asks for the second thing.
+This page is what **moves a review**. `srs.rate` asks whether an optimal way is
+recorded here that is not the one you wrote: *"I wrote the O(n²) and there is a
+sliding window"* is a solve that found the pattern late, *"I wrote the O(n²) and
+that is all I know about this problem"* is a solve that missed it, and only the
+second comes back soon. Marking a way optimal on the screen a month later feeds
+every attempt after that, which a question asked once at a finish prompt never
+could.
+
+`e` opens `$EDITOR` on a way with no code and archives what you write against the
+problem and the approach — no attempt behind it, because there wasn't one, and it
+scores nothing for exactly that reason. Code from a solve arrives the other way:
+one buffer per approach you said you wrote, each landing as its own file.
+
+Nothing here is due. The card stays the **problem's**: recording a second way
+does not shorten an interval or add a second thing to review. And it is a screen
+you walk out of a run to reach — the solve screen withholds approach names for
+the same reason it withholds your archived code.
+
+Under `by strategy`, the stats screen shows the same data from the other side:
+how many problems name each approach and how many of those you have written. The
+gap is a technique you recognise rather than one you can produce.
 
 ## How it stores things
 
@@ -331,21 +336,26 @@ computed at read time. Editing the weights rescores all history instantly. The
 same rule covers the quality verdict on a solution: it is read off the optimality
 answer and the strategies at display time, and there is no column for it.
 
-`strategies`, `problem_strategies`, `attempt_strategies` and `solutions` are
-projections too.
+`strategies`, `attempt_strategies` and `problem_solutions` are projections too.
 They hold the one string in any projection that you typed rather than picked —
 the name of an approach — and even that is a fold over the `problem_finished`
 payloads that recorded it, so dropping the three and replaying loses nothing. The
 name is stored as you first spelled it and keyed on a normalised form, so
 "Top-Down DP" and "top down dp" are one entry with your spelling on it.
 
-`solutions` is one row per problem-and-approach that has code, and it is a
-pointer rather than an archive: every attempt keeps its own file on disk under
-its own id, and the row names the most recent of them. It fills itself for
+`problem_solutions` is one row per way of solving one problem. Its code columns
+are a pointer rather than an archive: every attempt keeps its own file on disk
+under its own id, and the row names the most recent of them. It fills itself for
 history nobody labelled — a solve that named exactly one approach wrote it in
-the one file it archived, and there is nothing ambiguous to be careful about. A
-solve that named two gets no claim copied onto either file, because one answer
-cannot describe two solutions.
+the one file it archived, and there is nothing ambiguous to be careful about.
+
+The `optimality` column is nullable and null is not `unsure`: an unanswered
+question is not an answer, the same instinct that left `attempts.optimality`
+alone rather than reinterpreting it when the cost claim grew a second axis. It
+is set by the prompt after a solve and by `o` on the solutions screen, and the
+second one is an event (`solution_updated`) rather than an in-place update
+because it feeds a rating — and everything that feeds a rating has to survive a
+replay.
 
 `fsrs_cards` and `queues` are projections too. A card is a fold over the ratings
 your finished attempts imply, so replaying the log rebuilds every one of them —
@@ -503,10 +513,11 @@ own rules; the resolution is documented in the code at the point of the decision
    demotes, `unsure` is free), with `Easy` additionally requiring that you said
    what the solution costs on both axes.
 
-   The exception is the part worth restating: naming the better approach
-   yourself keeps the grade. The gap you diagnosed is not the gap you missed.
-   `docs/spaced-repetition.md` has the reasoning and the measured effect on
-   existing history.
+   The exception is the part worth restating: recording, on
+   [the solutions page](#the-solutions-page), that this problem has an optimal
+   route which is not the one you wrote keeps the grade. The gap you diagnosed
+   is not the gap you missed. `docs/spaced-repetition.md` has the reasoning and
+   the measured effect on existing history.
 
 4. **Tag mastery is computed, not stored.** §4 gives `tag_mastery` a table with
    an `ema_score` column. But that score is a function of the scoring weights,

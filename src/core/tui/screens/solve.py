@@ -32,6 +32,7 @@ from .finish import (
     EndRunModal,
     FinishModal,
 )
+from .solutions import SolutionsModal
 from .strategy import StrategyModal
 
 
@@ -560,86 +561,145 @@ class SolveScreen(VimMotion, Screen[None]):
             # it up. Stopping happens once the modal has committed to something.
             self._pause_recording(True)
 
-            # The post-solve prompts as a loop, not a chain. `esc` on the
-            # strategy screen steps back to the verdict rather than out to the
-            # problem, and stepping back has to be repeatable -- one back that
+            # Three post-solve prompts, walked as a cursor rather than a chain
+            # of awaits. `esc` on any of them steps back exactly one screen --
+            # solutions to strategy, strategy to verdict, verdict to the
+            # problem -- and stepping back has to be repeatable: one back that
             # works and a second that dumps you somewhere else is worse than
-            # none. Both screens are reopened carrying what they last held, so
-            # a round trip changes nothing. Safe because nothing is written
-            # until `engine.finish` below: everything above this point is a
-            # prompt, and the attempt is still live behind it.
+            # none. Every screen reopens carrying what it last held, so a round
+            # trip changes nothing.
+            #
+            # Safe because nothing is written until `engine.finish` below.
+            # Everything above that line is a prompt, and the attempt is still
+            # live behind it.
             answers: dict[str, Any] = {}
-            picked: dict[str, tuple[str, str]] = {}
-            while True:
-                result = await self.app.push_screen_wait(
-                    FinishModal(
-                        attempt.problem.title,
-                        timing["active_seconds"],
-                        attempt.submissions,
-                        attempt.max_hint_tier,
-                        answers=answers,
+            used: list[tuple[str, str]] = []
+            ways: list[dict[str, Any]] = []
+            chosen: dict | None = None
+            solutions_block: list[dict[str, Any]] | None = None
+
+            step = 0
+            while step < 3:
+                if step == 0:
+                    result = await self.app.push_screen_wait(
+                        FinishModal(
+                            attempt.problem.title,
+                            timing["active_seconds"],
+                            attempt.submissions,
+                            attempt.max_hint_tier,
+                            answers=answers,
+                        )
                     )
-                )
-                if result is None:
-                    self._pause_recording(False)
-                    self._toast("back to the problem")
-                    self._tick()
-                    return
-
-                if result.get(SIGNAL_DISCARD):
-                    await self._do_throw_away()
-                    return
-
-                answers = result
-                chosen = await self._ask_strategies(result, picked)
-                if isinstance(chosen, dict) and chosen.get(SIGNAL_BACK):
-                    picked = chosen.get("picked") or {}
-                    self._toast("back to the verdict")
+                    if result is None:
+                        self._pause_recording(False)
+                        self._toast("back to the problem")
+                        self._tick()
+                        return
+                    if result.get(SIGNAL_DISCARD):
+                        await self._do_throw_away()
+                        return
+                    answers = result
+                    step = 1
                     continue
-                break
+
+                if step == 1:
+                    chosen = await self._ask_strategies(answers, used)
+                    if isinstance(chosen, dict) and chosen.get(SIGNAL_BACK):
+                        used = chosen.get("picked") or []
+                        self._toast("back to the verdict")
+                        step = 0
+                        continue
+                    used = self._used_pairs(chosen)
+                    step = 2
+                    continue
+
+                solutions_block = await self._ask_solutions(answers, used, ways)
+                if isinstance(solutions_block, dict) and solutions_block.get(SIGNAL_BACK):
+                    ways = solutions_block.get("picked") or []
+                    solutions_block = None
+                    self._toast("back to the approach")
+                    step = 1
+                    continue
+                step = 3
 
             cfg = self.app.config  # type: ignore[attr-defined]
             self.engine.finish(
-                result["verdict"],
+                answers["verdict"],
                 timing=timing,
-                self_confidence=result.get("self_confidence"),
-                lc_runtime_pct=result.get("lc_runtime_pct"),
-                lc_memory_pct=result.get("lc_memory_pct"),
+                self_confidence=answers.get("self_confidence"),
+                lc_runtime_pct=answers.get("lc_runtime_pct"),
+                lc_memory_pct=answers.get("lc_memory_pct"),
                 language=cfg.capture.language,
-                claimed_complexity=result.get("claimed_complexity"),
-                claimed_space_complexity=result.get("claimed_space_complexity"),
-                time_optimality=result.get("time_optimality"),
-                space_optimality=result.get("space_optimality"),
-                strategies=chosen,
+                claimed_complexity=answers.get("claimed_complexity"),
+                claimed_space_complexity=answers.get("claimed_space_complexity"),
+                time_optimality=answers.get("time_optimality"),
+                space_optimality=answers.get("space_optimality"),
+                strategies=chosen if isinstance(chosen, dict) else None,
+                solutions=solutions_block if isinstance(solutions_block, list) else None,
             )
             self._stop_recording()
             await self._capture_flow(chosen=chosen if isinstance(chosen, dict) else None)
         finally:
             self._busy = False
 
-    async def _ask_strategies(self, result: dict, picked: dict) -> dict | None:
-        """Name the approach, between the verdict prompt and the editor steps.
+    @staticmethod
+    def _used_pairs(chosen: Any) -> list[tuple[str, str]]:
+        """The `(key, name)` of everything the strategy prompt marked used.
 
-        Before `engine.finish`, not after: the rating reads whether you named a
-        better approach, so the answer has to be on the payload that grades the
-        card. Asking afterwards would need a second event and a regrade.
+        The solutions screen needs both halves: the key to merge against rows the
+        database already holds, and the name because a strategy you typed one
+        screen ago exists nowhere else yet.
+        """
+        if not isinstance(chosen, dict):
+            return []
+        return [
+            (entry.key, entry.name)
+            for entry in strategies.clean(chosen.get(strategies.USED) or [])
+        ]
+
+    async def _ask_strategies(self, answers: dict, used: list) -> dict | None:
+        """Which approach did you write, from the shared vocabulary.
+
+        Before `engine.finish`, not after: the strategy rows have to exist by the
+        time the card is graded. Asking afterwards would need a second event and
+        a regrade.
 
         Only for a solve. There is no approach to record on an attempt that
         never reached one, which is the same reason `engine.finish` drops the
         complexity claims on the way to `abandon`.
 
         Returns a payload block, None for nothing picked, or the `back` signal
-        the caller loops on. `picked` is what the screen last held, so a step
-        back and forward is a round trip.
+        the caller steps on.
         """
         attempt = self.engine.attempt
         cfg = self.app.config  # type: ignore[attr-defined]
         if attempt is None or not cfg.strategy.enabled:
             return None
-        if result.get("verdict") not in scoring.CLEAN_VERDICTS:
+        if answers.get("verdict") not in scoring.CLEAN_VERDICTS:
             return None
         return await self.app.push_screen_wait(
-            StrategyModal(attempt.problem.title, attempt.problem.slug, result, picked)
+            StrategyModal(attempt.problem.title, attempt.problem.slug, used)
+        )
+
+    async def _ask_solutions(self, answers: dict, used: list, ways: list) -> Any:
+        """The ways this problem can be solved, after the approach you took.
+
+        Also before `engine.finish`, and for a sharper reason than the strategy
+        prompt: `srs.rate` reads whether an optimal way is recorded here that is
+        not the one you wrote, so these rows have to be in place before the card
+        is folded. That ordering is the whole reason both answers ride the
+        `problem_finished` payload instead of arriving as later events.
+        """
+        attempt = self.engine.attempt
+        cfg = self.app.config  # type: ignore[attr-defined]
+        if attempt is None or not cfg.strategy.enabled:
+            return None
+        if answers.get("verdict") not in scoring.CLEAN_VERDICTS:
+            return None
+        return await self.app.push_screen_wait(
+            SolutionsModal(
+                attempt.problem.title, attempt.problem.slug, answers, used, ways
+            )
         )
 
     async def _do_throw_away(self) -> None:

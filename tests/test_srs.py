@@ -801,12 +801,13 @@ def test_due_cards_come_back_weakest_first(conn):
 # --- the second axis, end to end --------------------------------------------
 
 
-def test_naming_the_better_approach_saves_a_beaten_solve(conn):
-    """The whole point of the `worth_learning` role, measured on the schedule.
+def test_an_optimal_way_you_did_not_write_saves_a_beaten_solve(conn):
+    """The whole point of the solutions page, measured on the schedule.
 
-    Two identical solves, both admitting they were beaten on time. One names the
-    approach it should have taken; the other names nothing. The first found the
-    pattern late, the second missed it — so only the second comes back soon.
+    Two identical solves, both admitting they were beaten on time. One records
+    that this problem has an optimal route which is not the one it wrote; the
+    other records nothing. The first found the pattern late, the second missed
+    it — so only the second comes back soon.
     """
     from core import strategies
 
@@ -815,22 +816,62 @@ def test_naming_the_better_approach_saves_a_beaten_solve(conn):
         claimed_complexity="O(n^2)",
         claimed_space_complexity="O(1)",
     )
-    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], worth_learning=["hash map"]))
+    _solve(
+        conn,
+        "two-sum",
+        **beaten,
+        strategies=strategies.payload(["brute force"]),
+        solutions=strategies.solutions_payload(
+            [{"name": "hash map", "optimality": "optimal"}]
+        ),
+    )
     _solve(conn, "3sum", **beaten)
 
     cards = _cards(conn)
-    diagnosed = srs.parse_ts(cards["two-sum"]["due"])
-    missed = srs.parse_ts(cards["3sum"]["due"])
-    assert diagnosed > missed
+    assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
 
 
-def test_an_equal_alternative_changes_no_schedule(conn):
-    """`also_works` is the one strategy role the scheduler must not read.
+def test_a_legacy_worth_learning_answer_still_saves_a_beaten_solve(conn):
+    """The retired role keeps grading the way it always did.
 
-    Two identical beaten solves. One says "there is another route and it is
-    about as good"; the other says nothing. That is a fact about the problem's
-    library, not a diagnosis of the gap — so unlike `worth_learning` above, it
-    buys back nothing, and the two cards come back on the same day.
+    An attempt recorded before the solutions page existed cannot be asked to
+    fill the page in retroactively, and its answer is not worth less for having
+    been given in the old words. `srs.grade_attempt` reads both doors.
+    """
+    beaten = dict(
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        claimed_space_complexity="O(1)",
+    )
+    # Written as an old client wrote it: nothing in the app produces a
+    # `worth_learning` role any more, but the log is full of them.
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    events.append(
+        conn,
+        events.PROBLEM_FINISHED,
+        {
+            "attempt_uuid": eng.attempt.uuid,
+            "slug": "two-sum",
+            "verdict": "solved_unaided",
+            "strategies": {"used": ["brute force"], "worth_learning": ["hash map"]},
+            **beaten,
+        },
+    )
+    _solve(conn, "3sum", **beaten)
+
+    cards = _cards(conn)
+    assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
+
+
+def test_the_list_grades_the_next_attempt_without_being_re_answered(conn):
+    """The standing fact keeps standing. This is what a page buys over a prompt.
+
+    You record once that this problem has an optimal route. Months later you sit
+    it again, write the slow one, and say nothing at the prompts — and the
+    scheduler still knows you knew. A role on a finish prompt could only ever
+    answer for the solve that filled it in.
     """
     from core import strategies
 
@@ -839,12 +880,47 @@ def test_an_equal_alternative_changes_no_schedule(conn):
         claimed_complexity="O(n^2)",
         claimed_space_complexity="O(1)",
     )
-    _solve(conn, "two-sum", **beaten, strategies=strategies.payload([], also_works=["sorting"]))
+    # Once, on some earlier evening.
+    events.append(
+        conn,
+        events.SOLUTION_UPDATED,
+        {"slug": "two-sum", "solutions": [{"name": "hash map", "optimality": "optimal"}]},
+    )
+    # Tonight: beaten, and neither prompt was touched.
+    _solve(conn, "two-sum", **beaten)
+    _solve(conn, "3sum", **beaten)
+
+    assert strategies  # the payload helper is not needed: nothing was answered
+    cards = _cards(conn)
+    assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
+
+
+def test_recording_your_own_route_as_optimal_is_not_seeing_better(conn):
+    """`saw_better` asks about a route that is *not* yours.
+
+    Without that exclusion, a solve that recorded its own approach would read as
+    having spotted something it missed, and the demote would never fire.
+    """
+    from core import strategies
+
+    beaten = dict(
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        claimed_space_complexity="O(1)",
+    )
+    _solve(
+        conn,
+        "two-sum",
+        **beaten,
+        strategies=strategies.payload(["brute force"]),
+        solutions=strategies.solutions_payload(
+            [{"name": "brute force", "optimality": "optimal"}]
+        ),
+    )
     _solve(conn, "3sum", **beaten)
 
     cards = _cards(conn)
     assert cards["two-sum"]["due"] == cards["3sum"]["due"]
-    assert cards["two-sum"]["stability"] == cards["3sum"]["stability"]
 
 
 def test_admitting_you_were_beaten_costs_a_grade(conn):

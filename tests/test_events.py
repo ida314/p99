@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from core import engine as engine_module, events, strategies
+from core import engine as engine_module, events, srs, stats, strategies
 from core.engine import RunEngine
 
 
@@ -27,7 +27,10 @@ def _run_a_session(conn, slugs=("two-sum", "3sum")):
             claimed_space_complexity="O(n)",
             time_optimality="optimal",
             space_optimality="suboptimal",
-            strategies=strategies.payload(["Two Pointers"], worth_learning=["prefix sums"]),
+            strategies=strategies.payload(["Two Pointers"]),
+            solutions=strategies.solutions_payload(
+                [{"name": "prefix sums", "optimality": "optimal"}]
+            ),
         )
         eng.archive_code(f"/tmp/{slug}.py", "python")
         eng.record_note(f"/tmp/{slug}.md")
@@ -55,9 +58,8 @@ def _snapshot(conn):
         rows("attempts"),
         rows("submissions"),
         keyed("strategies", "key"),
-        keyed("problem_strategies", "slug, key"),
         keyed("attempt_strategies", "attempt_uuid, key"),
-        keyed("solutions", "slug, key"),
+        keyed("problem_solutions", "slug, key"),
     )
 
 
@@ -692,24 +694,33 @@ def test_throwing_away_a_resumed_attempt_still_replays_identically(conn):
     assert engine_module.suspended_run(conn) is None
 
 
-# --- solving strategies ------------------------------------------------------
+# --- the approach you wrote --------------------------------------------------
 
 
-def test_a_named_strategy_lands_in_all_three_tables(conn):
-    """One payload block, three projections: vocabulary, problem link, answer."""
-    _run_a_session(conn, slugs=("two-sum",))
+def _solve(conn, slug="two-sum", verdict="solved_unaided", **finish):
+    """One finished solve, with the engine left holding the attempt."""
+    eng = RunEngine(conn)
+    eng.start_session([slug])
+    eng.start_problem(slug)
+    eng.finish(verdict, **finish)
+    return eng
+
+
+def test_the_approach_you_wrote_lands_in_every_table_it_belongs_in(conn):
+    """One name, three places: the vocabulary, the attempt, the problem's ways."""
+    _solve(conn, strategies=strategies.payload(["Two Pointers"]))
 
     vocab = {r["key"]: r["name"] for r in conn.execute("SELECT key, name FROM strategies")}
     # The key is normalised; the name is the spelling that was typed.
-    assert vocab == {"two-pointers": "Two Pointers", "prefix-sums": "prefix sums"}
-    assert {r["key"] for r in conn.execute("SELECT key FROM problem_strategies")} == {
-        "two-pointers",
-        "prefix-sums",
-    }
+    assert vocab == {"two-pointers": "Two Pointers"}
     answered = {
         r["key"]: r["role"] for r in conn.execute("SELECT key, role FROM attempt_strategies")
     }
-    assert answered == {"two-pointers": "used", "prefix-sums": "worth_learning"}
+    assert answered == {"two-pointers": "used"}
+    # And it is a way to solve the problem, because you just solved it that way.
+    # No optimality: naming an approach is not claiming a cost for it.
+    way = conn.execute("SELECT * FROM problem_solutions").fetchone()
+    assert (way["slug"], way["key"], way["optimality"]) == ("two-sum", "two-pointers", None)
 
 
 def test_the_vocabulary_keeps_the_first_spelling_you_used(conn):
@@ -728,19 +739,39 @@ def test_the_vocabulary_keeps_the_first_spelling_you_used(conn):
     assert rows[0]["name"] == "Top-Down DP"
 
 
-def test_a_strategy_cannot_be_both_written_and_wished_for(conn):
-    """A name in both roles is `used`. You cannot have written it and not have."""
+def test_a_legacy_worth_learning_answer_still_folds(conn):
+    """The role is retired from the prompt, not from the log.
+
+    An attempt recorded before the solutions page existed keeps its answer, keeps
+    rendering it, and keeps grading off it — `srs.grade_attempt` reads both doors.
+    Nothing writes this role any more; everything still reads it.
+    """
     eng = RunEngine(conn)
     eng.start_session(["two-sum"])
     eng.start_problem("two-sum")
-    eng.finish("accepted", strategies=strategies.payload(["heap"], worth_learning=["heap", "quickselect"]))
-    eng.advance()
-    eng.end_session()
-
+    uuid = eng.attempt.uuid
+    events.append(
+        conn,
+        events.PROBLEM_FINISHED,
+        {
+            "attempt_uuid": uuid,
+            "slug": "two-sum",
+            "verdict": "solved_unaided",
+            "time_optimality": "suboptimal",
+            "strategies": {"used": ["brute force"], "worth_learning": ["hash map"]},
+        },
+    )
     roles = {
         r["key"]: r["role"] for r in conn.execute("SELECT key, role FROM attempt_strategies")
     }
-    assert roles == {"heap": "used", "quickselect": "worth_learning"}
+    assert roles == {"brute-force": "used", "hash-map": "worth_learning"}
+    # Both are ways to solve the problem, and always were — this is the first
+    # table that could say so.
+    assert {r["key"] for r in conn.execute("SELECT key FROM problem_solutions")} == {
+        "brute-force",
+        "hash-map",
+    }
+    assert stats.load_attempts(conn)[0]["saw_better"] is True
 
 
 def test_discarding_an_attempt_forgets_its_strategy_answer(conn):
@@ -751,8 +782,6 @@ def test_discarding_an_attempt_forgets_its_strategy_answer(conn):
     uuid = eng.attempt.uuid
     eng.discard()
 
-    # Nothing was finished, so there is nothing to forget yet -- but a discard
-    # after a finish is the real case, and it is what `history` does on `d`.
     events.append(conn, events.ATTEMPT_DISCARDED, {"attempt_uuid": uuid, "slug": "two-sum"})
     assert (
         conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
@@ -762,7 +791,7 @@ def test_discarding_an_attempt_forgets_its_strategy_answer(conn):
 def test_a_discarded_run_takes_its_strategy_answers_down_with_it(conn):
     """A tombstoned session leaves no answer behind, before or after a replay."""
     _run_a_session(conn, slugs=("two-sum",))
-    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 2
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 1
 
     session_uuid = conn.execute("SELECT uuid FROM sessions").fetchone()["uuid"]
     events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
@@ -775,60 +804,138 @@ def test_a_discarded_run_takes_its_strategy_answers_down_with_it(conn):
     assert conn.execute("SELECT COUNT(*) AS n FROM strategies").fetchone()["n"] == 0
 
 
-# --- the approach library ---------------------------------------------------
+# --- the ways this problem can be solved -------------------------------------
 
 
-def _library_solve(conn, slug="two-sum", **finish):
-    """One finished solve, ready for code to be archived against it."""
-    eng = RunEngine(conn)
-    eng.start_session([slug])
-    eng.start_problem(slug)
-    eng.finish("solved_unaided", **finish)
-    return eng
+def test_the_solutions_block_records_optimal_and_not(conn):
+    """The whole point of the page: both kinds are kept, and both are the record."""
+    _solve(
+        conn,
+        time_optimality="suboptimal",
+        strategies=strategies.payload(["bottom-up tabulation"]),
+        solutions=strategies.solutions_payload(
+            [
+                {"name": "bottom-up tabulation", "optimality": "suboptimal"},
+                {"name": "patience sorting", "optimality": "optimal"},
+                {"name": "brute force", "optimality": None},
+            ]
+        ),
+    )
+    ways = {
+        r["key"]: r["optimality"]
+        for r in conn.execute("SELECT key, optimality FROM problem_solutions")
+    }
+    assert ways == {
+        "bottom-up-tabulation": "suboptimal",
+        "patience-sorting": "optimal",
+        # Recorded with no claim at all, which is not the same as `unsure`:
+        # one is a question nobody answered, the other is an answer.
+        "brute-force": None,
+    }
 
 
-def test_one_named_approach_claims_the_file_and_the_cost_answer(conn):
+def test_an_optimal_way_you_did_not_write_is_the_new_saw_better(conn):
+    """The replacement for the retired `worth_learning` role, on the schedule.
+
+    Two identical beaten solves. One records that an optimal route exists which
+    is not the one it wrote; the other records nothing. The first found the
+    pattern late, the second missed it — so only the second comes back soon.
+    """
+    beaten = dict(
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        claimed_space_complexity="O(1)",
+    )
+    _solve(
+        conn,
+        slug="two-sum",
+        **beaten,
+        strategies=strategies.payload(["brute force"]),
+        solutions=strategies.solutions_payload(
+            [{"name": "hash map", "optimality": "optimal"}]
+        ),
+    )
+    _solve(conn, slug="3sum", **beaten, strategies=strategies.payload(["brute force"]))
+
+    cards = {r["slug"]: r for r in conn.execute("SELECT * FROM fsrs_cards")}
+    assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
+    rows = {r["slug"]: r for r in stats.load_attempts(conn)}
+    assert rows["two-sum"]["saw_better"] is True
+    assert rows["3sum"]["saw_better"] is False
+
+
+def test_marking_the_way_you_wrote_optimal_is_not_seeing_better(conn):
+    """`saw_better` asks about a route that is *not* yours.
+
+    Without the exclusion, recording your own optimal solve would read as having
+    spotted something you missed, and the demote it cancels would never fire.
+    """
+    _solve(
+        conn,
+        time_optimality="suboptimal",
+        strategies=strategies.payload(["brute force"]),
+        solutions=strategies.solutions_payload(
+            [{"name": "brute force", "optimality": "optimal"}]
+        ),
+    )
+    assert stats.load_attempts(conn)[0]["saw_better"] is False
+
+
+def test_the_solutions_page_can_be_edited_long_after_the_solve(conn):
+    """`solution_updated` is why the page beats a role on the finish prompt.
+
+    An approach you notice two months later gets recorded when you notice it.
+    The event folds through exactly the same code the prompt does.
+    """
+    _solve(conn, strategies=strategies.payload(["brute force"]))
+    events.append(
+        conn,
+        events.SOLUTION_UPDATED,
+        {
+            "slug": "two-sum",
+            "solutions": [{"name": "hash map", "optimality": "optimal"}],
+        },
+    )
+    ways = {
+        r["key"]: r["optimality"]
+        for r in conn.execute("SELECT key, optimality FROM problem_solutions")
+    }
+    assert ways == {"brute-force": None, "hash-map": "optimal"}
+    # Not retroactive on the card: that attempt was graded when it happened, and
+    # a replay grades it in the same order and reaches the same place.
+    before = [dict(r) for r in conn.execute("SELECT * FROM fsrs_cards")]
+    events.replay(conn)
+    assert [dict(r) for r in conn.execute("SELECT * FROM fsrs_cards")] == before
+
+
+def test_one_named_approach_claims_the_file(conn):
     """A solve that wrote one approach wrote it in the one file it archived.
 
-    Nothing on the payload says so -- this is the inference that gives the
-    library its back catalogue without touching a logged event.
+    Nothing on the payload says so — this is the inference that gives the page
+    its back catalogue without touching a logged event.
     """
-    eng = _library_solve(
-        conn,
-        time_optimality="optimal",
-        space_optimality="suboptimal",
-        strategies=strategies.payload(["hash map"]),
-    )
+    eng = _solve(conn, strategies=strategies.payload(["hash map"]))
     eng.archive_code("/tmp/two-sum.py", "python")
 
-    row = conn.execute("SELECT * FROM solutions").fetchone()
+    row = conn.execute("SELECT * FROM problem_solutions").fetchone()
     assert (row["slug"], row["key"]) == ("two-sum", "hash-map")
     assert row["code_path"] == "/tmp/two-sum.py"
-    assert (row["time_optimality"], row["space_optimality"]) == ("optimal", "suboptimal")
 
 
-def test_two_approaches_are_two_files_and_neither_borrows_the_claim(conn):
-    """One answer cannot describe two solutions, so it describes neither."""
-    eng = _library_solve(
-        conn,
-        time_optimality="optimal",
-        strategies=strategies.payload(["hash map", "sorting"]),
-    )
+def test_two_approaches_are_two_files_on_two_rows(conn):
+    eng = _solve(conn, strategies=strategies.payload(["hash map", "sorting"]))
     eng.archive_code("/tmp/1-hash-map.py", "python", "hash map")
     eng.archive_code("/tmp/1-sorting.py", "python", "sorting")
 
-    rows = {r["key"]: r for r in conn.execute("SELECT * FROM solutions")}
+    rows = {r["key"]: r for r in conn.execute("SELECT * FROM problem_solutions")}
     assert set(rows) == {"hash-map", "sorting"}
     assert rows["sorting"]["code_path"] == "/tmp/1-sorting.py"
-    assert all(r["time_optimality"] is None for r in rows.values())
-    # The attempt keeps the answer it gave; only the per-approach copy is
-    # withheld, because only that one would be a claim about a specific file.
-    assert conn.execute("SELECT time_optimality FROM attempts").fetchone()[0] == "optimal"
+    assert rows["hash-map"]["code_path"] == "/tmp/1-hash-map.py"
 
 
 def test_the_attempts_headline_file_is_the_first_one_archived(conn):
-    """Several buffers, one `attempts.code_path` -- and a replay picks the same."""
-    eng = _library_solve(conn, strategies=strategies.payload(["hash map", "sorting"]))
+    """Several buffers, one `attempts.code_path` — and a replay picks the same."""
+    eng = _solve(conn, strategies=strategies.payload(["hash map", "sorting"]))
     eng.archive_code("/tmp/1-hash-map.py", "python", "hash map")
     eng.archive_code("/tmp/1-sorting.py", "python", "sorting")
 
@@ -837,30 +944,19 @@ def test_the_attempts_headline_file_is_the_first_one_archived(conn):
     assert conn.execute("SELECT code_path FROM attempts").fetchone()[0] == "/tmp/1-hash-map.py"
 
 
-def test_an_equal_alternative_is_recorded_and_grades_nothing(conn):
-    """`also_works` is a fact about the problem, not an admission about the solve."""
-    _library_solve(
+def test_archiving_code_claims_nothing_about_the_cost(conn):
+    """Writing a route up says nothing about whether it is the best one."""
+    eng = _solve(
         conn,
-        time_optimality="suboptimal",
-        strategies=strategies.payload(["brute force"], also_works=["two pointers"]),
+        time_optimality="optimal",
+        strategies=strategies.payload(["hash map"]),
     )
-    roles = {
-        r["key"]: r["role"] for r in conn.execute("SELECT key, role FROM attempt_strategies")
-    }
-    assert roles == {"brute-force": "used", "two-pointers": "also_works"}
-
-    # Beaten on time with nothing *better* named: the demote fires, exactly as
-    # it would have if the equal alternative had never been mentioned.
-    assert conn.execute("SELECT state FROM fsrs_cards").fetchone()[0] is not None
-    from core import stats
-
-    attempt = stats.load_attempts(conn)[0]
-    assert attempt["saw_better"] is False
-    assert attempt["strategies_also_works"] == ["two pointers"]
-    assert attempt["solution_quality"] == "bruteforce_only"
+    eng.archive_code("/tmp/two-sum.py", "python")
+    row = conn.execute("SELECT * FROM problem_solutions").fetchone()
+    assert row["code_path"] and row["optimality"] is None
 
 
-def test_code_written_from_the_library_belongs_to_no_attempt(conn):
+def test_code_written_from_the_solutions_screen_belongs_to_no_attempt(conn):
     """`solution_archived` fills a gap without inventing a solve that closed it."""
     events.append(
         conn,
@@ -872,51 +968,55 @@ def test_code_written_from_the_library_belongs_to_no_attempt(conn):
             "language": "python",
         },
     )
-    row = conn.execute("SELECT * FROM solutions").fetchone()
+    row = conn.execute("SELECT * FROM problem_solutions").fetchone()
     assert row["key"] == "monotonic-stack"
     assert row["attempt_uuid"] is None and row["attempt_id"] is None
     # It joins the vocabulary and the problem's list, but answers nothing:
     # there was no attempt for it to be an answer about.
     assert conn.execute("SELECT name FROM strategies").fetchone()[0] == "Monotonic Stack"
-    assert conn.execute("SELECT COUNT(*) AS n FROM problem_strategies").fetchone()["n"] == 1
     assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
     assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
 
 
-def test_a_discarded_attempt_takes_its_library_row_with_it(conn):
-    """It has to: a replay skips the event and never creates the row at all."""
-    eng = _library_solve(conn, strategies=strategies.payload(["hash map"]))
+def test_a_discarded_attempt_loses_its_file_but_not_the_way(conn):
+    """The way survives the discard; the pointer at the dead attempt's file does not.
+
+    The row stays because an approach that worked once did not stop existing.
+    The pointer goes because `code_archived` carries a top-level `attempt_uuid`,
+    so a replay skips it and never attaches the file at all.
+    """
+    eng = _solve(conn, strategies=strategies.payload(["hash map"]))
     uuid = eng.attempt.uuid
     eng.archive_code("/tmp/two-sum.py", "python")
-    events.append(
-        conn,
-        events.SOLUTION_ARCHIVED,
-        {"slug": "two-sum", "approach": "sorting", "code_path": "/tmp/s.py"},
-    )
-    assert conn.execute("SELECT COUNT(*) AS n FROM solutions").fetchone()["n"] == 2
+    assert conn.execute("SELECT code_path FROM problem_solutions").fetchone()[0]
 
     events.append(conn, events.ATTEMPT_DISCARDED, {"attempt_uuid": uuid, "slug": "two-sum"})
-    live = [r["key"] for r in conn.execute("SELECT key FROM solutions")]
-    events.replay(conn)
-    replayed = [r["key"] for r in conn.execute("SELECT key FROM solutions")]
-    # The library-added row has no attempt to be tombstoned with, so it stays.
-    assert live == replayed == ["sorting"]
+    row = conn.execute("SELECT * FROM problem_solutions").fetchone()
+    assert row["key"] == "hash-map"
+    assert row["code_path"] is None and row["attempt_id"] is None
 
 
-def test_the_library_lists_what_you_named_as_well_as_what_you_wrote(conn):
-    """The empty row is the point: it is the gap you would open the screen to close."""
-    from core import strategies as strat
-
-    eng = _library_solve(
+def test_the_page_lists_what_you_recorded_as_well_as_what_you_wrote(conn):
+    """The empty row is the point: it is the gap you would open the page to close."""
+    eng = _solve(
         conn,
-        time_optimality="optimal",
-        strategies=strategies.payload(["hash map"], also_works=["sorting"]),
+        time_optimality="suboptimal",
+        claimed_complexity="O(n^2)",
+        strategies=strategies.payload(["brute force"]),
+        solutions=strategies.solutions_payload(
+            [
+                {"name": "brute force", "optimality": "suboptimal"},
+                {"name": "hash map", "optimality": "optimal"},
+            ]
+        ),
     )
     eng.archive_code("/tmp/two-sum.py", "python")
 
-    rows = {a.key: a for a in strat.library(conn, "two-sum")}
-    assert set(rows) == {"hash-map", "sorting"}
-    assert rows["hash-map"].written and rows["hash-map"].time_optimality == "optimal"
-    assert not rows["sorting"].written
-    assert rows["sorting"].role == "also_works"
-    assert rows["sorting"].time_optimality is None
+    rows = {w.key: w for w in strategies.solutions(conn, "two-sum")}
+    assert set(rows) == {"brute-force", "hash-map"}
+    assert rows["brute-force"].written
+    assert rows["brute-force"].optimality == "suboptimal"
+    # The complexity is read off the attempt that wrote it, never asked twice.
+    assert rows["brute-force"].complexity == "O(n^2)"
+    assert not rows["hash-map"].written
+    assert rows["hash-map"].optimality == "optimal"

@@ -31,12 +31,15 @@ from . import paths
 #    The bump also forces the replay that regrades every card under the rating
 #    map's new optimality branch (see `srs.rate`).
 # 8: the approach library — `solutions`, one row per problem-and-approach that
-#    has code behind it. The bump forces the replay that fills it, including the
-#    attribution of every solution archived before the column existed (see
-#    `events._record_solution`).
+#    has code behind it.
+# 9: the solutions page — `problem_solutions` absorbs both `problem_strategies`
+#    and v8's `solutions`, because they were the same list seen twice: the ways
+#    one problem can be solved. It gains the thing neither had, an optimality
+#    per way, which is what makes "there is an O(n log n) route and I wrote the
+#    O(n²)" a fact the problem holds rather than a role an answer plays.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -175,14 +178,41 @@ CREATE TABLE IF NOT EXISTS strategies (
   first_seen   TEXT NOT NULL
 );
 
--- Which strategies belong to which problem. Accumulates: every solve can add,
--- nothing removes, because a strategy that worked once did not stop existing.
-CREATE TABLE IF NOT EXISTS problem_strategies (
+-- The ways one problem can be solved: every approach you have recorded for it,
+-- optimal or not, written or not.
+--
+-- This is the problem's list, not any attempt's. A problem admits the approaches
+-- it admits whether or not you have ever taken them, which is why `optimality`
+-- lives here and not on `attempts`: "there is an O(n log n) route" is true
+-- before you sit down and true after, and an attempt row can only ever say what
+-- *you* wrote on one particular evening.
+--
+-- Accumulates. Rows come from the solutions prompt after a solve, from the
+-- strategy you said you used, and from archiving code on the solutions screen.
+-- Nothing removes one, because an approach that worked once did not stop
+-- existing.
+--
+-- `optimality` is null until you say, and null is not `unsure`: an unanswered
+-- question is not an answer. Same instinct that left `attempts.optimality`
+-- alone rather than reinterpreting it when the cost claim grew a second axis.
+--
+-- The code columns hold the *latest* write for this way. Every attempt keeps its
+-- own file on disk under its own id; this is a pointer at the newest of them,
+-- and replacing a pointer is not rewriting a solution.
+CREATE TABLE IF NOT EXISTS problem_solutions (
   slug         TEXT NOT NULL REFERENCES problems(slug),
   key          TEXT NOT NULL REFERENCES strategies(key),
+  optimality   TEXT,                      -- optimal|suboptimal|unsure|null
+  code_path    TEXT,
+  language     TEXT,
+  attempt_uuid TEXT,                      -- null for one added off an attempt
+  attempt_id   INTEGER REFERENCES attempts(id),
   first_seen   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
   PRIMARY KEY (slug, key)
 );
+CREATE INDEX IF NOT EXISTS problem_solutions_attempt_idx
+  ON problem_solutions(attempt_uuid);
 
 -- What one attempt actually answered. `role` is `used` (what you wrote) or
 -- `worth_learning` (the better approach you could see and did not write) --
@@ -198,37 +228,6 @@ CREATE TABLE IF NOT EXISTS attempt_strategies (
 );
 CREATE INDEX IF NOT EXISTS attempt_strategies_key_idx  ON attempt_strategies(key);
 CREATE INDEX IF NOT EXISTS attempt_strategies_slug_idx ON attempt_strategies(slug);
-
--- The approach library: the code you wrote for one approach to one problem.
---
--- Only approaches that have code get a row. The library screen reads
--- `problem_strategies LEFT JOIN solutions`, so an approach you named and never
--- wrote still lists -- with an empty cell, which is the gap you would open the
--- screen to close.
---
--- One row per (slug, key) and the newest write wins. That is not a rewrite of
--- history: every attempt keeps its own file on disk under its own id, and this
--- is a pointer at the latest of them. The attempt columns are null for a
--- solution added from the library screen, where there was no attempt.
---
--- The optimality columns are inherited from the attempt that wrote the code,
--- and only when that attempt wrote exactly one approach -- see
--- `events._record_solution`. An attempt that wrote two has one answer and two
--- solutions, and copying the answer onto both would attribute a claim to code
--- it may not describe.
-CREATE TABLE IF NOT EXISTS solutions (
-  slug             TEXT NOT NULL REFERENCES problems(slug),
-  key              TEXT NOT NULL REFERENCES strategies(key),
-  code_path        TEXT,
-  language         TEXT,
-  attempt_uuid     TEXT,
-  attempt_id       INTEGER REFERENCES attempts(id),
-  time_optimality  TEXT,
-  space_optimality TEXT,
-  written_at       TEXT NOT NULL,
-  PRIMARY KEY (slug, key)
-);
-CREATE INDEX IF NOT EXISTS solutions_attempt_idx ON solutions(attempt_uuid);
 """
 
 # Phase 2 fills `fsrs_cards` and `queues`; the rest waits for Phase 3. All of
@@ -296,9 +295,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # slug list, so replaying the log reproduces the queue exactly rather than
 # regenerating it.
 PROJECTION_TABLES = (
-    "solutions",           # references attempts and strategies: children first
+    "problem_solutions",   # references attempts and strategies: children first
     "attempt_strategies",  # references attempts and strategies: children first
-    "problem_strategies",
     "strategies",
     "submissions",  # references attempts: children first, see the docstring
     "attempts",
@@ -332,6 +330,10 @@ SHAPE_CHANGED_IN = {
     # it forces is what backfills `solutions` from every `code_archived` event
     # already in the log.
     8: ("solutions",),
+    # Two tables retired into one. `solutions` and `problem_strategies` are
+    # dropped and never recreated -- the DDL above no longer has them -- and the
+    # replay this bump forces refills `problem_solutions` from the same log.
+    9: ("solutions", "problem_strategies", "problem_solutions"),
 }
 
 
