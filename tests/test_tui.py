@@ -18,6 +18,7 @@ from core.scoring import VERDICTS
 from core.tui.screens import home
 from core.tui.app import CoreApp
 from core.tui.screens import (
+    ConfirmModal,
     EndRunModal,
     FetchScreen,
     FinishModal,
@@ -188,13 +189,15 @@ async def test_a_full_run_is_recorded_end_to_end(app):
         await pilot.press("ctrl+s")
         await pilot.pause()
 
-        # Capture is disabled, so it lands straight on the next problem.
+        # Capture is disabled, so the only thing between here and the next
+        # problem is the offer of another pass at this one.
+        await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SolveScreen)
 
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
 
         assert isinstance(app.screen, SummaryScreen)
         await pilot.press("enter")
@@ -228,7 +231,7 @@ async def test_giving_up_records_the_attempt_and_ends_the_run(app):
         await pilot.press("x")
         await pilot.pause()
         await pilot.press("y")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
 
         assert isinstance(app.screen, SolveScreen)
         await pilot.press("q")
@@ -284,11 +287,11 @@ async def test_history_shows_a_completed_run(app):
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
 
@@ -403,7 +406,7 @@ async def test_capture_archives_code_and_notes_to_disk(capturing_app):
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SummaryScreen)
         await pilot.press("enter")
         await pilot.pause()
@@ -440,7 +443,7 @@ async def test_a_broken_terminal_handoff_never_costs_the_attempt(isolated_home):
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SummaryScreen)
         await pilot.press("enter")
         await pilot.pause()
@@ -678,7 +681,7 @@ async def test_a_skipped_second_note_edit_keeps_the_first(capturing_app, monkeyp
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SummaryScreen)
 
         await pilot.press("e")  # the fake editor writes a line
@@ -1151,7 +1154,7 @@ async def test_the_categories_toggle_resets_on_the_next_problem(app):
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
 
         assert isinstance(app.screen, SolveScreen)
         assert not app.screen.query_one("#problem-meta").has_class("visible")
@@ -1287,7 +1290,7 @@ async def _play_one_run(pilot, app):
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
     await pilot.press("enter")
     await pilot.pause()
 
@@ -1387,6 +1390,20 @@ async def test_the_end_run_buttons_fit_on_a_short_terminal(isolated_home):
 
 
 PAST_ATTEMPT_SLUG = "two-sum"
+
+
+async def _decline_another_pass(app, pilot):
+    """Say no to "solve it again?" and land on whatever comes next.
+
+    Every finished pass offers another one, so almost every test that finishes a
+    problem walks through here. Asserting the modal is up rather than pressing
+    `n` blind: a test that silently stopped seeing the offer would otherwise
+    keep passing while the prompt quietly disappeared.
+    """
+    await pilot.pause()
+    assert isinstance(app.screen, ConfirmModal), app.screen
+    await pilot.press("n")
+    await pilot.pause()
 
 
 def _plain(widget: Static) -> str:
@@ -1507,7 +1524,7 @@ async def test_the_past_attempts_panel_is_refolded_for_the_next_problem(app):
         await pilot.press("f")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
 
         assert isinstance(app.screen, SolveScreen)
         assert app.screen._past_attempts == []
@@ -1624,8 +1641,7 @@ async def test_what_you_claimed_is_not_shown_back_on_the_next_attempt(app):
         await pilot.pause()
         app.screen.query_one("#complexity", Input).value = "O(n log n)"
         await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         # Seal the first run before opening a second one on the same problem.
         await pilot.press("enter")
         await pilot.pause()
@@ -1654,8 +1670,7 @@ async def test_history_shows_the_approach_after_the_fact(app):
         app.screen.query_one("#complexity", Input).value = "O(n)"
         app.screen.query_one("#space-complexity", Input).value = "O(1)"
         await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
 
@@ -2080,7 +2095,7 @@ async def test_a_resumed_run_can_be_finished_normally(app):
             await pilot.press("f")
             await pilot.pause()
             await pilot.press("ctrl+s")
-            await pilot.pause()
+            await _decline_another_pass(later, pilot)
 
         assert isinstance(later.screen, SummaryScreen)
         await pilot.press("enter")
@@ -2650,7 +2665,7 @@ async def test_the_quality_reaches_the_run_summary(strategy_app):
         await pilot.press("ctrl+s")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
 
         assert isinstance(app.screen, SummaryScreen)
         lines = _plain(app.screen.query_one("#stat-lines", Static))
@@ -2722,8 +2737,7 @@ async def test_each_approach_you_wrote_is_archived_as_its_own_file(library_app):
         await pilot.press("ctrl+s")
         await pilot.pause()
         await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SummaryScreen)
         await pilot.press("enter")
         await pilot.pause()
@@ -2754,8 +2768,7 @@ async def test_the_solutions_screen_edits_what_a_way_costs(library_app):
         await pilot.pause()
         await _name_a_way(app, pilot, "hash map")
         await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         await pilot.press("enter")  # off the summary, back home
         await pilot.pause()
 
@@ -2796,8 +2809,7 @@ async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(librar
         await pilot.pause()
         await _name_a_way(app, pilot, "hash map")
         await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
+        await _decline_another_pass(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
 
@@ -2823,3 +2835,223 @@ async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(librar
     # Nothing about the schedule moved: this is a record, not a review.
     assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == cards_before
     assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 1
+
+
+# --- solving it again --------------------------------------------------------
+
+
+async def _another_pass(app, pilot):
+    """Say yes to "solve it again?" and land back on the same problem."""
+    await pilot.pause()
+    assert isinstance(app.screen, ConfirmModal), app.screen
+    await pilot.press("y")
+    await pilot.pause()
+    assert isinstance(app.screen, SolveScreen)
+
+
+async def test_a_second_pass_lands_under_the_same_attempt(app):
+    """Two solves, one attempt, one card.
+
+    The whole shape of the feature in one test: the attempt row stays the first
+    pass, the second is a `resolves` row beside it, and the review schedule does
+    not notice that you sat the problem twice.
+    """
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _another_pass(app, pilot)
+
+        # The clock started over, and the screen says which pass you are on.
+        attempt = app.engine.attempt
+        assert attempt.solves == 2
+        assert not attempt.finished
+        assert "solve 2" in _plain(app.screen.query_one("#progress", Static))
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FinishModal)
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+
+        assert isinstance(app.screen, SummaryScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    conn = app.conn
+    attempts = conn.execute("SELECT * FROM attempts").fetchall()
+    assert len(attempts) == 1
+    resolves = conn.execute("SELECT * FROM resolves ORDER BY n").fetchall()
+    assert [r["n"] for r in resolves] == [2]
+    assert resolves[0]["attempt_uuid"] == attempts[0]["uuid"]
+    assert resolves[0]["verdict"] == "solved_unaided"
+    assert resolves[0]["active_seconds"] is not None
+    # One attempt is one review: the second pass moved nothing.
+    card = conn.execute("SELECT * FROM fsrs_cards WHERE slug = 'two-sum'").fetchone()
+    assert card["reps"] == 1
+
+
+async def test_a_third_pass_keeps_counting(app):
+    """`n` is the pass number over the whole attempt, so it never repeats."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        for _ in range(2):
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await _another_pass(app, pilot)
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert [r["n"] for r in app.conn.execute("SELECT n FROM resolves ORDER BY n")] == [2, 3]
+    assert app.conn.execute("SELECT reps FROM fsrs_cards").fetchone()["reps"] == 1
+
+
+async def test_a_second_pass_writes_its_own_files(capturing_app):
+    """The first pass's code and note survive the second one, to be diffed."""
+    from pathlib import Path
+
+    app = capturing_app
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _another_pass(app, pilot)
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    resolve = app.conn.execute("SELECT * FROM resolves").fetchone()
+
+    first_code, first_note = Path(attempt["code_path"]), Path(attempt["note_path"])
+    again_code, again_note = Path(resolve["code_path"]), Path(resolve["note_path"])
+    assert first_code.name == f"{attempt['id']}.py"
+    assert again_code.name == f"{attempt['id']}-again2.py"
+    assert first_note.name == f"{attempt['id']}.md"
+    assert again_note.name == f"{attempt['id']}-again2.md"
+    assert all(p.exists() for p in (first_code, first_note, again_code, again_note))
+    # The attempt still points at its own pass, not at the rerun's file.
+    assert attempt["code_path"] != resolve["code_path"]
+
+
+async def test_giving_up_then_solving_it_again_leaves_the_verdict_alone(app):
+    """The pass where a second go is worth the most, and it rewrites nothing."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("y")
+        await _another_pass(app, pilot)
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    # Still the surrender it was. Solving it ten minutes later does not undo it.
+    assert attempt["verdict"] == "gave_up"
+    resolve = app.conn.execute("SELECT * FROM resolves").fetchone()
+    assert resolve["verdict"] == "solved_unaided"
+    assert app.conn.execute("SELECT reps FROM fsrs_cards").fetchone()["reps"] == 1
+
+
+async def test_throwing_a_re_solve_away_keeps_the_solve_behind_it(app):
+    """`ctrl+x` on a rerun drops the rerun. The attempt is already recorded."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum", "3sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _another_pass(app, pilot)
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert "re-solve" in _plain(app.screen.query_one(".modal-title", Static))
+        await pilot.press("y")
+        await pilot.pause()
+
+        # On to the next problem, with the first solve untouched.
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt.problem.slug == "3sum"
+
+    attempts = app.conn.execute(
+        "SELECT * FROM attempts WHERE slug = 'two-sum'"
+    ).fetchall()
+    assert len(attempts) == 1
+    assert attempts[0]["verdict"] == "solved_unaided"
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM resolves").fetchone()["n"] == 0
+    types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
+    assert "attempt_discarded" not in types
+
+
+async def test_a_re_solve_cannot_be_suspended(app):
+    """The clock a suspend writes down is the rerun's, and it is not the attempt's."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _another_pass(app, pilot)
+
+        await pilot.press("z")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.session is not None
+
+    assert app.conn.execute("SELECT suspended_at FROM sessions").fetchone()["suspended_at"] is None
+
+
+async def test_the_second_way_you_wrote_joins_the_problems_list(strategy_app):
+    """A rerun by another route is the approach library's best case."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        await _to_the_strategy_prompt(app, pilot)
+        await _name_a_strategy(app, pilot, "brute force")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _another_pass(app, pilot)
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await _name_a_strategy(app, pilot, "hash map")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    conn = app.conn
+    assert {r["key"] for r in conn.execute("SELECT key FROM problem_solutions")} == {
+        "brute-force",
+        "hash-map",
+    }
+    # Both routes hang off the one attempt, which is what it means to have
+    # solved the problem two ways in one sitting.
+    used = {r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")}
+    assert used == {"brute-force", "hash-map"}

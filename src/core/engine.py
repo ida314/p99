@@ -68,6 +68,9 @@ class Attempt:
     #: This is the one that numbers the archived wrong answers, so it can never
     #: reuse a number and overwrite a file.
     submits_logged: int = 0
+    #: Which pass at this problem is on screen. 1 until you choose to solve it
+    #: again, and the number that names both the `resolves` row and its file.
+    solves: int = 1
     finished: bool = False
     final_timing: dict[str, int] | None = None
 
@@ -269,6 +272,12 @@ class RunEngine:
         if self.session is None:
             return
         a = self.attempt
+        if a is not None and a.solves > 1:
+            # A suspend writes the attempt's clock readings back over
+            # `attempts`, which on a later pass would overwrite the first pass's
+            # timing with this one's. Finish or drop the re-solve first; the
+            # solve screen says so rather than letting this be reached.
+            raise SessionError("finish or drop this re-solve first")
         payload: dict[str, Any] = {
             "session_uuid": self.session.uuid,
             "index": self.session.index,
@@ -465,7 +474,11 @@ class RunEngine:
         # Tier 4 is the full solution: it ends the attempt as `gave_up`
         # regardless of what happens next (spec §13). Recorded before the text
         # is returned, so reading it can never go unlogged.
-        if tier == MAX_HINT_TIER:
+        #
+        # Not on a later pass. The rule exists to guarantee the tier scores
+        # zero, and a re-solve is not scored at all -- ending it here would only
+        # take away the verdict prompt for no gain.
+        if tier == MAX_HINT_TIER and a.solves == 1:
             self.abandon()
         return tier, HINT_STUBS[tier]
 
@@ -512,6 +525,26 @@ class RunEngine:
         solutions: list[dict] | None = None,
     ) -> Attempt:
         a = self._require_attempt()
+        if a.solves > 1:
+            # A later pass at the same problem. Same prompts, same answers, a
+            # different event -- and `gave_up` is not routed to `abandon` here,
+            # because abandoning would re-end an attempt that already ended and
+            # grade a card that is already scheduled.
+            return self._finish_resolve(
+                a,
+                verdict,
+                timing=timing,
+                self_confidence=self_confidence,
+                lc_runtime_pct=lc_runtime_pct,
+                lc_memory_pct=lc_memory_pct,
+                language=language,
+                claimed_complexity=claimed_complexity,
+                claimed_space_complexity=claimed_space_complexity,
+                time_optimality=time_optimality,
+                space_optimality=space_optimality,
+                strategies=strategies,
+                solutions=solutions,
+            )
         if verdict == "gave_up":
             # Nothing you claim about a solution survives not having reached
             # one, so the complexities, the optimality answers and both post-
@@ -551,9 +584,91 @@ class RunEngine:
         a.finished = True
         return a
 
+    def solve_again(self) -> Attempt:
+        """Reopen the finished attempt for another pass at the same problem.
+
+        The clock restarts from zero rather than picking the old one back up:
+        this is a fresh solve, and how long the second one took is the whole
+        point of recording it. The hint tier and the failed submits stay --
+        those happened, and no second pass makes them not have.
+
+        Writes no event. Nothing is recorded until the pass finishes, exactly as
+        nothing is recorded before the first `finish`, so dropping out of a
+        re-solve costs the re-solve and nothing else: the attempt behind it was
+        sealed the moment `problem_finished` was appended.
+        """
+        a = self._require_attempt()
+        if not a.finished:
+            raise SessionError("finish this solve first")
+        a.solves += 1
+        a.finished = False
+        a.final_timing = None
+        a.started_monotonic = self.clock()
+        a.paused_at = None
+        a.paused_seconds = 0.0
+        return a
+
+    def _finish_resolve(
+        self,
+        a: Attempt,
+        verdict: str,
+        *,
+        timing: dict[str, int] | None = None,
+        self_confidence: int | None = None,
+        lc_runtime_pct: float | None = None,
+        lc_memory_pct: float | None = None,
+        language: str | None = None,
+        claimed_complexity: str | None = None,
+        claimed_space_complexity: str | None = None,
+        time_optimality: str | None = None,
+        space_optimality: str | None = None,
+        strategies: dict[str, list[str]] | None = None,
+        solutions: list[dict] | None = None,
+    ) -> Attempt:
+        """End a later pass. Recorded beside the attempt, never over it.
+
+        Carries the same answers a finish does, including the two post-solve
+        blocks -- naming a second route tonight is exactly the thing the
+        approach library wants to hear about. What it does not carry is a
+        grading: see the `problem_resolved` branch of `events.apply`.
+
+        A `gave_up` pass is a `resolves` row that says so, not a
+        `problem_abandoned`. The attempt's own verdict is the first pass's and
+        stays the first pass's.
+        """
+        a.final_timing = timing or a.timing()
+        events.append(
+            self.conn,
+            events.PROBLEM_RESOLVED,
+            {
+                "attempt_uuid": a.uuid,
+                "slug": a.problem.slug,
+                "n": a.solves,
+                "verdict": verdict,
+                **a.final_timing,
+                "self_confidence": self_confidence,
+                "lc_runtime_pct": lc_runtime_pct,
+                "lc_memory_pct": lc_memory_pct,
+                "language": language,
+                "claimed_complexity": claimed_complexity,
+                "claimed_space_complexity": claimed_space_complexity,
+                "time_optimality": time_optimality,
+                "space_optimality": space_optimality,
+                **({"strategies": strategies} if strategies else {}),
+                **({"solutions": solutions} if solutions else {}),
+            },
+        )
+        a.finished = True
+        return a
+
     def abandon(self, timing: dict[str, int] | None = None) -> Attempt:
         """Give up. Scores 0, but the attempt is still logged (spec §5)."""
         a = self._require_attempt()
+        if a.solves > 1:
+            # Giving up on a second pass ends the pass, not the attempt. The
+            # attempt's verdict was settled by the first one and history is not
+            # rewritten by how tonight's rerun went.
+            return self._finish_resolve(a, "gave_up", timing=timing)
         a.final_timing = timing or a.timing()
         events.append(
             self.conn,
@@ -581,6 +696,13 @@ class RunEngine:
         is the only caller, and it only opens while the attempt is live.
         """
         a = self._require_attempt()
+        if a.solves > 1:
+            # Throwing away a re-solve throws away the re-solve. Nothing has
+            # been written for this pass yet, so there is nothing to tombstone
+            # -- the attempt goes back to being the sealed thing it was.
+            a.solves -= 1
+            a.finished = True
+            return
         if a.finished:
             raise RuntimeError("cannot discard a finished attempt")
         events.append(
@@ -611,6 +733,9 @@ class RunEngine:
                 "code_path": path,
                 "language": language,
                 "approach": approach,
+                # Which pass wrote it. Omitted on the first one, so the payload
+                # of a plain solve is the shape it has always been.
+                **({"resolve_n": a.solves} if a.solves > 1 else {}),
             },
         )
 
@@ -634,7 +759,12 @@ class RunEngine:
         events.append(
             self.conn,
             events.NOTE_WRITTEN,
-            {"attempt_uuid": a.uuid, "slug": a.problem.slug, "note_path": path},
+            {
+                "attempt_uuid": a.uuid,
+                "slug": a.problem.slug,
+                "note_path": path,
+                **({"resolve_n": a.solves} if a.solves > 1 else {}),
+            },
         )
 
     def record_audio(self, path: str) -> None:

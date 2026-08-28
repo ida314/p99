@@ -37,9 +37,12 @@ from . import paths
 #    one problem can be solved. It gains the thing neither had, an optimality
 #    per way, which is what makes "there is an O(n log n) route and I wrote the
 #    O(n²)" a fact the problem holds rather than a role an answer plays.
+# 10: solving it again -- `resolves`, one row per pass after the first at the
+#    same problem in the same sitting. The attempt row stays the first pass, so
+#    nothing it already scored moves.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -160,6 +163,41 @@ CREATE TABLE IF NOT EXISTS submissions (
   UNIQUE(attempt_uuid, n)
 );
 CREATE INDEX IF NOT EXISTS submissions_attempt_idx ON submissions(attempt_id);
+
+-- One row per pass after the first, when you solve the same problem again in the
+-- same sitting. `n` counts passes over the whole attempt, so the attempt row is
+-- pass 1 and the first re-solve is 2 -- the same number that names its file.
+--
+-- A child table for the reason `submissions` is one: there are many per attempt.
+-- But the sharper reason is what stays on `attempts`. The attempt row is the
+-- first pass, and it is the row that was scored and the row that graded the
+-- card. Solving it a second time tonight is worth recording and is not worth a
+-- second review, so nothing here is ever read by `scoring` or by `srs` -- see
+-- the `problem_resolved` branch of `events.apply`.
+CREATE TABLE IF NOT EXISTS resolves (
+  id                 INTEGER PRIMARY KEY,
+  attempt_uuid       TEXT NOT NULL,
+  attempt_id         INTEGER REFERENCES attempts(id),
+  slug               TEXT,
+  n                  INTEGER NOT NULL,    -- 1-based over the attempt; re-solves start at 2
+  verdict            TEXT,
+  ended_at           TEXT NOT NULL,
+  active_seconds     INTEGER,
+  wall_seconds       INTEGER,
+  paused_seconds     INTEGER,
+  self_confidence    INTEGER,
+  lc_runtime_pct     REAL,
+  lc_memory_pct      REAL,
+  claimed_complexity TEXT,
+  claimed_space_complexity TEXT,
+  time_optimality    TEXT,
+  space_optimality   TEXT,
+  code_path          TEXT,
+  language           TEXT,
+  note_path          TEXT,
+  UNIQUE(attempt_uuid, n)
+);
+CREATE INDEX IF NOT EXISTS resolves_attempt_idx ON resolves(attempt_id);
 
 CREATE TABLE IF NOT EXISTS settings (
   key          TEXT PRIMARY KEY,
@@ -299,6 +337,7 @@ PROJECTION_TABLES = (
     "attempt_strategies",  # references attempts and strategies: children first
     "strategies",
     "submissions",  # references attempts: children first, see the docstring
+    "resolves",     # references attempts: children first, same as above
     "attempts",
     "sessions",
     "settings",
@@ -334,6 +373,9 @@ SHAPE_CHANGED_IN = {
     # dropped and never recreated -- the DDL above no longer has them -- and the
     # replay this bump forces refills `problem_solutions` from the same log.
     9: ("solutions", "problem_strategies", "problem_solutions"),
+    # A new table again, and again the bump is what does the work: the replay it
+    # forces is what folds every `problem_resolved` already in the log.
+    10: ("resolves",),
 }
 
 

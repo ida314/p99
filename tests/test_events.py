@@ -57,6 +57,7 @@ def _snapshot(conn):
         rows("sessions"),
         rows("attempts"),
         rows("submissions"),
+        rows("resolves"),
         keyed("strategies", "key"),
         keyed("attempt_strategies", "attempt_uuid, key"),
         keyed("problem_solutions", "slug, key"),
@@ -1020,3 +1021,142 @@ def test_the_page_lists_what_you_recorded_as_well_as_what_you_wrote(conn):
     assert rows["brute-force"].complexity == "O(n^2)"
     assert not rows["hash-map"].written
     assert rows["hash-map"].optimality == "optimal"
+
+
+# --- solving it again --------------------------------------------------------
+
+
+def _solve_it_twice(conn, slug="two-sum"):
+    """One attempt, two passes: the second by a different route."""
+    eng = RunEngine(conn)
+    eng.start_session([slug])
+    eng.start_problem(slug)
+    eng.finish(
+        "solved_unaided",
+        self_confidence=3,
+        language="python",
+        claimed_complexity="O(n log n)",
+        time_optimality="suboptimal",
+        strategies=strategies.payload(["sorting"]),
+    )
+    eng.archive_code(f"/tmp/{slug}.py", "python")
+    eng.record_note(f"/tmp/{slug}.md")
+
+    eng.solve_again()
+    eng.finish(
+        "solved_unaided",
+        self_confidence=4,
+        language="python",
+        claimed_complexity="O(n)",
+        time_optimality="optimal",
+        strategies=strategies.payload(["hash map"]),
+    )
+    eng.archive_code(f"/tmp/{slug}-again2.py", "python")
+    eng.record_note(f"/tmp/{slug}-again2.md")
+    return eng
+
+
+def test_a_second_pass_is_recorded_beside_the_attempt_not_over_it(conn):
+    _solve_it_twice(conn)
+
+    attempt = conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["verdict"] == "solved_unaided"
+    # The attempt keeps the first pass's answers, files and all.
+    assert attempt["claimed_complexity"] == "O(n log n)"
+    assert attempt["time_optimality"] == "suboptimal"
+    assert attempt["code_path"] == "/tmp/two-sum.py"
+    assert attempt["note_path"] == "/tmp/two-sum.md"
+
+    resolve = conn.execute("SELECT * FROM resolves").fetchone()
+    assert resolve["n"] == 2
+    assert resolve["attempt_uuid"] == attempt["uuid"]
+    assert resolve["attempt_id"] == attempt["id"]
+    assert resolve["claimed_complexity"] == "O(n)"
+    assert resolve["time_optimality"] == "optimal"
+    assert resolve["code_path"] == "/tmp/two-sum-again2.py"
+    assert resolve["note_path"] == "/tmp/two-sum-again2.md"
+
+
+def test_a_second_pass_does_not_grade_a_second_time(conn):
+    """One attempt is one review, however many times you sat it."""
+    _solve_it_twice(conn)
+    card = conn.execute("SELECT * FROM fsrs_cards WHERE slug = 'two-sum'").fetchone()
+    assert card["reps"] == 1
+
+
+def test_both_routes_reach_the_problems_list(conn):
+    """Solving it a second way in one sitting is what the library wants to hear."""
+    _solve_it_twice(conn)
+    assert {r["key"] for r in conn.execute("SELECT key FROM problem_solutions")} == {
+        "sorting",
+        "hash-map",
+    }
+    assert {r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")} == {
+        "sorting",
+        "hash-map",
+    }
+
+
+def test_a_second_pass_survives_replay(conn):
+    _solve_it_twice(conn)
+    before = _snapshot(conn)
+    events.replay(conn)
+    assert _snapshot(conn) == before
+
+
+def test_discarding_the_attempt_takes_its_later_passes_with_it(conn):
+    """Otherwise the live projection and the replayed one disagree."""
+    eng = _solve_it_twice(conn)
+    attempt_uuid = eng.attempt.uuid
+    events.append(
+        conn, events.ATTEMPT_DISCARDED, {"attempt_uuid": attempt_uuid, "slug": "two-sum"}
+    )
+    events.replay(conn)
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM resolves").fetchone()["n"] == 0
+
+
+def test_giving_up_on_a_later_pass_leaves_the_verdict_alone(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.solve_again()
+    eng.abandon()
+
+    attempt = conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["verdict"] == "solved_unaided"
+    assert conn.execute("SELECT verdict FROM resolves").fetchone()["verdict"] == "gave_up"
+    # No `problem_abandoned`, so nothing regraded.
+    types = [e.type for e in events.read_all(conn)]
+    assert events.PROBLEM_ABANDONED not in types
+    assert conn.execute("SELECT reps FROM fsrs_cards").fetchone()["reps"] == 1
+
+
+def test_throwing_a_later_pass_away_writes_nothing(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.solve_again()
+    eng.discard()
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 1
+    assert conn.execute("SELECT COUNT(*) AS n FROM resolves").fetchone()["n"] == 0
+    types = [e.type for e in events.read_all(conn)]
+    assert events.ATTEMPT_DISCARDED not in types
+    # And the attempt is sealed again, so the run can move on.
+    assert eng.attempt.finished
+    eng.advance()
+
+
+def test_a_run_cannot_be_suspended_mid_re_solve(conn):
+    """The clock a suspend records would land on the first pass's row."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.solve_again()
+    with pytest.raises(engine_module.SessionError):
+        eng.suspend_session()

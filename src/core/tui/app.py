@@ -61,11 +61,16 @@ class CoreApp(App):
         middle of. Suspending instead costs nothing and offers the run back on
         the next launch. With no live attempt there is nothing to come back to,
         so the run is sealed the way it always was, note and all.
+
+        A re-solve in progress counts as nothing to come back to. The attempt
+        behind it is already recorded; the pass on screen has written nothing
+        yet, and a suspend would try to save its clock over the first one's.
         """
         try:
             if self.engine.session is None:
                 return
-            if self.engine.attempt is not None and not self.engine.attempt.finished:
+            attempt = self.engine.attempt
+            if attempt is not None and not attempt.finished and attempt.solves == 1:
                 self.engine.suspend_session()
             else:
                 self.engine.end_session(session_note=self.pending_session_note)

@@ -295,7 +295,15 @@ answer for each, and the LeetCode percentiles if you have them — then the
 approach you took, then the two editor steps. None of it is scored; the run
 score stays a function of measured facts. The time optimality answer is the one
 that moves a review, because a solution with the wrong asymptotics has not
-learned the pattern the schedule exists for.
+learned the pattern the schedule exists for. Afterwards it offers you the same
+problem again, with a fresh clock:
+.B y
+reruns it and
+.B n
+moves on. A rerun is recorded under the same attempt — its own verdict, time,
+code file and note beside the first pass rather than over it — and it neither
+scores anything nor moves a review, because the card was scheduled by the first
+pass and one attempt is one review.
 .TP
 .B space
 On the approach prompt: mark a strategy as the one you wrote.
@@ -312,12 +320,14 @@ it — nothing is written until both prompts are done, so the attempt is still
 running behind them. Switchable off in the settings screen.
 .TP
 .B x
-Give up. Scores zero, and is still recorded.
+Give up. Scores zero, and is still recorded. You are offered another pass at the
+problem afterwards, which is where a second go is worth the most.
 .TP
 .B z
 Suspend the run. The problem on screen keeps its clock, its hint tier and its
 submits, and keeps no verdict, so nothing is scored and no review is scheduled
-for a problem you are still in the middle of.
+for a problem you are still in the middle of. Not available during a rerun,
+whose clock would be written over the first pass's: finish it or drop it.
 .B c
 on the home screen hands it back, with the clock stopped until
 .B p

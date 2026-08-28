@@ -229,7 +229,11 @@ def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     history detail and `p99 stats` cannot end up showing different halves of the
     same answer.
     """
-    return approach_rows(attempt) + strategy_rows(attempt)
+    rows = approach_rows(attempt) + strategy_rows(attempt)
+    resolves = int(attempt.get("resolves") or 0)
+    if resolves:
+        rows.append(("re-solves", f"{resolves} more pass{'es' if resolves > 1 else ''}"))
+    return rows
 
 
 def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -451,6 +455,10 @@ def past_attempts_panel(past: Sequence[PastAttempt]) -> RenderableType:
         # Everything that has no column of its own, in the margin past the
         # score: the two facts that are worth reading and never worth a header.
         notes = ["review"] if attempt.is_review else []
+        if attempt.resolves:
+            # How many times you sat the problem that evening, not what you
+            # wrote on the later runs -- the same line `PastAttempt` draws.
+            notes.append(f"solved {attempt.resolves + 1}×")
         if attempt.self_confidence:
             notes.append(CONFIDENCE_LABELS.get(attempt.self_confidence, ""))
         if notes:

@@ -29,6 +29,11 @@ HINT_REVEALED = "hint_revealed"
 PROBLEM_SUBMITTED = "problem_submitted"
 PROBLEM_ABANDONED = "problem_abandoned"
 PROBLEM_FINISHED = "problem_finished"
+#: A pass at the same problem after the first one, in the same sitting. Carries
+#: everything `problem_finished` carries plus the pass number `n`, and it is
+#: folded without grading: the card was scheduled by the finish this pass sits
+#: under, and one attempt is one review.
+PROBLEM_RESOLVED = "problem_resolved"
 CODE_ARCHIVED = "code_archived"
 SUBMISSION_ARCHIVED = "submission_archived"
 #: Code for one way of solving a problem, written outside any attempt -- the
@@ -65,6 +70,7 @@ EVENT_TYPES = frozenset(
         PROBLEM_SUBMITTED,
         PROBLEM_ABANDONED,
         PROBLEM_FINISHED,
+        PROBLEM_RESOLVED,
         CODE_ARCHIVED,
         SUBMISSION_ARCHIVED,
         SOLUTION_ARCHIVED,
@@ -417,6 +423,10 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
     """
     for attempt_uuid in attempt_uuids:
         conn.execute("DELETE FROM submissions WHERE attempt_uuid = ?", (attempt_uuid,))
+        # And every later pass at the problem, for the same reason: a replay
+        # skips `problem_resolved` on the strength of its top-level
+        # `attempt_uuid`, so the live path has to reach the same place.
+        conn.execute("DELETE FROM resolves WHERE attempt_uuid = ?", (attempt_uuid,))
         # The attempt's answer goes; the vocabulary and the problem's list of
         # approaches stay. A strategy you named is a thing you learned about the
         # problem, and it did not stop being true because the attempt that
@@ -596,16 +606,77 @@ def apply(
         # halves of `saw_better` from the two blocks just above.
         _grade(conn, p["attempt_uuid"], event, context)
 
+    elif event.type == PROBLEM_RESOLVED:
+        # A second pass at the same problem, recorded beside the attempt rather
+        # than over it. `INSERT OR IGNORE` on `(attempt_uuid, n)`, the same way
+        # `problem_submitted` folds, so a replay lands exactly here.
+        conn.execute(
+            "INSERT OR IGNORE INTO resolves(attempt_uuid, attempt_id, slug, n, verdict, "
+            "ended_at, active_seconds, wall_seconds, paused_seconds, self_confidence, "
+            "lc_runtime_pct, lc_memory_pct, claimed_complexity, claimed_space_complexity, "
+            "time_optimality, space_optimality, language) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                p["attempt_uuid"],
+                _attempt_id(conn, p["attempt_uuid"]),
+                p.get("slug"),
+                int(p["n"]),
+                p.get("verdict"),
+                p.get("ended_at", event.ts),
+                p.get("active_seconds"),
+                p.get("wall_seconds"),
+                p.get("paused_seconds"),
+                p.get("self_confidence"),
+                p.get("lc_runtime_pct"),
+                p.get("lc_memory_pct"),
+                p.get("claimed_complexity"),
+                p.get("claimed_space_complexity"),
+                p.get("time_optimality"),
+                p.get("space_optimality"),
+                p.get("language"),
+            ),
+        )
+        # Both blocks fold exactly as they do on a finish. `attempt_strategies`
+        # is keyed `(attempt_uuid, key)`, so solving the problem a second way
+        # tonight simply adds a row -- which is the true thing to record -- and
+        # the problem's list of ways accumulates as it always does.
+        _record_strategies(
+            conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
+        )
+        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
+        # No `_grade`, and this is the whole reason the event exists. The card
+        # was folded by the `problem_finished` this pass sits under; grading
+        # again would bump `reps` twice and spend a mastery rung on one sitting.
+        # Solving it again is worth recording and is not a second review -- the
+        # same line the solutions screen already draws.
+
     elif event.type == CODE_ARCHIVED:
         # `attempts.code_path` is the attempt's headline file, and with several
         # approaches archived off one solve there are several to choose from.
         # First one saved wins, guarded on the column rather than on a counter
         # so a replay makes the same choice in the same order.
-        conn.execute(
-            "UPDATE attempts SET code_path = ? WHERE uuid = ? AND code_path IS NULL",
-            (p.get("code_path"), p["attempt_uuid"]),
-        )
-        _update_attempt(conn, p["attempt_uuid"], language=p.get("language"))
+        #
+        # `resolve_n` says the file came out of a later pass at the same problem,
+        # and then the headline it claims is that pass's rather than the
+        # attempt's. Absent -- which is every event logged before re-solves
+        # existed and every first pass since -- nothing about this changes.
+        if p.get("resolve_n"):
+            conn.execute(
+                "UPDATE resolves SET code_path = ?, language = ? "
+                "WHERE attempt_uuid = ? AND n = ? AND code_path IS NULL",
+                (
+                    p.get("code_path"),
+                    p.get("language"),
+                    p["attempt_uuid"],
+                    int(p["resolve_n"]),
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE attempts SET code_path = ? WHERE uuid = ? AND code_path IS NULL",
+                (p.get("code_path"), p["attempt_uuid"]),
+            )
+            _update_attempt(conn, p["attempt_uuid"], language=p.get("language"))
         # The approach this file is for. Named on the payload since the library
         # existed; before that, inferred -- an attempt that wrote exactly one
         # approach wrote it in this file, and there is nothing to be ambiguous
@@ -664,7 +735,15 @@ def apply(
         )
 
     elif event.type == NOTE_WRITTEN:
-        _update_attempt(conn, p["attempt_uuid"], note_path=p.get("note_path"))
+        # Same split as `code_archived`: a note written after a later pass hangs
+        # on that pass, not over the one the attempt already holds.
+        if p.get("resolve_n"):
+            conn.execute(
+                "UPDATE resolves SET note_path = ? WHERE attempt_uuid = ? AND n = ?",
+                (p.get("note_path"), p["attempt_uuid"], int(p["resolve_n"])),
+            )
+        else:
+            _update_attempt(conn, p["attempt_uuid"], note_path=p.get("note_path"))
 
     elif event.type == AUDIO_RECORDED:
         _update_attempt(conn, p["attempt_uuid"], audio_path=p.get("audio_path"))

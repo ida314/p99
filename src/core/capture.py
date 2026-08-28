@@ -222,6 +222,7 @@ def capture_solution(
     attempt_id: int,
     language: str | None = None,
     approach: Strategy | None = None,
+    again: int = 1,
 ) -> CaptureResult:
     """Step 1 — archive the solution to `code/<slug>/<attempt_id>.<ext>`.
 
@@ -236,11 +237,20 @@ def capture_solution(
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = solution_header(problem, attempt, ext, approach.name if approach else None)
-    dest = (
-        paths.approach_code_path(problem.slug, attempt_id, approach.key, ext)
-        if approach
-        else paths.code_path(problem.slug, attempt_id, ext)
-    )
+    if again > 1:
+        # A later pass at the same problem gets its own file, so the earlier
+        # one survives to be diffed against.
+        dest = (
+            paths.resolve_approach_code_path(problem.slug, attempt_id, again, approach.key, ext)
+            if approach
+            else paths.resolve_code_path(problem.slug, attempt_id, again, ext)
+        )
+    else:
+        dest = (
+            paths.approach_code_path(problem.slug, attempt_id, approach.key, ext)
+            if approach
+            else paths.code_path(problem.slug, attempt_id, ext)
+        )
     return _run_capture(
         f"{problem.slug}.{ext}" if approach is None else f"{problem.slug}-{approach.key}.{ext}",
         header,
@@ -309,10 +319,19 @@ def capture_submission(
     )
 
 
-def capture_note(problem: Problem, attempt_id: int) -> CaptureResult:
-    """Step 2 — the reflection note, `notes/<slug>/<attempt_id>.md`."""
+def capture_note(problem: Problem, attempt_id: int, again: int = 1) -> CaptureResult:
+    """Step 2 — the reflection note, `notes/<slug>/<attempt_id>.md`.
+
+    A later pass writes its own, `-again<n>`. What you learned solving it the
+    second time is a different note from what you learned the first, and it is
+    the one place the two are compared.
+    """
     template = note_template(problem.slug)
-    dest = paths.unclaimed(paths.note_path(problem.slug, attempt_id))
+    dest = paths.unclaimed(
+        paths.resolve_note_path(problem.slug, attempt_id, again)
+        if again > 1
+        else paths.note_path(problem.slug, attempt_id)
+    )
     return _run_capture(
         f"{problem.slug}.md",
         template,

@@ -17,7 +17,8 @@ from . import scoring, strategies
 from .scoring import Weights, fmt_duration
 
 ATTEMPT_SELECT = """
-SELECT a.*, p.title, p.difficulty, p.tags, p.pattern, s.started_at AS session_started_at
+SELECT a.*, p.title, p.difficulty, p.tags, p.pattern, s.started_at AS session_started_at,
+       (SELECT COUNT(*) FROM resolves r WHERE r.attempt_uuid = a.uuid) AS resolves
 FROM attempts a
 JOIN problems p ON p.slug = a.slug
 JOIN sessions s ON s.id = a.session_id
@@ -563,6 +564,10 @@ class PastAttempt:
     self_confidence: int | None
     is_review: bool
     score: int
+    #: How many further passes you took at the problem in the same sitting.
+    #: A count and not the passes themselves: this screen says how the last
+    #: attempt went, and what you wrote on the second run is history's to show.
+    resolves: int = 0
 
     @property
     def ago(self) -> str:
@@ -632,6 +637,7 @@ def problem_history(
             self_confidence=row.get("self_confidence"),
             is_review=bool(row.get("is_review")),
             score=scoring.score_attempt(row, row["difficulty"], w).total,
+            resolves=int(row.get("resolves") or 0),
         )
         for row in rows
     ]

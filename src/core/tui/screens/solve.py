@@ -149,9 +149,12 @@ class SolveScreen(VimMotion, Screen[None]):
             return
         p = attempt.problem
 
-        self.query_one("#progress", Static).update(
-            f"  problem {session.index + 1} of {len(session.slugs)}"
-        )
+        progress = f"  problem {session.index + 1} of {len(session.slugs)}"
+        if attempt.solves > 1:
+            # Which pass you are on, because two runs at one problem in one
+            # sitting is exactly the situation where the screen has to say.
+            progress += f"  ·  solve {attempt.solves}"
+        self.query_one("#progress", Static).update(progress)
         title = Text(p.title, style="bold")
         title.append("   ")
         title.append(f"[{p.difficulty_label}]", style=DIFFICULTY_STYLE.get(p.difficulty, "white"))
@@ -466,6 +469,13 @@ class SolveScreen(VimMotion, Screen[None]):
         """
         if self._busy or self.engine.session is None:
             return
+        attempt = self.engine.attempt
+        if attempt is not None and attempt.solves > 1:
+            # A suspend records the attempt's clock, and on a later pass that
+            # clock is this pass's -- writing it back would overwrite the first
+            # solve's timing with the rerun's. Finish it or drop it first.
+            self._toast("finish or drop this re-solve first", "yellow")
+            return
         recorder, self._recorder = self._recorder, None
         if recorder is not None:
             recorder.pause()
@@ -708,11 +718,20 @@ class SolveScreen(VimMotion, Screen[None]):
         No capture step: there is nothing to archive against an attempt that
         will not exist. Declining leaves the problem exactly as it was, still
         running — `f` reopens the verdict prompt.
+
+        On a later pass it throws away the pass and not the attempt. The attempt
+        was sealed when its own finish was logged, and a rerun you did not like
+        is not grounds for deleting the solve that earned the score.
         """
+        attempt = self.engine.attempt
+        again = attempt is not None and attempt.solves > 1
         ok = await self.app.push_screen_wait(
             ConfirmModal(
-                "Throw this attempt away?",
-                "It is not recorded at all — no score, no review scheduled, "
+                "Throw this re-solve away?" if again else "Throw this attempt away?",
+                "The solve you already recorded is untouched — only this "
+                "second pass is dropped."
+                if again
+                else "It is not recorded at all — no score, no review scheduled, "
                 "nothing in your history.",
                 yes_label="throw it away",
                 no_label="keep it",
@@ -784,11 +803,14 @@ class SolveScreen(VimMotion, Screen[None]):
         return list(used) or [None]
 
     async def _capture_flow(self, advance: bool = True, chosen: dict | None = None) -> None:
-        """Both `$EDITOR` handoffs, then move to the next problem (spec §7).
+        """Both `$EDITOR` handoffs, then the offer of another pass (spec §7).
 
         The solution step is one handoff per approach you said you wrote; the
         reflection note is one for the solve, because a night has one reflection
         in it however many ways you solved the problem.
+
+        Every file written here is named for the pass that wrote it, so solving
+        the problem again does not overwrite what the first pass produced.
         """
         attempt = self.engine.attempt
         if attempt is None:
@@ -809,7 +831,12 @@ class SolveScreen(VimMotion, Screen[None]):
                 with self.app.editor_context():
                     for approach in buffers:
                         code = capture.capture_solution(
-                            attempt.problem, row, attempt.id, cfg.capture.language, approach
+                            attempt.problem,
+                            row,
+                            attempt.id,
+                            cfg.capture.language,
+                            approach,
+                            again=attempt.solves,
                         )
                         if code.saved and code.path:
                             saved_code += 1
@@ -819,7 +846,9 @@ class SolveScreen(VimMotion, Screen[None]):
                                 approach.name if approach else None,
                             )
 
-                    note = capture.capture_note(attempt.problem, attempt.id)
+                    note = capture.capture_note(
+                        attempt.problem, attempt.id, again=attempt.solves
+                    )
                     if note.saved and note.path:
                         self.engine.record_note(str(note.path))
             except SuspendNotSupported:
@@ -844,9 +873,44 @@ class SolveScreen(VimMotion, Screen[None]):
                 f"{archived} · {'note written' if note.saved else 'note skipped'}"
             )
 
-        if advance:
-            self.engine.advance()
-            self._next_problem()
+        if not advance:
+            return
+        if await self._offer_again():
+            return
+        self.engine.advance()
+        self._next_problem()
+
+    async def _offer_again(self) -> bool:
+        """Ask whether to solve the same problem again, right now.
+
+        Here rather than at the verdict prompt because the answer is only worth
+        anything once the pass is fully written down: the code is archived, the
+        note is written, and the thing you are being offered is a clean second
+        run at a problem still fresh in your head.
+
+        Offered after a give-up too, which is the pass where a second go is
+        worth the most.
+        """
+        if self.engine.attempt is None:
+            return False
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Solve it again?",
+                "Same problem, fresh clock. It is recorded under this attempt — "
+                "it won't re-score it or move the review.",
+                yes_label="again",
+                no_label="next problem",
+            )
+        )
+        if not ok:
+            return False
+        self.engine.solve_again()
+        # No recorder: speech mode covers the first pass, whose audio the attempt
+        # already holds. A second recording would need a file and a column of its
+        # own, and going without is better than quietly overwriting the first.
+        self._render_problem()
+        self._toast("fresh clock — solve it again")
+        return True
 
     def _end_run_flow(self) -> Worker:
         return self.run_worker(self._do_end_run(), exclusive=True)

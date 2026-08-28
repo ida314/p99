@@ -158,8 +158,30 @@ def submission_path(slug: str, attempt_id: int, n: int, ext: str) -> Path:
     return code_dir() / slug / f"{attempt_id}-wrong{n}.{ext}"
 
 
+def resolve_code_path(slug: str, attempt_id: int, n: int, ext: str) -> Path:
+    """A later pass's solution, beside the first one rather than over it.
+
+    Named the way a failed submit is: the attempt's id, then what this file is.
+    Every pass you sat keeps its own file, which is the only way a re-solve is
+    worth anything -- the diff between pass one and pass two is the artifact.
+    """
+    ext = ext.lstrip(".")
+    return code_dir() / slug / f"{attempt_id}-again{n}.{ext}"
+
+
+def resolve_approach_code_path(slug: str, attempt_id: int, n: int, key: str, ext: str) -> Path:
+    """One approach's solution on a later pass. `approach_code_path` plus the pass."""
+    ext = ext.lstrip(".")
+    return code_dir() / slug / f"{attempt_id}-again{n}-{key}.{ext}"
+
+
 def note_path(slug: str, attempt_id: int) -> Path:
     return notes_dir() / slug / f"{attempt_id}.md"
+
+
+def resolve_note_path(slug: str, attempt_id: int, n: int) -> Path:
+    """The reflection note for a later pass, beside the first pass's."""
+    return notes_dir() / slug / f"{attempt_id}-again{n}.md"
 
 
 def audio_path(slug: str, attempt_id: int) -> Path:

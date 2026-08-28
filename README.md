@@ -158,7 +158,15 @@ in settings and replaying reschedules all of it.
    rejected — a wrong answer is the only artifact of an attempt that stops
    existing the moment you fix it, and the diff against what finally passed is
    the lesson. Turn it off in settings if you would rather not be asked.
-7. **Summary** — the run's death screen, scored and ranked against every past run.
+7. **Again?** — the offer of a second pass at the same problem, right now, with
+   a fresh clock. `y` reruns it, `n` moves on. A rerun is recorded **under the
+   same attempt**: its own verdict, its own time, its own code file
+   (`<id>-again2.py`) and its own note, beside the first pass rather than over
+   it. What it does not do is score anything or move a review — the card was
+   scheduled by the first pass, and one attempt is one review however many times
+   you sat it. Offered after a surrender too, which is the pass where a second
+   go is worth the most.
+8. **Summary** — the run's death screen, scored and ranked against every past run.
 
 A run does not have to end the day it starts. `z` **suspends** it: the problem
 on screen keeps its clock reading, its hint tier and its failed-submit count,
@@ -222,7 +230,8 @@ real points.
 | `a` | the solutions screen — every way you know to solve a problem (home) |
 | `e` | write the code for a way you have never written (solutions screen) |
 | `esc` | back one screen — every post-solve prompt steps back to the one before it, and the verdict prompt back to the problem |
-| `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded) |
+| `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded); on a rerun it drops the rerun and keeps the solve behind it |
+| `y` `n` | solve it again / move on, at the offer after every finished pass |
 | `x` | give up (scores 0; the attempt is still recorded) |
 | `z` | suspend the run — put it down now, pick it up with `c` later (solve) |
 | `d` | delete the highlighted run (history) |
