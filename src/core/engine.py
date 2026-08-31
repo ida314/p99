@@ -522,7 +522,7 @@ class RunEngine:
         time_optimality: str | None = None,
         space_optimality: str | None = None,
         strategies: dict[str, list[str]] | None = None,
-        solutions: list[dict] | None = None,
+        methods: list[dict] | None = None,
     ) -> Attempt:
         a = self._require_attempt()
         if a.solves > 1:
@@ -543,7 +543,7 @@ class RunEngine:
                 time_optimality=time_optimality,
                 space_optimality=space_optimality,
                 strategies=strategies,
-                solutions=solutions,
+                methods=methods,
             )
         if verdict == "gave_up":
             # Nothing you claim about a solution survives not having reached
@@ -567,18 +567,18 @@ class RunEngine:
                 "claimed_space_complexity": claimed_space_complexity,
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
-                # The approach you wrote, as you typed it. Rides on this payload
-                # rather than a later event so that `events.apply` can write the
-                # rows before it grades the card -- `srs.rate` reads them.
-                # Omitted entirely when you skipped the prompt, so an old event
-                # and a skipped one are the same shape.
+                # The patterns you reached for, as you typed them. Rides on this
+                # payload rather than a later event so that `events.apply` can
+                # write the rows before it grades the card -- `srs.rate` reads
+                # them. Omitted entirely when you skipped the prompt, so an old
+                # event and a skipped one are the same shape.
                 **({"strategies": strategies} if strategies else {}),
-                # The problem's own list of ways, with what each one costs. Same
-                # payload for the same reason, and a sharper one: `saw_better`
-                # asks whether an optimal way is recorded here that is not the
-                # one you wrote, so these rows have to exist before the fold
-                # reaches `_grade`.
-                **({"solutions": solutions} if solutions else {}),
+                # The problem's own list of methods, with what each one costs and
+                # which one you wrote. Same payload for the same reason, and a
+                # sharper one: `saw_better` asks whether an optimal method is
+                # recorded here that is not the one you wrote, so these rows have
+                # to exist before the fold reaches `_grade`.
+                **({"methods": methods} if methods else {}),
             },
         )
         a.finished = True
@@ -623,13 +623,13 @@ class RunEngine:
         time_optimality: str | None = None,
         space_optimality: str | None = None,
         strategies: dict[str, list[str]] | None = None,
-        solutions: list[dict] | None = None,
+        methods: list[dict] | None = None,
     ) -> Attempt:
         """End a later pass. Recorded beside the attempt, never over it.
 
         Carries the same answers a finish does, including the two post-solve
-        blocks -- naming a second route tonight is exactly the thing the
-        approach library wants to hear about. What it does not carry is a
+        blocks -- naming a second method tonight is exactly the thing the
+        methods list wants to hear about. What it does not carry is a
         grading: see the `problem_resolved` branch of `events.apply`.
 
         A `gave_up` pass is a `resolves` row that says so, not a
@@ -655,7 +655,7 @@ class RunEngine:
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
                 **({"strategies": strategies} if strategies else {}),
-                **({"solutions": solutions} if solutions else {}),
+                **({"methods": methods} if methods else {}),
             },
         )
         a.finished = True
@@ -713,15 +713,15 @@ class RunEngine:
         self.attempt = None
 
     def archive_code(
-        self, path: str, language: str | None = None, approach: str | None = None
+        self, path: str, language: str | None = None, method: str | None = None
     ) -> None:
-        """Attach one archived file to the current attempt.
+        """Attach the archived file to the current attempt, tagged with a method.
 
-        Called once per approach you wrote, so an attempt can have several.
-        `approach` is the name as you typed it, not a key: the key is derived in
-        `events._record_solution`, on the same bargain as every other projection
-        -- a change to `strategies.normalise` is one replay from applying to
-        everything already logged.
+        `method` is the name as you typed it, not a key: the key is derived in
+        `events._record_method_code`, on the same bargain as every other
+        projection -- a change to `methods.normalise` is one replay from applying
+        to everything already logged. None is normal: a solve where you named no
+        method still archives its file.
         """
         a = self._require_attempt()
         events.append(
@@ -732,7 +732,7 @@ class RunEngine:
                 "slug": a.problem.slug,
                 "code_path": path,
                 "language": language,
-                "approach": approach,
+                "method": method,
                 # Which pass wrote it. Omitted on the first one, so the payload
                 # of a plain solve is the shape it has always been.
                 **({"resolve_n": a.solves} if a.solves > 1 else {}),

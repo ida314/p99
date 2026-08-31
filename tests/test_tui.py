@@ -28,8 +28,8 @@ from core.tui.screens import (
     MasteredScreen,
     SettingsScreen,
     SetupScreen,
-    SolutionsModal,
-    SolutionsScreen,
+    MethodsModal,
+    MethodsScreen,
     SolveScreen,
     StatsScreen,
     StrategyModal,
@@ -344,7 +344,6 @@ planned_n = 1
 [capture]
 enabled = true
 language = "python"
-per_approach = true
 
 [strategy]
 enabled = true
@@ -353,7 +352,7 @@ enabled = true
 
 @pytest.fixture
 def library_app(isolated_home, monkeypatch, env_editor):
-    """Both halves on: name the approaches, then archive one file per approach."""
+    """Both halves on: name what you did, then archive the file it produced."""
     import contextlib
 
     paths.ensure_dirs()
@@ -371,7 +370,7 @@ def library_app(isolated_home, monkeypatch, env_editor):
 
 @pytest.fixture
 def strategy_app(isolated_home):
-    """An app that asks which approach you took, and archives nothing."""
+    """An app that asks what you did, and archives nothing."""
     paths.ensure_dirs()
     paths.config_file().write_text(STRATEGY_CONFIG)
     return CoreApp(db.open_db())
@@ -2225,7 +2224,7 @@ async def test_the_settings_action_row_is_not_a_value(app):
         assert screen.rows[row - 1].key == "cache.offline"
 
 
-# --- the approach you wrote, and the problem's ways --------------------------
+# --- the patterns you used, and the problem's methods ------------------------
 
 
 async def _to_the_strategy_prompt(app, pilot, *, optimality_presses: int = 0):
@@ -2252,12 +2251,12 @@ async def _to_the_strategy_prompt(app, pilot, *, optimality_presses: int = 0):
     return app.screen
 
 
-async def _to_the_solutions_prompt(app, pilot, **kwargs):
+async def _to_the_methods_prompt(app, pilot, **kwargs):
     """The screen after that one: the ways this problem can be solved."""
     await _to_the_strategy_prompt(app, pilot, **kwargs)
     await pilot.press("ctrl+s")
     await pilot.pause()
-    assert isinstance(app.screen, SolutionsModal)
+    assert isinstance(app.screen, MethodsModal)
     return app.screen
 
 
@@ -2278,8 +2277,8 @@ async def _name_a_strategy(app, pilot, name: str):
     await _type_into(app, pilot, "#strategy-new", name)
 
 
-async def _name_a_way(app, pilot, name: str):
-    await _type_into(app, pilot, "#solutions-new", name)
+async def _name_a_method(app, pilot, name: str):
+    await _type_into(app, pilot, "#methods-new", name)
 
 
 def _option_prompts(screen, widget_id: str = "#strategy-list") -> str:
@@ -2291,8 +2290,8 @@ def _option_prompts(screen, widget_id: str = "#strategy-list") -> str:
     )
 
 
-async def test_the_strategy_prompt_records_the_approach_you_name(strategy_app):
-    """Type an approach, and it lands in every table it belongs in."""
+async def test_the_strategy_prompt_records_the_pattern_you_name(strategy_app):
+    """Type a pattern, and it lands in the two tables it belongs in."""
     app = strategy_app
     async with app.run_test() as pilot:
         screen = await _to_the_strategy_prompt(app, pilot)
@@ -2302,7 +2301,7 @@ async def test_the_strategy_prompt_records_the_approach_you_name(strategy_app):
         await _name_a_strategy(app, pilot, "Bottom-Up Tabulation")
         await pilot.press("ctrl+s")
         await pilot.pause()
-        await pilot.press("ctrl+s")  # through the solutions prompt
+        await pilot.press("ctrl+s")  # through the methods prompt
         await pilot.pause()
 
     conn = app.conn
@@ -2313,17 +2312,21 @@ async def test_the_strategy_prompt_records_the_approach_you_name(strategy_app):
     assert conn.execute("SELECT name FROM strategies").fetchone()["name"] == (
         "Bottom-Up Tabulation"
     )
-    # It is a way to solve this problem, because you just solved it that way.
-    linked = conn.execute("SELECT slug, key FROM problem_solutions").fetchone()
-    assert linked["key"] == "bottom-up-tabulation"
+    # And not a way to solve the problem: a pattern is not a route, and the
+    # methods prompt after this one is where a route gets written down.
+    assert conn.execute("SELECT COUNT(*) AS n FROM problem_methods").fetchone()["n"] == 0
     answered = conn.execute("SELECT key, role FROM attempt_strategies").fetchone()
-    # Typed on the screen that asks what you wrote, so it is what you wrote.
+    # Typed on the screen that asks what you reached for, so that is the role.
     assert (answered["key"], answered["role"]) == ("bottom-up-tabulation", "used")
     assert conn.execute("SELECT verdict FROM attempts").fetchone()["verdict"] is not None
 
 
-async def test_the_solutions_prompt_follows_the_strategy_one(strategy_app):
-    """Two screens, in order, and the second is about the problem not the solve."""
+async def test_the_methods_prompt_follows_the_strategy_one(strategy_app):
+    """Two screens, in order, and the second is about the problem not the solve.
+
+    And the second one starts empty however much you named on the first: a
+    pattern is not a route, and nothing derives one from the other.
+    """
     app = strategy_app
     async with app.run_test() as pilot:
         await _to_the_strategy_prompt(app, pilot)
@@ -2332,67 +2335,70 @@ async def test_the_solutions_prompt_follows_the_strategy_one(strategy_app):
         await pilot.pause()
 
         screen = app.screen
-        assert isinstance(screen, SolutionsModal)
-        # The approach you just named is already a row, and already marked as
-        # the one you wrote — you said so one screen ago.
-        assert "brute force" in _option_prompts(screen, "#solutions-list")
-        assert screen.names == {"brute-force": "brute force"}
+        assert isinstance(screen, MethodsModal)
+        assert screen.names == {}
+        assert "nothing recorded yet" in _option_prompts(screen, "#methods-list")
 
 
-async def test_the_solutions_prompt_records_optimal_and_not(strategy_app):
+async def test_the_methods_prompt_records_optimal_and_not(strategy_app):
     """Both kinds, which is the whole point of the page.
 
-    `o` cycles a row; the one you wrote arrives already priced from the verdict
-    prompt, because you answered that question one screen ago and asking twice
-    is how a prompt earns being skipped.
+    The method you type is marked as the one you wrote, and arrives already
+    priced from the verdict prompt: you answered that question one screen ago and
+    asking twice is how a prompt earns being skipped. A second one you have only
+    heard of is unclaimed until `o` says otherwise.
     """
     app = strategy_app
     async with app.run_test() as pilot:
-        await _to_the_strategy_prompt(app, pilot, optimality_presses=1)
-        await _name_a_strategy(app, pilot, "brute force")
-        await pilot.press("ctrl+s")
-        await pilot.pause()
+        screen = await _to_the_methods_prompt(app, pilot, optimality_presses=1)
 
-        screen = app.screen
-        assert screen.optimality == {"brute-force": "suboptimal"}
+        await _name_a_method(app, pilot, "try every pair")
+        assert screen.used == {"try-every-pair"}
+        assert screen.optimality == {"try-every-pair": "suboptimal"}
 
-        await _name_a_way(app, pilot, "hash map")
-        # A way you have just heard of is recorded unclaimed: being made to
-        # price it before you may write it down is how a list stops being kept.
-        assert screen.optimality["hash-map"] is None
+        await _name_a_method(app, pilot, "one pass with a map")
+        await pilot.press("space")  # not the one you wrote after all
+        assert screen.used == {"try-every-pair"}
+        # Being made to price a route before you may write it down is how a list
+        # stops being kept.
+        assert screen.optimality["one-pass-with-a-map"] is None
         await pilot.press("o")
-        assert screen.optimality["hash-map"] == "optimal"
+        assert screen.optimality["one-pass-with-a-map"] == "optimal"
 
         await pilot.press("ctrl+s")
         await pilot.pause()
 
     ways = {
         r["key"]: r["optimality"]
-        for r in app.conn.execute("SELECT key, optimality FROM problem_solutions")
+        for r in app.conn.execute("SELECT key, optimality FROM problem_methods")
     }
-    assert ways == {"brute-force": "suboptimal", "hash-map": "optimal"}
+    assert ways == {"try-every-pair": "suboptimal", "one-pass-with-a-map": "optimal"}
+    # Only the one you wrote is the attempt's own answer.
+    assert {r["key"] for r in app.conn.execute("SELECT key FROM attempt_methods")} == {
+        "try-every-pair"
+    }
 
 
-async def test_o_cycles_a_way_all_the_way_back_to_unclaimed(strategy_app):
+async def test_o_cycles_a_method_all_the_way_back_to_unclaimed(strategy_app):
     """A row marked by accident has to be un-markable; `o` is the only key here."""
     app = strategy_app
     async with app.run_test() as pilot:
-        screen = await _to_the_solutions_prompt(app, pilot)
-        await _name_a_way(app, pilot, "two pointers")
+        screen = await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "two pointers")
         for expected in ("optimal", "suboptimal", "unsure", None, "optimal"):
             await pilot.press("o")
             assert screen.optimality["two-pointers"] == expected
 
 
 async def test_escape_walks_back_one_screen_at_a_time(strategy_app):
-    """Solutions to strategy to verdict to the problem, one `esc` each.
+    """Methods to strategy to verdict to the problem, one `esc` each.
 
     `esc` means back one screen on every modal in here, and a back that skips a
     screen is worse than no back at all.
     """
     app = strategy_app
     async with app.run_test() as pilot:
-        await _to_the_solutions_prompt(app, pilot)
+        await _to_the_methods_prompt(app, pilot)
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, StrategyModal)
@@ -2433,8 +2439,10 @@ async def test_stepping_back_keeps_every_answer_on_all_three_screens(strategy_ap
         await _name_a_strategy(app, pilot, "Sliding Window")
         await pilot.press("ctrl+s")
         await pilot.pause()
-        # And so is a way named on the screen after it, with its own claim.
-        await _name_a_way(app, pilot, "Segment Tree")
+        # And so is a method named on the screen after it, with its own claim.
+        # It arrives priced `optimal` from the verdict prompt; `o` moves it one
+        # stop down the cycle, which makes the claim yours rather than carried.
+        await _name_a_method(app, pilot, "Segment Tree Over The Prefix")
         await pilot.press("o")
         await pilot.pause()
 
@@ -2466,8 +2474,9 @@ async def test_stepping_back_keeps_every_answer_on_all_three_screens(strategy_ap
         await pilot.press("ctrl+s")
         await pilot.pause()
         ways = app.screen
-        assert isinstance(ways, SolutionsModal)
-        assert ways.optimality["segment-tree"] == "optimal"
+        assert isinstance(ways, MethodsModal)
+        assert ways.optimality["segment-tree-over-the-prefix"] == "suboptimal"
+        assert ways.used == {"segment-tree-over-the-prefix"}
 
         await pilot.press("ctrl+s")
         await pilot.pause()
@@ -2479,12 +2488,14 @@ async def test_stepping_back_keeps_every_answer_on_all_three_screens(strategy_ap
         "O(n log n)",
         "optimal",
     )
-    assert conn.execute("SELECT name FROM strategies ORDER BY name").fetchall()[1]["name"] == (
+    # One row, and only one: the method you named on the next screen is not a
+    # strategy and never joins this vocabulary.
+    assert [r["name"] for r in conn.execute("SELECT name FROM strategies")] == [
         "Sliding Window"
-    )
+    ]
     assert conn.execute(
-        "SELECT optimality FROM problem_solutions WHERE key = 'segment-tree'"
-    ).fetchone()[0] == "optimal"
+        "SELECT optimality FROM problem_methods WHERE key = 'segment-tree-over-the-prefix'"
+    ).fetchone()[0] == "suboptimal"
 
 
 async def test_stepping_back_twice_still_lands_on_the_verdict(strategy_app):
@@ -2509,14 +2520,14 @@ async def test_saving_with_nothing_picked_is_the_skip(strategy_app):
     """
     app = strategy_app
     async with app.run_test() as pilot:
-        await _to_the_solutions_prompt(app, pilot)
+        await _to_the_methods_prompt(app, pilot)
         await pilot.press("ctrl+s")
         await pilot.pause()
 
     conn = app.conn
     assert conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
     assert conn.execute("SELECT COUNT(*) AS n FROM strategies").fetchone()["n"] == 0
-    assert conn.execute("SELECT COUNT(*) AS n FROM problem_solutions").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM problem_methods").fetchone()["n"] == 0
     row = conn.execute("SELECT verdict, ended_at FROM attempts").fetchone()
     assert row["verdict"] and row["ended_at"]
 
@@ -2527,7 +2538,7 @@ async def test_reading_the_list_and_changing_nothing_writes_nothing(strategy_app
     Without this, every solve would append a block restating what was already
     true and the log would grow a paragraph a night saying nothing.
     """
-    from core import catalog, strategies as strat
+    from core import catalog, methods as meth, strategies as strat
 
     app = strategy_app
     conn = app.conn
@@ -2538,7 +2549,9 @@ async def test_reading_the_list_and_changing_nothing_writes_nothing(strategy_app
     eng.finish(
         "solved_unaided",
         strategies=strat.payload(["sorting"]),
-        solutions=strat.solutions_payload([{"name": "hash map", "optimality": "optimal"}]),
+        methods=meth.payload(
+            [{"name": "count both and compare", "optimality": "optimal"}]
+        ),
     )
     eng.advance()
     eng.end_session()
@@ -2547,9 +2560,9 @@ async def test_reading_the_list_and_changing_nothing_writes_nothing(strategy_app
     async with app.run_test() as pilot:
         # `strategy_app` runs one problem, and the queue is random -- so this
         # only means something when it lands on the problem we seeded.
-        screen = await _to_the_solutions_prompt(app, pilot)
+        screen = await _to_the_methods_prompt(app, pilot)
         if screen.slug == "valid-anagram":
-            assert set(screen.names) == {"sorting", "hash-map"}
+            assert set(screen.names) == {"count-both-and-compare"}
             assert not screen._changed()
         await pilot.press("ctrl+s")
         await pilot.pause()
@@ -2561,7 +2574,7 @@ async def test_reading_the_list_and_changing_nothing_writes_nothing(strategy_app
     assert len(after) == 2
 
 
-async def test_naming_an_approach_leaves_the_cursor_on_it(strategy_app):
+async def test_naming_a_method_leaves_the_cursor_on_it(strategy_app):
     """The next keystroke has to act on what you just typed.
 
     Without this the cursor stays where it was and the next key acts on whatever
@@ -2569,18 +2582,20 @@ async def test_naming_an_approach_leaves_the_cursor_on_it(strategy_app):
     """
     app = strategy_app
     async with app.run_test() as pilot:
-        screen = await _to_the_solutions_prompt(app, pilot)
-        await _name_a_way(app, pilot, "aaa first alphabetically")
-        await _name_a_way(app, pilot, "zzz last alphabetically")
+        screen = await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "aaa first alphabetically")
+        await _name_a_method(app, pilot, "zzz last alphabetically")
         await pilot.press("o")
         await pilot.pause()
         assert screen.optimality == {
             "aaa-first-alphabetically": None,
             "zzz-last-alphabetically": "optimal",
         }
+        # Both were typed here, so both are marked as written tonight.
+        assert screen.used == {"aaa-first-alphabetically", "zzz-last-alphabetically"}
 
 
-async def test_space_marks_the_approach_you_wrote_and_undoes_itself(strategy_app):
+async def test_space_marks_the_pattern_you_used_and_undoes_itself(strategy_app):
     """One role now, so `space` is a checkbox and has to behave like one."""
     app = strategy_app
     async with app.run_test() as pilot:
@@ -2622,38 +2637,36 @@ async def test_the_vocabulary_is_shared_across_problems_and_sorted(strategy_app)
 async def test_the_quality_line_reads_the_problems_list(strategy_app):
     """The derived value is shown live, on the screen where its last input lands.
 
-    `saw_better` is now "an optimal way is recorded here that is not the one I
+    `saw_better` is "an optimal method is recorded here that is not the one I
     wrote", which is a question about the list on this screen — so this is where
     the label has to be, and it has to move when the list does.
     """
     app = strategy_app
     async with app.run_test() as pilot:
         # One press up the ladder from `not sure` is `not optimal`.
-        await _to_the_strategy_prompt(app, pilot, optimality_presses=1)
-        await _name_a_strategy(app, pilot, "brute force")
-        await pilot.press("ctrl+s")
-        await pilot.pause()
+        screen = await _to_the_methods_prompt(app, pilot, optimality_presses=1)
 
-        screen = app.screen
-        line = _plain(screen.query_one("#solutions-quality"))
+        line = _plain(screen.query_one("#methods-quality"))
         assert "brute force only" in line
-        assert "no optimal way recorded" in line
+        assert "no optimal method recorded" in line
 
-        await _name_a_way(app, pilot, "sliding window")
+        await _name_a_method(app, pilot, "try every pair")
+        await _name_a_method(app, pilot, "one sliding window")
+        await pilot.press("space")  # not the one you wrote
         await pilot.press("o")
         await pilot.pause()
 
-        line = _plain(screen.query_one("#solutions-quality"))
+        line = _plain(screen.query_one("#methods-quality"))
         assert "beaten, but you saw better" in line
-        assert "an optimal way is recorded that you did not write" in line
+        assert "an optimal method is recorded that you did not write" in line
 
 
 async def test_an_unclaimed_optimality_derives_no_quality_at_all(strategy_app):
     """`not sure` is not a claim, so there is nothing to label."""
     app = strategy_app
     async with app.run_test() as pilot:
-        screen = await _to_the_solutions_prompt(app, pilot)
-        assert "not claimed" in _plain(screen.query_one("#solutions-quality"))
+        screen = await _to_the_methods_prompt(app, pilot)
+        assert "not claimed" in _plain(screen.query_one("#methods-quality"))
 
 
 async def test_the_quality_reaches_the_run_summary(strategy_app):
@@ -2674,7 +2687,7 @@ async def test_the_quality_reaches_the_run_summary(strategy_app):
 
 
 async def test_neither_prompt_opens_on_a_surrender(strategy_app):
-    """There is no approach to record on an attempt that never reached one."""
+    """There is nothing to record on an attempt that never reached a solution."""
     app = strategy_app
     async with app.run_test() as pilot:
         await pilot.press("n")
@@ -2685,7 +2698,7 @@ async def test_neither_prompt_opens_on_a_surrender(strategy_app):
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
-        assert not isinstance(app.screen, (StrategyModal, SolutionsModal))
+        assert not isinstance(app.screen, (StrategyModal, MethodsModal))
 
 
 async def test_both_prompts_keep_their_buttons_on_a_short_terminal(isolated_home):
@@ -2710,7 +2723,7 @@ async def test_both_prompts_keep_their_buttons_on_a_short_terminal(isolated_home
 
     async with app.run_test(size=(80, 24)) as pilot:
         await _to_the_strategy_prompt(app, pilot)
-        for box_id in ("#strategy-box", "#solutions-box"):
+        for box_id in ("#strategy-box", "#methods-box"):
             box = app.screen.query_one(box_id)
             assert box.region.bottom <= 24
             for button in app.screen.query("Button"):
@@ -2720,11 +2733,11 @@ async def test_both_prompts_keep_their_buttons_on_a_short_terminal(isolated_home
             await pilot.pause()
 
 
-async def test_each_approach_you_wrote_is_archived_as_its_own_file(library_app):
-    """Two approaches, two buffers, two files — and two rows on the problem.
+async def test_the_solve_archives_one_file_tagged_with_its_method(library_app):
+    """One buffer per solve, and the method it took as a tag on the file.
 
-    The thing this stops being possible is two routes through a problem sharing
-    one archived file, which is what naming both of them used to produce.
+    Two patterns named on the screen before does not mean two buffers: the file
+    belongs to the solve, and the method is what says which route it is.
     """
     from pathlib import Path
 
@@ -2736,6 +2749,7 @@ async def test_each_approach_you_wrote_is_archived_as_its_own_file(library_app):
         assert screen.chosen == {"hash-map", "sorting"}
         await pilot.press("ctrl+s")
         await pilot.pause()
+        await _name_a_method(app, pilot, "sort then scan with a map")
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         assert isinstance(app.screen, SummaryScreen)
@@ -2743,30 +2757,28 @@ async def test_each_approach_you_wrote_is_archived_as_its_own_file(library_app):
         await pilot.pause()
 
     attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
-    rows = {r["key"]: r for r in app.conn.execute("SELECT * FROM problem_solutions")}
-    assert set(rows) == {"hash-map", "sorting"}
-    for key, row in rows.items():
-        path = Path(row["code_path"])
-        assert path.exists()
-        assert path.name == f"{attempt['id']}-{key}.py"
-        assert f"# approach: {key.replace('-', ' ')}" in path.read_text()
-    # The attempt still points at one of them, and it is the first one written.
-    assert attempt["code_path"] == rows["hash-map"]["code_path"]
+    rows = {r["key"]: r for r in app.conn.execute("SELECT * FROM problem_methods")}
+    assert set(rows) == {"sort-then-scan-with-a-map"}
+    path = Path(rows["sort-then-scan-with-a-map"]["code_path"])
+    assert path.exists()
+    # One file, named for the attempt and nothing else.
+    assert path.name == f"{attempt['id']}.py"
+    assert "# method: sort then scan with a map" in path.read_text()
+    assert attempt["code_path"] == str(path)
 
 
-async def test_the_solutions_screen_edits_what_a_way_costs(library_app):
+async def test_the_methods_screen_edits_what_a_method_costs(library_app):
     """`o` on the browsable copy, months later, through the same fold.
 
-    This is what the page buys over a role on the finish prompt: an approach you
+    This is what the page buys over a role on the finish prompt: a route you
     notice long after the solve gets recorded when you notice it.
     """
     app = library_app
     async with app.run_test() as pilot:
-        await _to_the_strategy_prompt(app, pilot)
-        await _name_a_strategy(app, pilot, "brute force")
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        await _name_a_way(app, pilot, "hash map")
+        await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "a try every pair")
+        await _name_a_method(app, pilot, "b one pass with a map")
+        await pilot.press("space")  # only the first was written tonight
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         await pilot.press("enter")  # off the summary, back home
@@ -2775,11 +2787,14 @@ async def test_the_solutions_screen_edits_what_a_way_costs(library_app):
         await pilot.press("a")
         await pilot.pause()
         screen = app.screen
-        assert isinstance(screen, SolutionsScreen)
-        assert [w.key for w in screen.ways] == ["brute-force", "hash-map"]
+        assert isinstance(screen, MethodsScreen)
+        assert [w.key for w in screen.ways] == [
+            "a-try-every-pair",
+            "b-one-pass-with-a-map",
+        ]
         assert all(w.optimality is None for w in screen.ways)
 
-        # Onto the right pane, down to the unwritten way, and price it.
+        # Onto the right pane, down to the unwritten method, and price it.
         await pilot.press("l")
         await pilot.press("j")
         await pilot.press("o")
@@ -2787,14 +2802,14 @@ async def test_the_solutions_screen_edits_what_a_way_costs(library_app):
 
     rows = {
         r["key"]: r["optimality"]
-        for r in app.conn.execute("SELECT key, optimality FROM problem_solutions")
+        for r in app.conn.execute("SELECT key, optimality FROM problem_methods")
     }
-    assert rows == {"brute-force": None, "hash-map": "optimal"}
+    assert rows == {"a-try-every-pair": None, "b-one-pass-with-a-map": "optimal"}
     types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
-    assert types[-1] == "solution_updated"
+    assert types[-1] == "method_updated"
 
 
-async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(library_app):
+async def test_the_methods_screen_writes_code_for_a_method_you_never_wrote(library_app):
     """`e` closes the gap the page exists to show you.
 
     No attempt, no score, no schedule — the row simply stops being empty.
@@ -2803,11 +2818,10 @@ async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(librar
 
     app = library_app
     async with app.run_test() as pilot:
-        await _to_the_strategy_prompt(app, pilot)
-        await _name_a_strategy(app, pilot, "brute force")
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        await _name_a_way(app, pilot, "hash map")
+        await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "a try every pair")
+        await _name_a_method(app, pilot, "b one pass with a map")
+        await pilot.press("space")
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         await pilot.press("enter")
@@ -2816,9 +2830,9 @@ async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(librar
         await pilot.press("a")
         await pilot.pause()
         screen = app.screen
-        assert isinstance(screen, SolutionsScreen)
-        rendered = _option_prompts(screen, "#solution-ways")
-        assert "brute force" in rendered and "hash map" in rendered
+        assert isinstance(screen, MethodsScreen)
+        rendered = _option_prompts(screen, "#method-ways")
+        assert "a try every pair" in rendered and "b one pass with a map" in rendered
 
         cards_before = app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"]
         await pilot.press("l")
@@ -2827,10 +2841,12 @@ async def test_the_solutions_screen_writes_code_for_a_way_you_never_wrote(librar
         await pilot.pause()
         await pilot.pause()
 
-    row = app.conn.execute("SELECT * FROM problem_solutions WHERE key = 'hash-map'").fetchone()
+    row = app.conn.execute(
+        "SELECT * FROM problem_methods WHERE key = 'b-one-pass-with-a-map'"
+    ).fetchone()
     assert row["attempt_uuid"] is None
     path = Path(row["code_path"])
-    assert path.exists() and path.name == "approach-hash-map.py"
+    assert path.exists() and path.name == "method-b-one-pass-with-a-map.py"
     assert "not from an attempt" in path.read_text()
     # Nothing about the schedule moved: this is a record, not a review.
     assert app.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == cards_before
@@ -3023,14 +3039,12 @@ async def test_a_re_solve_cannot_be_suspended(app):
     assert app.conn.execute("SELECT suspended_at FROM sessions").fetchone()["suspended_at"] is None
 
 
-async def test_the_second_way_you_wrote_joins_the_problems_list(strategy_app):
-    """A rerun by another route is the approach library's best case."""
+async def test_the_second_method_you_wrote_joins_the_problems_list(strategy_app):
+    """A rerun by another route is the methods list's best case."""
     app = strategy_app
     async with app.run_test() as pilot:
-        await _to_the_strategy_prompt(app, pilot)
-        await _name_a_strategy(app, pilot, "brute force")
-        await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "try every pair")
         await pilot.press("ctrl+s")
         await _another_pass(app, pilot)
 
@@ -3038,20 +3052,20 @@ async def test_the_second_way_you_wrote_joins_the_problems_list(strategy_app):
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
-        await _name_a_strategy(app, pilot, "hash map")
         await pilot.press("ctrl+s")
         await pilot.pause()
+        await _name_a_method(app, pilot, "one pass with a map")
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
 
     conn = app.conn
-    assert {r["key"] for r in conn.execute("SELECT key FROM problem_solutions")} == {
-        "brute-force",
-        "hash-map",
+    assert {r["key"] for r in conn.execute("SELECT key FROM problem_methods")} == {
+        "try-every-pair",
+        "one-pass-with-a-map",
     }
     # Both routes hang off the one attempt, which is what it means to have
     # solved the problem two ways in one sitting.
-    used = {r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")}
-    assert used == {"brute-force", "hash-map"}
+    used = {r["key"] for r in conn.execute("SELECT key FROM attempt_methods")}
+    assert used == {"try-every-pair", "one-pass-with-a-map"}

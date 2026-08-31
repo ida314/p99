@@ -801,15 +801,15 @@ def test_due_cards_come_back_weakest_first(conn):
 # --- the second axis, end to end --------------------------------------------
 
 
-def test_an_optimal_way_you_did_not_write_saves_a_beaten_solve(conn):
-    """The whole point of the solutions page, measured on the schedule.
+def test_an_optimal_method_you_did_not_write_saves_a_beaten_solve(conn):
+    """The whole point of the methods page, measured on the schedule.
 
     Two identical solves, both admitting they were beaten on time. One records
     that this problem has an optimal route which is not the one it wrote; the
     other records nothing. The first found the pattern late, the second missed
     it — so only the second comes back soon.
     """
-    from core import strategies
+    from core import methods, strategies
 
     beaten = dict(
         time_optimality="suboptimal",
@@ -821,8 +821,11 @@ def test_an_optimal_way_you_did_not_write_saves_a_beaten_solve(conn):
         "two-sum",
         **beaten,
         strategies=strategies.payload(["brute force"]),
-        solutions=strategies.solutions_payload(
-            [{"name": "hash map", "optimality": "optimal"}]
+        methods=methods.payload(
+            [
+                {"name": "try every pair", "used": True},
+                {"name": "one pass with a complement map", "optimality": "optimal"},
+            ]
         ),
     )
     _solve(conn, "3sum", **beaten)
@@ -834,7 +837,7 @@ def test_an_optimal_way_you_did_not_write_saves_a_beaten_solve(conn):
 def test_a_legacy_worth_learning_answer_still_saves_a_beaten_solve(conn):
     """The retired role keeps grading the way it always did.
 
-    An attempt recorded before the solutions page existed cannot be asked to
+    An attempt recorded before the methods page existed cannot be asked to
     fill the page in retroactively, and its answer is not worth less for having
     been given in the old words. `srs.grade_attempt` reads both doors.
     """
@@ -873,8 +876,6 @@ def test_the_list_grades_the_next_attempt_without_being_re_answered(conn):
     scheduler still knows you knew. A role on a finish prompt could only ever
     answer for the solve that filled it in.
     """
-    from core import strategies
-
     beaten = dict(
         time_optimality="suboptimal",
         claimed_complexity="O(n^2)",
@@ -883,14 +884,18 @@ def test_the_list_grades_the_next_attempt_without_being_re_answered(conn):
     # Once, on some earlier evening.
     events.append(
         conn,
-        events.SOLUTION_UPDATED,
-        {"slug": "two-sum", "solutions": [{"name": "hash map", "optimality": "optimal"}]},
+        events.METHOD_UPDATED,
+        {
+            "slug": "two-sum",
+            "methods": [
+                {"name": "one pass with a complement map", "optimality": "optimal"}
+            ],
+        },
     )
     # Tonight: beaten, and neither prompt was touched.
     _solve(conn, "two-sum", **beaten)
     _solve(conn, "3sum", **beaten)
 
-    assert strategies  # the payload helper is not needed: nothing was answered
     cards = _cards(conn)
     assert srs.parse_ts(cards["two-sum"]["due"]) > srs.parse_ts(cards["3sum"]["due"])
 
@@ -901,7 +906,7 @@ def test_recording_your_own_route_as_optimal_is_not_seeing_better(conn):
     Without that exclusion, a solve that recorded its own approach would read as
     having spotted something it missed, and the demote would never fire.
     """
-    from core import strategies
+    from core import methods, strategies
 
     beaten = dict(
         time_optimality="suboptimal",
@@ -913,8 +918,8 @@ def test_recording_your_own_route_as_optimal_is_not_seeing_better(conn):
         "two-sum",
         **beaten,
         strategies=strategies.payload(["brute force"]),
-        solutions=strategies.solutions_payload(
-            [{"name": "brute force", "optimality": "optimal"}]
+        methods=methods.payload(
+            [{"name": "try every pair", "optimality": "optimal", "used": True}]
         ),
     )
     _solve(conn, "3sum", **beaten)

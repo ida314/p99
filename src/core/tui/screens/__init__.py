@@ -3,11 +3,11 @@ from .finish import ConfirmModal, EndRunModal, FinishModal
 from .history import HistoryScreen
 from .home import HomeScreen
 from .mastered import MasteredScreen
+from .methods import MethodsModal
+from .methodsscreen import MethodsScreen
 from .queue import QueueScreen
 from .settings import SettingsScreen
 from .setup import RunPlan, SetupScreen
-from .solutions import SolutionsModal
-from .solutionsscreen import SolutionsScreen
 from .solve import SolveScreen
 from .statsscreen import StatsScreen
 from .strategy import StrategyModal
@@ -21,12 +21,12 @@ __all__ = [
     "HistoryScreen",
     "HomeScreen",
     "MasteredScreen",
+    "MethodsModal",
+    "MethodsScreen",
     "QueueScreen",
     "RunPlan",
     "SettingsScreen",
     "SetupScreen",
-    "SolutionsModal",
-    "SolutionsScreen",
     "SolveScreen",
     "StatsScreen",
     "StrategyModal",

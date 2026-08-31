@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from . import scoring, srs, strategies
+from . import methods, scoring, srs, strategies
 from .db import SCHEMA_VERSION, truncate_projections
 
 # --- event types (spec §4) -------------------------------------------------
@@ -36,12 +36,18 @@ PROBLEM_FINISHED = "problem_finished"
 PROBLEM_RESOLVED = "problem_resolved"
 CODE_ARCHIVED = "code_archived"
 SUBMISSION_ARCHIVED = "submission_archived"
-#: Code for one way of solving a problem, written outside any attempt -- the
-#: solutions screen filling in a route you named and never sat down and wrote.
+#: Code for one method, written outside any attempt -- the methods screen
+#: filling in a route you named and never sat down and wrote.
+METHOD_ARCHIVED = "method_archived"
+#: What one method costs, changed from the methods screen rather than at a finish
+#: prompt. An event and not an in-place update, because it feeds `saw_better` and
+#: everything that feeds a rating has to be replayable.
+METHOD_UPDATED = "method_updated"
+#: The same two, from before methods were a list of their own: they named a row
+#: in the shared strategy vocabulary, which is not a thing a method can be. They
+#: stay in the log and stay in `EVENT_TYPES` -- history is not rewritten -- and
+#: `apply` folds them nowhere, because the table they were written for is gone.
 SOLUTION_ARCHIVED = "solution_archived"
-#: What one way of solving a problem costs, changed from the solutions screen
-#: rather than at a finish prompt. An event and not an in-place update, because
-#: it feeds `saw_better` and everything that feeds a rating has to be replayable.
 SOLUTION_UPDATED = "solution_updated"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
@@ -73,6 +79,8 @@ EVENT_TYPES = frozenset(
         PROBLEM_RESOLVED,
         CODE_ARCHIVED,
         SUBMISSION_ARCHIVED,
+        METHOD_ARCHIVED,
+        METHOD_UPDATED,
         SOLUTION_ARCHIVED,
         SOLUTION_UPDATED,
         NOTE_WRITTEN,
@@ -269,15 +277,13 @@ def _record_strategies(
 
     Iterates `strategies.ROLES`, not `SELECTABLE_ROLES`: a new answer only ever
     carries `used`, but the log still holds `worth_learning` answers given before
-    the solutions page existed, and a fold that stopped reading them would erase
-    them on the next replay. History is not rewritten here; it is simply no
+    methods were a list of their own, and a fold that stopped reading them would
+    erase them on the next replay. History is not rewritten here; it is simply no
     longer added to.
 
-    Every named strategy also becomes a row on the problem's list of ways --
-    including a legacy `worth_learning` one, which was always a way to solve the
-    problem and is now finally somewhere that can say so. No optimality: naming
-    an approach is not claiming a cost for it, and the solutions block right
-    after this is what does the claiming.
+    Writes the vocabulary and the attempt's link to it, and nothing else. Naming a
+    pattern is not recording a way to solve the problem -- that is the `methods`
+    block, folded right after this one, and the two tables are never joined.
     """
     if not isinstance(block, dict):
         return
@@ -287,7 +293,6 @@ def _record_strategies(
                 "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
                 (entry.key, entry.name, event.ts),
             )
-            _touch_solution(conn, event, slug, entry.key)
             conn.execute(
                 "INSERT OR IGNORE INTO attempt_strategies"
                 "(attempt_uuid, attempt_id, slug, key, role) VALUES(?,?,?,?,?)",
@@ -295,83 +300,79 @@ def _record_strategies(
             )
 
 
-def _touch_solution(conn: sqlite3.Connection, event: Event, slug: str, key: str) -> None:
-    """Make sure this problem's list has a row for this way. Claims nothing.
+def _touch_method(
+    conn: sqlite3.Connection, event: Event, slug: str, key: str, name: str
+) -> None:
+    """Make sure this problem's list has a row for this method. Claims nothing.
 
     `INSERT OR IGNORE` on the way in and a bare `updated_at` bump after, so the
     row keeps the date it was first recorded and the problem still sorts to the
-    top of the solutions screen when you touch it tonight.
+    top of the methods screen when you touch it tonight. The name is only ever
+    written by the insert: the first spelling wins, exactly as it does in the
+    strategy vocabulary, because correcting your spelling is not this fold's job.
     """
     if not slug or not key:
         return
     conn.execute(
-        "INSERT OR IGNORE INTO problem_solutions(slug, key, first_seen, updated_at) "
-        "VALUES(?,?,?,?)",
-        (slug, key, event.ts, event.ts),
+        "INSERT OR IGNORE INTO problem_methods(slug, key, name, first_seen, updated_at) "
+        "VALUES(?,?,?,?,?)",
+        (slug, key, name, event.ts, event.ts),
     )
     conn.execute(
-        "UPDATE problem_solutions SET updated_at = ? WHERE slug = ? AND key = ?",
+        "UPDATE problem_methods SET updated_at = ? WHERE slug = ? AND key = ?",
         (event.ts, slug, key),
     )
 
 
-def _record_solutions(
+def _record_methods(
     conn: sqlite3.Connection,
     event: Event,
     slug: str,
     entries: Any,
+    attempt_uuid: str | None = None,
 ) -> None:
-    """Fold the `solutions` block: the ways this problem can be solved.
+    """Fold the `methods` block: the ways this problem can be solved.
 
-    Runs after `_record_strategies` and before `_grade`, and both halves of that
-    matter. After, because the strategy you used is already a row by then and
-    this only has to set its cost. Before, because `srs.rate` reads `saw_better`,
-    which is now partly a question about this table -- "is there an optimal way
-    here that is not the one I wrote".
+    Runs before `_grade`, and that matters: `srs.rate` reads `saw_better`, which
+    is "is there an optimal method recorded here that is not the one I wrote", so
+    both halves of the comparison have to be in place before the card is folded.
 
     An entry with no optimality still creates its row. "There is a monotonic
-    stack solution" is worth recording on its own, and being made to price it
-    before you may write it down is how a list stops getting written down.
+    stack route through this" is worth recording on its own, and being made to
+    price it before you may write it down is how a list stops getting written
+    down.
+
+    `used` is the one field that is about tonight: it links the attempt to the
+    method it wrote, which is what the archived file is tagged with and what
+    `saw_better` compares against. It is only ever added, never cleared -- a
+    second pass tonight that took a different route says both, truthfully.
     """
     if not isinstance(entries, list):
         return
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        named = strategies.clean([str(entry.get("name") or "")])
+        named = methods.clean([str(entry.get("name") or "")])
         if not named:
             continue
         key, name = named[0].key, named[0].name
-        conn.execute(
-            "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
-            (key, name, event.ts),
-        )
-        _touch_solution(conn, event, slug, key)
+        _touch_method(conn, event, slug, key, name)
         optimality = entry.get("optimality")
-        if optimality in strategies.OPTIMALITIES:
+        if optimality in methods.OPTIMALITIES:
             conn.execute(
-                "UPDATE problem_solutions SET optimality = ?, updated_at = ? "
+                "UPDATE problem_methods SET optimality = ?, updated_at = ? "
                 "WHERE slug = ? AND key = ?",
                 (optimality, event.ts, slug, key),
             )
+        if attempt_uuid and entry.get("used"):
+            conn.execute(
+                "INSERT OR IGNORE INTO attempt_methods"
+                "(attempt_uuid, attempt_id, slug, key) VALUES(?,?,?,?)",
+                (attempt_uuid, _attempt_id(conn, attempt_uuid), slug, key),
+            )
 
 
-def _sole_used_key(conn: sqlite3.Connection, attempt_uuid: str) -> str | None:
-    """The one approach this attempt wrote, or None if it wrote none or several.
-
-    "None if several" is the whole point rather than a shortcut. An attempt that
-    named two approaches archived two files, and nothing in a payload written
-    before the approach column existed says which file is which -- so the honest
-    answer is to attribute neither.
-    """
-    rows = conn.execute(
-        "SELECT key FROM attempt_strategies WHERE attempt_uuid = ? AND role = ?",
-        (attempt_uuid, strategies.USED),
-    ).fetchall()
-    return rows[0]["key"] if len(rows) == 1 else None
-
-
-def _record_solution_code(
+def _record_method_code(
     conn: sqlite3.Connection,
     event: Event,
     slug: str,
@@ -381,26 +382,22 @@ def _record_solution_code(
     language: str | None,
     attempt_uuid: str | None = None,
 ) -> None:
-    """Attach an archived file to one way of solving one problem.
+    """Attach an archived file to one method.
 
     Newest write wins, and that is not history being rewritten: every attempt
-    keeps its own file on disk under its own id, and this row is a pointer at
-    the most recent of them. What it replaces is a pointer, not a solution.
+    keeps its own file on disk under its own id, and this row is a pointer at the
+    most recent of them. What it replaces is a pointer, not a solution.
 
-    Touches no optimality. What a route costs is something you say on the
-    solutions page; writing the code for it says nothing about whether it is the
-    best one, and a fold that guessed here would be inventing the claim the
-    column exists to hold.
+    Touches no optimality. What a route costs is something you say on the methods
+    screen; writing the code for it says nothing about whether it is the best one,
+    and a fold that guessed here would be inventing the claim the column exists to
+    hold.
     """
     if not slug or not key or not code_path:
         return
+    _touch_method(conn, event, slug, key, name)
     conn.execute(
-        "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
-        (key, name, event.ts),
-    )
-    _touch_solution(conn, event, slug, key)
-    conn.execute(
-        "UPDATE problem_solutions SET code_path = ?, language = ?, "
+        "UPDATE problem_methods SET code_path = ?, language = ?, "
         "attempt_uuid = ?, attempt_id = ?, updated_at = ? WHERE slug = ? AND key = ?",
         (
             code_path,
@@ -428,34 +425,32 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
         # `attempt_uuid`, so the live path has to reach the same place.
         conn.execute("DELETE FROM resolves WHERE attempt_uuid = ?", (attempt_uuid,))
         # The attempt's answer goes; the vocabulary and the problem's list of
-        # approaches stay. A strategy you named is a thing you learned about the
+        # methods stay. A strategy you named is a thing you learned about the
         # problem, and it did not stop being true because the attempt that
         # taught it to you should not have counted. A replay reaches the same
         # place from the other direction: it skips the event entirely, so a
         # strategy that *only* this attempt ever named is simply never created.
         conn.execute("DELETE FROM attempt_strategies WHERE attempt_uuid = ?", (attempt_uuid,))
-        # The library row goes with it, and this one is not a judgement call:
-        # `code_archived` carries a top-level `attempt_uuid`, so `replay` skips
-        # the event outright and never creates the row at all. Keeping it here
-        # would make the live projection disagree with the replayed one, which
-        # is the one invariant this whole design rests on. The file on disk
-        # stays, like every other piece of archived writing.
+        # Which method this attempt wrote goes with it, for the same reason its
+        # strategy answer does: `replay` skips the `problem_finished` outright,
+        # so the row would never have existed on a rebuild.
+        conn.execute("DELETE FROM attempt_methods WHERE attempt_uuid = ?", (attempt_uuid,))
         # The problem's list keeps its rows and loses this attempt's pointer.
         #
-        # The row stays for the reason the comment above gives: a way to solve
-        # the problem did not stop being one because the attempt that named it
-        # should not have counted. The *pointer* goes because `code_archived`
-        # carries a top-level `attempt_uuid`, so `replay` skips it outright and
-        # never attaches the file -- nulling it here is the live path moving
-        # towards the replayed one rather than away.
+        # The row stays because a way to solve the problem did not stop being one
+        # because the attempt that named it should not have counted. The
+        # *pointer* goes because `code_archived` carries a top-level
+        # `attempt_uuid`, so `replay` skips it outright and never attaches the
+        # file -- nulling it here is the live path moving towards the replayed
+        # one rather than away.
         #
         # The two still do not land in exactly the same place: a replay skips the
-        # `problem_finished` too, so a way that *only* this attempt ever named is
-        # never created at all. That gap is inherited, deliberate, and the same
+        # `problem_finished` too, so a method that *only* this attempt ever named
+        # is never created at all. That gap is inherited, deliberate, and the same
         # one `strategies` has had since v7. The file on disk stays either way,
         # like every other piece of archived writing.
         conn.execute(
-            "UPDATE problem_solutions SET code_path = NULL, language = NULL, "
+            "UPDATE problem_methods SET code_path = NULL, language = NULL, "
             "attempt_uuid = NULL, attempt_id = NULL WHERE attempt_uuid = ?",
             (attempt_uuid,),
         )
@@ -595,12 +590,14 @@ def apply(
         _record_strategies(
             conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
         )
-        # Then the problem's own list, which is what `saw_better` now asks about:
-        # is there an optimal way here that is not the one you wrote. Both blocks
-        # ride this payload for the same reason -- a later event would need a
-        # regrade, and the top-level `attempt_uuid` means the existing tombstone
-        # skip already covers them.
-        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
+        # Then the problem's own list of methods, which is what `saw_better` now
+        # asks about: is there an optimal method here that is not the one you
+        # wrote. Both blocks ride this payload for the same reason -- a later
+        # event would need a regrade, and the top-level `attempt_uuid` means the
+        # existing tombstone skip already covers them.
+        _record_methods(
+            conn, event, p.get("slug", ""), p.get("methods"), p["attempt_uuid"]
+        )
         # Every rating input is in place by now: verdict and timing from this
         # event, the hint tier from earlier `hint_revealed` events, and both
         # halves of `saw_better` from the two blocks just above.
@@ -637,24 +634,27 @@ def apply(
             ),
         )
         # Both blocks fold exactly as they do on a finish. `attempt_strategies`
-        # is keyed `(attempt_uuid, key)`, so solving the problem a second way
-        # tonight simply adds a row -- which is the true thing to record -- and
-        # the problem's list of ways accumulates as it always does.
+        # and `attempt_methods` are both keyed `(attempt_uuid, key)`, so solving
+        # the problem a second way tonight simply adds a row -- which is the true
+        # thing to record -- and the problem's list of methods accumulates as it
+        # always does.
         _record_strategies(
             conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
         )
-        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
+        _record_methods(
+            conn, event, p.get("slug", ""), p.get("methods"), p["attempt_uuid"]
+        )
         # No `_grade`, and this is the whole reason the event exists. The card
         # was folded by the `problem_finished` this pass sits under; grading
         # again would bump `reps` twice and spend a mastery rung on one sitting.
         # Solving it again is worth recording and is not a second review -- the
-        # same line the solutions screen already draws.
+        # same line the methods screen already draws.
 
     elif event.type == CODE_ARCHIVED:
-        # `attempts.code_path` is the attempt's headline file, and with several
-        # approaches archived off one solve there are several to choose from.
-        # First one saved wins, guarded on the column rather than on a counter
-        # so a replay makes the same choice in the same order.
+        # `attempts.code_path` is the attempt's headline file. First one saved
+        # wins, guarded on the column rather than on a counter so a replay makes
+        # the same choice in the same order -- a solve archives one file now, but
+        # the log holds nights that archived several, one per approach named.
         #
         # `resolve_n` says the file came out of a later pass at the same problem,
         # and then the headline it claims is that pass's rather than the
@@ -677,41 +677,33 @@ def apply(
                 (p.get("code_path"), p["attempt_uuid"]),
             )
             _update_attempt(conn, p["attempt_uuid"], language=p.get("language"))
-        # The approach this file is for. Named on the payload since the library
-        # existed; before that, inferred -- an attempt that wrote exactly one
-        # approach wrote it in this file, and there is nothing to be ambiguous
-        # about. That inference is what gives the library its back catalogue
-        # without a migration and without touching a single logged payload.
-        named = strategies.clean([p["approach"]]) if p.get("approach") else []
-        entry = named[0] if named else None
-        if entry is None:
-            key = _sole_used_key(conn, p["attempt_uuid"])
-            row = (
-                conn.execute("SELECT name FROM strategies WHERE key = ?", (key,)).fetchone()
-                if key
-                else None
-            )
-            entry = strategies.Strategy(key=key, name=row["name"]) if row else None
-        if entry is not None:
-            _record_solution_code(
+        # The method this file is for, as a tag and nothing more: one solve
+        # writes one file, and naming the method it took is what makes the
+        # methods screen able to say which routes you have actually written.
+        # Absent on every event logged before methods existed, and absent on a
+        # solve where you named none -- the file is still archived, it simply
+        # hangs off the attempt alone.
+        named = methods.clean([p.get("method") or ""])
+        if named:
+            _record_method_code(
                 conn,
                 event,
                 p.get("slug", ""),
-                entry.key,
-                entry.name,
+                named[0].key,
+                named[0].name,
                 p.get("code_path"),
                 p.get("language"),
                 attempt_uuid=p["attempt_uuid"],
             )
 
-    elif event.type == SOLUTION_ARCHIVED:
-        # An approach filled in from the library, with no attempt behind it.
-        # It joins the problem's list and the vocabulary exactly as one named at
-        # a finish prompt does -- what it does not get is an `attempt_strategies`
-        # row, because there was no attempt for it to be an answer about.
-        named = strategies.clean([p.get("approach") or ""])
+    elif event.type == METHOD_ARCHIVED:
+        # A method filled in from the methods screen, with no attempt behind it.
+        # It joins the problem's list exactly as one named at a finish prompt
+        # does -- what it does not get is an `attempt_methods` row, because there
+        # was no attempt for it to be an answer about.
+        named = methods.clean([p.get("method") or ""])
         if named:
-            _record_solution_code(
+            _record_method_code(
                 conn,
                 event,
                 p.get("slug", ""),
@@ -721,12 +713,19 @@ def apply(
                 p.get("language"),
             )
 
-    elif event.type == SOLUTION_UPDATED:
-        # One row's cost claim, set from the solutions screen. It reuses the
-        # `solutions` block shape rather than inventing a second one, so the
-        # prompt after a solve and the screen you open a month later fold
-        # through exactly the same code.
-        _record_solutions(conn, event, p.get("slug", ""), p.get("solutions"))
+    elif event.type == METHOD_UPDATED:
+        # One row's cost claim, set from the methods screen. It reuses the
+        # `methods` block shape rather than inventing a second one, so the prompt
+        # after a solve and the screen you open a month later fold through
+        # exactly the same code. No `attempt_uuid`: nothing here is an answer
+        # about a solve.
+        _record_methods(conn, event, p.get("slug", ""), p.get("methods"))
+
+    # `SOLUTION_ARCHIVED` and `SOLUTION_UPDATED` fold nowhere on purpose. They
+    # named a row in the shared strategy vocabulary, which is what the ways list
+    # used to be; a method is keyed by its problem and there is nothing in those
+    # payloads to key one from. The events stay in the log and stay valid -- they
+    # simply no longer project, exactly as `worth_learning` no longer prompts.
 
     elif event.type == SUBMISSION_ARCHIVED:
         conn.execute(

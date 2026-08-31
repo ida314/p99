@@ -23,13 +23,13 @@ from . import (
     config as config_module,
     db,
     events,
+    methods,
     paths,
     queues,
     render,
     scoring,
     srs,
     stats,
-    strategies,
 )
 
 console = Console()
@@ -140,10 +140,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     sessions = conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
     attempts = conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"]
     cards = conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"]
-    ways = conn.execute("SELECT COUNT(*) AS n FROM problem_solutions").fetchone()["n"]
+    ways = conn.execute("SELECT COUNT(*) AS n FROM problem_methods").fetchone()["n"]
     console.print(
         f"replayed [bold]{n}[/bold] events → {sessions} sessions, "
-        f"{attempts} attempts, {cards} cards, {ways} recorded solutions"
+        f"{attempts} attempts, {cards} cards, {ways} recorded methods"
     )
     return 0
 
@@ -166,7 +166,7 @@ def cmd_mastered(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_solutions(args: argparse.Namespace) -> int:
+def cmd_methods(args: argparse.Namespace) -> int:
     """The ways you know to solve a problem, through the same renderer as `a`.
 
     One problem's whole list, or every problem's when you name none. Read-only:
@@ -177,7 +177,7 @@ def cmd_solutions(args: argparse.Namespace) -> int:
     slugs = (
         [args.slug]
         if args.slug
-        else [r["slug"] for r in strategies.problems_with_solutions(conn)]
+        else [r["slug"] for r in methods.problems_with_methods(conn)]
     )
     if not slugs:
         console.print()
@@ -187,7 +187,7 @@ def cmd_solutions(args: argparse.Namespace) -> int:
     console.print()
     for slug in slugs:
         console.print(f"  [bold]{slug}[/bold]")
-        for line in render.solution_list(strategies.solutions(conn, slug)):
+        for line in render.method_list(methods.for_problem(conn, slug)):
             console.print(line)
         console.print()
     return 0
@@ -442,9 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_mastered = sub.add_parser("mastered", help="problems that have left the rotation")
     p_mastered.set_defaults(func=cmd_mastered)
 
-    p_solutions = sub.add_parser("solutions", help="every way you know to solve a problem")
-    p_solutions.add_argument("slug", nargs="?", help="one problem; omit for all of them")
-    p_solutions.set_defaults(func=cmd_solutions)
+    p_methods = sub.add_parser("methods", help="every way you know to solve a problem")
+    p_methods.add_argument("slug", nargs="?", help="one problem; omit for all of them")
+    p_methods.set_defaults(func=cmd_methods)
 
     p_replay = sub.add_parser("replay", help="rebuild projections from the event log")
     p_replay.set_defaults(func=cmd_replay)

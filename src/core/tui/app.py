@@ -18,7 +18,7 @@ from .screens import (
     RunPlan,
     SettingsScreen,
     SetupScreen,
-    SolutionsScreen,
+    MethodsScreen,
     SolveScreen,
     StatsScreen,
     SummaryScreen,
@@ -178,8 +178,8 @@ class CoreApp(App):
     def action_mastered(self) -> None:
         self.push_screen(MasteredScreen())
 
-    def action_solutions(self) -> None:
-        self.push_screen(SolutionsScreen())
+    def action_methods(self) -> None:
+        self.push_screen(MethodsScreen())
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen())

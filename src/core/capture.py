@@ -26,7 +26,7 @@ from pathlib import Path
 from . import branding, config, paths
 from .catalog import Problem
 from .scoring import VERDICT_LABELS, fmt_duration
-from .strategies import Strategy
+from .methods import Named
 
 COMMENT_PREFIX = {
     "py": "#",
@@ -90,13 +90,13 @@ def _code_header(
     ext: str,
     status: str,
     prompt: str,
-    approach: str | None = None,
+    method: str | None = None,
 ) -> str:
     """The pre-filled comment lines every code buffer opens with.
 
-    Three of them, or four when the buffer is for a named approach. The extra
-    line is not decoration: with two buffers open in a row for the same problem,
-    it is the only thing on screen that says which one you are in.
+    Three of them, or four when you named the method you took. The extra line is
+    not decoration: it is the tag that says which route this file is, and it is
+    stamped into the file itself so the answer survives the database.
     """
     prefix = COMMENT_PREFIX.get(ext, "#")
     started = attempt.get("started_at")
@@ -109,17 +109,17 @@ def _code_header(
     tier = int(attempt.get("max_hint_tier") or 0)
     hints = f"hints: tier {tier}" if tier else "hints: none"
     duration = fmt_duration(attempt.get("active_seconds"))
-    approach_line = f"{prefix} approach: {approach}\n" if approach else ""
+    method_line = f"{prefix} method: {method}\n" if method else ""
     return (
         f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
         f"{prefix} {when} | {duration} | {hints} | {status}\n"
-        f"{approach_line}"
+        f"{method_line}"
         f"{prefix} {prompt} :wq to save, :q! to skip.\n\n"
     )
 
 
 def solution_header(
-    problem: Problem, attempt: dict, ext: str, approach: str | None = None
+    problem: Problem, attempt: dict, ext: str, method: str | None = None
 ) -> str:
     """The pre-filled comment header on the solution buffer."""
     return _code_header(
@@ -128,7 +128,7 @@ def solution_header(
         ext,
         VERDICT_LABELS.get(attempt.get("verdict") or "", "UNRESOLVED"),
         "paste your solution below.",
-        approach,
+        method,
     )
 
 
@@ -221,50 +221,44 @@ def capture_solution(
     attempt: dict,
     attempt_id: int,
     language: str | None = None,
-    approach: Strategy | None = None,
+    method: Named | None = None,
     again: int = 1,
 ) -> CaptureResult:
     """Step 1 — archive the solution to `code/<slug>/<attempt_id>.<ext>`.
 
-    Called once per approach you said you wrote, so one solve can produce
-    several files. The unnamed case is the original one and lands in the
-    original place; a named one gets the approach in its filename and in its
-    header, and is skippable on its own with `:q!` like everything else here.
-    Skipping one and writing the other is a normal night, not an error.
+    One buffer per solve, whatever you named. The file is the solve's, and the
+    method is a tag on it: the name goes in the header and, through
+    `code_archived`, onto the method's row in the problem's list, which is what
+    lets the methods screen say which routes you have actually written.
+
+    Skippable with `:q!` like every other capture step.
     """
     cfg = config.load()
     lang = language or cfg.capture.language
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
-    header = solution_header(problem, attempt, ext, approach.name if approach else None)
-    if again > 1:
-        # A later pass at the same problem gets its own file, so the earlier
-        # one survives to be diffed against.
-        dest = (
-            paths.resolve_approach_code_path(problem.slug, attempt_id, again, approach.key, ext)
-            if approach
-            else paths.resolve_code_path(problem.slug, attempt_id, again, ext)
-        )
-    else:
-        dest = (
-            paths.approach_code_path(problem.slug, attempt_id, approach.key, ext)
-            if approach
-            else paths.code_path(problem.slug, attempt_id, ext)
-        )
+    header = solution_header(problem, attempt, ext, method.name if method else None)
+    # A later pass at the same problem gets its own file, so the earlier one
+    # survives to be diffed against.
+    dest = (
+        paths.resolve_code_path(problem.slug, attempt_id, again, ext)
+        if again > 1
+        else paths.code_path(problem.slug, attempt_id, ext)
+    )
     return _run_capture(
-        f"{problem.slug}.{ext}" if approach is None else f"{problem.slug}-{approach.key}.{ext}",
+        f"{problem.slug}.{ext}",
         header,
         paths.unclaimed(dest),
         lambda text: not _strip_comments(text, prefix),
     )
 
 
-def capture_library_solution(
+def capture_method(
     problem: Problem,
-    approach: Strategy,
+    method: Named,
     language: str | None = None,
 ) -> CaptureResult:
-    """The same buffer, for an approach no attempt ever wrote.
+    """The same buffer, for a method no attempt ever wrote.
 
     The header carries no clock, no hint tier and no verdict, because there was
     no attempt to have any: this is you sitting down with a route you named
@@ -277,13 +271,13 @@ def capture_library_solution(
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = (
         f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
-        f"{prefix} approach: {approach.name}\n"
+        f"{prefix} method: {method.name}\n"
         f"{prefix} not from an attempt — nothing here is timed or scored.\n"
         f"{prefix} paste your solution below. :wq to save, :q! to skip.\n\n"
     )
-    dest = paths.unclaimed(paths.library_code_path(problem.slug, approach.key, ext))
+    dest = paths.unclaimed(paths.method_code_path(problem.slug, method.key, ext))
     return _run_capture(
-        f"{problem.slug}-{approach.key}.{ext}",
+        f"{problem.slug}-{method.key}.{ext}",
         header,
         dest,
         lambda text: not _strip_comments(text, prefix),

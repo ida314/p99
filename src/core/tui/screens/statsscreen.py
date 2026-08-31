@@ -16,7 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 
 from ... import stats
-from ...render import approach_coverage_table, distribution_panel, empty_state
+from ...render import distribution_panel, empty_state, strategy_coverage_table
 from ..vim import MOTIONS, VimMotion
 
 # `strategy` last: it is empty until you have named a few, and a slice-by that
@@ -101,12 +101,14 @@ class StatsScreen(VimMotion, Screen[None]):
             blocks.append(Text(""))
 
         # Only under `by strategy`, where it is the same subject seen from the
-        # other side: the distributions say how long each approach takes you,
-        # and this says how many problems you can actually produce it on.
+        # other side: the distributions say how long each pattern takes you, and
+        # this says how many problems you have reached for it on -- with the
+        # methods list underneath, which is where "recorded but never written"
+        # lives now.
         if self.dimension == "strategy":
             blocks.append(
-                approach_coverage_table(
-                    stats.approach_coverage(conn), stats.single_route_problems(conn)
+                strategy_coverage_table(
+                    stats.strategy_coverage(conn), stats.method_coverage(conn)
                 )
             )
             blocks.append(Text(""))

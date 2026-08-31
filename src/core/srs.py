@@ -295,7 +295,7 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     # problem back soon.
     #
     # What counts as knowing has moved. It used to be a second role on the
-    # strategy prompt; it is now the problem's own list of ways carrying an
+    # strategy prompt; it is now the problem's own list of methods carrying an
     # optimal one you did not write -- a better record of the same fact, since
     # it survives being noticed on a later solve. `grade_attempt` reads both.
     if attempt.get("time_optimality") == "suboptimal" and not attempt.get("saw_better"):
@@ -424,8 +424,8 @@ def grade_attempt(
     """Fold one finished attempt into its problem's card.
 
     Called from `events.apply` on `problem_finished` and `problem_abandoned`,
-    *after* the attempt row has been updated *and* both the strategy and the
-    solutions blocks have been folded -- every input to the rating map is in
+    *after* the attempt row has been updated *and* both the strategies and the
+    methods blocks have been folded -- every input to the rating map is in
     place by then: the verdict, timing and cost claims from the event being
     applied, the hint tier from earlier `hint_revealed` events, and `saw_better`
     from the two blocks on the same payload. `events.apply` owns that ordering.
@@ -439,21 +439,20 @@ def grade_attempt(
         # `saw_better` asks one question through two doors, because it has been
         # answered two ways over this app's life. The legacy door is the
         # `worth_learning` role, retired from the prompt and kept in the log
-        # forever. The live door is the problem's own list: an optimal way is
-        # recorded here that is not the one you wrote. Both mean "you knew there
-        # was better", and an attempt graded before the solutions page existed
-        # has to keep grading the way it always did -- see `strategies`.
+        # forever. The live door is the problem's own list of methods: an optimal
+        # one is recorded there that is not the one you wrote. Both mean "you knew
+        # there was better", and an attempt graded before methods existed has to
+        # keep grading the way it always did -- see `strategies`.
         #
         # Aliased, like `p.difficulty AS problem_difficulty` elsewhere in here:
         # an unnamed EXISTS comes back under its own SQL text as the column
         # name, which `sqlite3.Row` cannot be asked for by any sane string.
         "       (EXISTS(SELECT 1 FROM attempt_strategies s "
         "               WHERE s.attempt_uuid = a.uuid AND s.role = 'worth_learning') "
-        "        OR EXISTS(SELECT 1 FROM problem_solutions ps "
-        "                  WHERE ps.slug = a.slug AND ps.optimality = 'optimal' "
-        "                    AND ps.key NOT IN (SELECT u.key FROM attempt_strategies u "
-        "                                       WHERE u.attempt_uuid = a.uuid "
-        "                                         AND u.role = 'used'))) "
+        "        OR EXISTS(SELECT 1 FROM problem_methods m "
+        "                  WHERE m.slug = a.slug AND m.optimality = 'optimal' "
+        "                    AND m.key NOT IN (SELECT u.key FROM attempt_methods u "
+        "                                      WHERE u.attempt_uuid = a.uuid))) "
         "         AS saw_better, "
         "       p.difficulty "
         "FROM attempts a LEFT JOIN problems p ON p.slug = a.slug "

@@ -86,8 +86,9 @@ one exception:
   second needs the problem back soon.
 
   What counts as knowing has moved once. It began as a `worth learning` role on
-  the prompt after the verdict; it is now the **solutions page** — the problem's
-  own list of ways — carrying an optimal one that is not the one you wrote.
+  the prompt after the verdict; it is now the **methods page** — the problem's
+  own list of ways to solve it — carrying an optimal method that is not the one
+  you wrote.
   `srs.grade_attempt` reads both, because an attempt recorded under the old role
   cannot be asked to fill in a page that did not exist, and its answer is not
   worth less for having been given in the old words.

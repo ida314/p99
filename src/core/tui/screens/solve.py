@@ -18,7 +18,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import audio, branding, cache, capture, scoring, stats, strategies
+from ... import audio, branding, cache, capture, methods, scoring, stats, strategies
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
@@ -32,7 +32,7 @@ from .finish import (
     EndRunModal,
     FinishModal,
 )
-from .solutions import SolutionsModal
+from .methods import MethodsModal
 from .strategy import StrategyModal
 
 
@@ -573,7 +573,7 @@ class SolveScreen(VimMotion, Screen[None]):
 
             # Three post-solve prompts, walked as a cursor rather than a chain
             # of awaits. `esc` on any of them steps back exactly one screen --
-            # solutions to strategy, strategy to verdict, verdict to the
+            # methods to strategy, strategy to verdict, verdict to the
             # problem -- and stepping back has to be repeatable: one back that
             # works and a second that dumps you somewhere else is worse than
             # none. Every screen reopens carrying what it last held, so a round
@@ -586,7 +586,7 @@ class SolveScreen(VimMotion, Screen[None]):
             used: list[tuple[str, str]] = []
             ways: list[dict[str, Any]] = []
             chosen: dict | None = None
-            solutions_block: list[dict[str, Any]] | None = None
+            methods_block: list[dict[str, Any]] | None = None
 
             step = 0
             while step < 3:
@@ -623,11 +623,11 @@ class SolveScreen(VimMotion, Screen[None]):
                     step = 2
                     continue
 
-                solutions_block = await self._ask_solutions(answers, used, ways)
-                if isinstance(solutions_block, dict) and solutions_block.get(SIGNAL_BACK):
-                    ways = solutions_block.get("picked") or []
-                    solutions_block = None
-                    self._toast("back to the approach")
+                methods_block = await self._ask_methods(answers, ways)
+                if isinstance(methods_block, dict) and methods_block.get(SIGNAL_BACK):
+                    ways = methods_block.get("picked") or []
+                    methods_block = None
+                    self._toast("back to the patterns")
                     step = 1
                     continue
                 step = 3
@@ -645,20 +645,20 @@ class SolveScreen(VimMotion, Screen[None]):
                 time_optimality=answers.get("time_optimality"),
                 space_optimality=answers.get("space_optimality"),
                 strategies=chosen if isinstance(chosen, dict) else None,
-                solutions=solutions_block if isinstance(solutions_block, list) else None,
+                methods=methods_block if isinstance(methods_block, list) else None,
             )
             self._stop_recording()
-            await self._capture_flow(chosen=chosen if isinstance(chosen, dict) else None)
+            await self._capture_flow(ways=methods_block)
         finally:
             self._busy = False
 
     @staticmethod
     def _used_pairs(chosen: Any) -> list[tuple[str, str]]:
-        """The `(key, name)` of everything the strategy prompt marked used.
+        """The `(key, name)` of every pattern the strategy prompt marked used.
 
-        The solutions screen needs both halves: the key to merge against rows the
-        database already holds, and the name because a strategy you typed one
-        screen ago exists nowhere else yet.
+        Both halves, because stepping back has to be a round trip: the key is
+        what the list is rebuilt against and the name is the only record of a
+        strategy you typed one screen ago and have not committed yet.
         """
         if not isinstance(chosen, dict):
             return []
@@ -668,7 +668,7 @@ class SolveScreen(VimMotion, Screen[None]):
         ]
 
     async def _ask_strategies(self, answers: dict, used: list) -> dict | None:
-        """Which approach did you write, from the shared vocabulary.
+        """Which patterns did you reach for, from the shared vocabulary.
 
         Before `engine.finish`, not after: the strategy rows have to exist by the
         time the card is graded. Asking afterwards would need a second event and
@@ -691,14 +691,18 @@ class SolveScreen(VimMotion, Screen[None]):
             StrategyModal(attempt.problem.title, attempt.problem.slug, used)
         )
 
-    async def _ask_solutions(self, answers: dict, used: list, ways: list) -> Any:
-        """The ways this problem can be solved, after the approach you took.
+    async def _ask_methods(self, answers: dict, ways: list) -> Any:
+        """The ways this problem can be solved, after the patterns you used.
 
         Also before `engine.finish`, and for a sharper reason than the strategy
-        prompt: `srs.rate` reads whether an optimal way is recorded here that is
-        not the one you wrote, so these rows have to be in place before the card
-        is folded. That ordering is the whole reason both answers ride the
+        prompt: `srs.rate` reads whether an optimal method is recorded here that
+        is not the one you wrote, so these rows have to be in place before the
+        card is folded. That ordering is the whole reason both answers ride the
         `problem_finished` payload instead of arriving as later events.
+
+        Takes no strategy answer, and that is the point of the change: a method is
+        the problem's own route and is never assembled out of the patterns you
+        just named. See `methods`.
         """
         attempt = self.engine.attempt
         cfg = self.app.config  # type: ignore[attr-defined]
@@ -707,9 +711,7 @@ class SolveScreen(VimMotion, Screen[None]):
         if answers.get("verdict") not in scoring.CLEAN_VERDICTS:
             return None
         return await self.app.push_screen_wait(
-            SolutionsModal(
-                attempt.problem.title, attempt.problem.slug, answers, used, ways
-            )
+            MethodsModal(attempt.problem.title, attempt.problem.slug, answers, ways)
         )
 
     async def _do_throw_away(self) -> None:
@@ -784,30 +786,29 @@ class SolveScreen(VimMotion, Screen[None]):
         finally:
             self._busy = False
 
-    def _approach_buffers(self, chosen: dict | None) -> list[strategies.Strategy | None]:
-        """Which solution buffers this solve opens, in order.
+    @staticmethod
+    def _method_tag(ways: Any) -> methods.Named | None:
+        """The method the archived file is for, or None.
 
-        `[None]` is the original behaviour and still the common case: one
-        unnamed buffer, landing in the file `attempts.code_path` has always
-        pointed at. Naming two approaches opens two, because two routes written
-        into one file is exactly the thing the library exists to stop being.
-
-        Ordered as the strategy screen listed them (alphabetical), so the second
-        buffer is never a surprise about which one you are in — and the header
-        says so as well.
+        One tag, because one solve writes one file. When you marked two methods
+        tonight -- which is what solving it twice looks like -- the file is tagged
+        with neither rather than with a guess: a wrong tag says something false
+        about which route the code is, and no tag only leaves the row unwritten.
         """
-        cfg = self.app.config  # type: ignore[attr-defined]
-        if not cfg.capture.per_approach or not chosen:
-            return [None]
-        used = strategies.clean(chosen.get(strategies.USED) or [])
-        return list(used) or [None]
+        if not isinstance(ways, list):
+            return None
+        named = methods.clean(
+            [str(w.get("name") or "") for w in ways if isinstance(w, dict) and w.get("used")]
+        )
+        return named[0] if len(named) == 1 else None
 
-    async def _capture_flow(self, advance: bool = True, chosen: dict | None = None) -> None:
+    async def _capture_flow(self, advance: bool = True, ways: Any = None) -> None:
         """Both `$EDITOR` handoffs, then the offer of another pass (spec §7).
 
-        The solution step is one handoff per approach you said you wrote; the
-        reflection note is one for the solve, because a night has one reflection
-        in it however many ways you solved the problem.
+        One handoff for the solution and one for the reflection note: a night has
+        one of each in it. The method you marked rides along as a tag -- it is
+        stamped into the file's header and attached to that method's row, which
+        is what lets the methods screen say which routes you have written.
 
         Every file written here is named for the pass that wrote it, so solving
         the problem again does not overwrite what the first pass produced.
@@ -819,7 +820,7 @@ class SolveScreen(VimMotion, Screen[None]):
         row = self.engine.attempt_row() or {}
         note = capture.CaptureResult(False)
         saved_code = 0
-        buffers = self._approach_buffers(chosen)
+        method = self._method_tag(ways)
         blocked = ""
 
         if not cfg.capture.enabled:
@@ -829,22 +830,21 @@ class SolveScreen(VimMotion, Screen[None]):
         else:
             try:
                 with self.app.editor_context():
-                    for approach in buffers:
-                        code = capture.capture_solution(
-                            attempt.problem,
-                            row,
-                            attempt.id,
+                    code = capture.capture_solution(
+                        attempt.problem,
+                        row,
+                        attempt.id,
+                        cfg.capture.language,
+                        method,
+                        again=attempt.solves,
+                    )
+                    if code.saved and code.path:
+                        saved_code += 1
+                        self.engine.archive_code(
+                            str(code.path),
                             cfg.capture.language,
-                            approach,
-                            again=attempt.solves,
+                            method.name if method else None,
                         )
-                        if code.saved and code.path:
-                            saved_code += 1
-                            self.engine.archive_code(
-                                str(code.path),
-                                cfg.capture.language,
-                                approach.name if approach else None,
-                            )
 
                     note = capture.capture_note(
                         attempt.problem, attempt.id, again=attempt.solves
@@ -863,9 +863,7 @@ class SolveScreen(VimMotion, Screen[None]):
             # silently dropping them for weeks is the worst outcome here.
             self._toast(f"no code or note captured: {blocked}", "yellow")
         else:
-            if saved_code > 1:
-                archived = f"{saved_code} approaches archived"
-            elif saved_code:
+            if saved_code:
                 archived = "code archived"
             else:
                 archived = "code skipped"

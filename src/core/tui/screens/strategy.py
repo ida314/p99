@@ -1,20 +1,27 @@
-"""The strategy prompt: which technique did you reach for.
+"""The strategy prompt: which patterns did you reach for.
 
-Runs once per solve, after the verdict prompt and before the solutions page. One
-question, and it is a question about *you*: which approach did you write. The
-answer is a word from a vocabulary that spans every problem you have ever
+Runs once per solve, after the verdict prompt and before the methods page. One
+question, and it is a question about *you*: which reusable techniques did you use.
+The answer is a word from a vocabulary that spans every problem you have ever
 solved, and that sharing is the whole point -- a technique you keep being slow
 under is a weak spot in its own right, and the stats screen slices solve times by
 strategy the same way it slices them by pattern.
 
+Not the way you solved the problem. That is the methods page that follows this
+one, where a whole route through this one problem gets a row of its own, with its
+own cost and its own code. The two lists never reference each other: a strategy
+means the same thing on every problem, a method means nothing away from its own,
+and a method that is built out of three patterns says so in its name. See
+`methods`.
+
 It used to ask more than this. A second role named the better approach you could
 see and had not written, and a third named an equal one. Both were answers about
-the *problem* wearing an attempt's clothes, and both now live on the solutions
-page that follows this screen, where a way to solve the problem can carry its own
-cost and its own code. What that move bought: an approach you notice two months
-later can be recorded when you notice it, instead of only in the ninety seconds
-after a solve. Old answers under the retired roles keep grading exactly as they
-did -- see `strategies` and `srs.grade_attempt`.
+the *problem* wearing an attempt's clothes, and both now live on the methods page,
+where a way to solve the problem can carry its own cost and its own code. What
+that move bought: a route you notice two months later can be recorded when you
+notice it, instead of only in the ninety seconds after a solve. Old answers under
+the retired roles keep grading exactly as they did -- see `strategies` and
+`srs.grade_attempt`.
 
 `esc` steps back to the verdict prompt with everything you answered still in it,
 because `esc` means "back one screen" on every other modal in here and this one
@@ -52,7 +59,7 @@ MARKS = {
 
 
 class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
-    """Pick the approach you wrote, from the vocabulary you have built.
+    """Pick the patterns you reached for, from the vocabulary you have built.
 
     Dismisses with a `strategies.payload()` block, with `{SIGNAL_BACK: True}` to
     reopen the verdict prompt, or with None when nothing was picked -- because
@@ -82,9 +89,10 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         super().__init__()
         self.problem_title = title
         self.slug = slug
-        #: Every strategy on offer, alphabetical. This problem's own first, then
-        #: the rest of the vocabulary, because a technique you named on another
-        #: problem is exactly the one worth being offered here.
+        #: Every strategy on offer, alphabetical. The ones you have already named
+        #: on this problem first, then the rest of the vocabulary, because a
+        #: technique you named on another problem is exactly the one worth being
+        #: offered here.
         self.known: list[strategies.Strategy] = []
         #: Held on the screen rather than in the widget, like `SetupScreen.chosen`
         #: -- an OptionList only knows the rows it is currently showing, so
@@ -106,11 +114,13 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="strategy-box"):
             yield Static(self.problem_title, classes="modal-title")
-            yield Static("which approach did you write? — optional", classes="field-label")
-            yield OptionList(id="strategy-list")
-            yield Input(placeholder="name another approach…  enter adds it", id="strategy-new")
             yield Static(
-                "  space  the approach you wrote    i add one"
+                "which patterns did you reach for? — optional", classes="field-label"
+            )
+            yield OptionList(id="strategy-list")
+            yield Input(placeholder="name another pattern…  enter adds it", id="strategy-new")
+            yield Static(
+                "  space  a pattern you used    i add one"
                 "    ctrl+s save    esc back to the verdict",
                 classes="hint-bar",
             )
@@ -252,7 +262,7 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         """Enter in the box names a new strategy and marks it used.
 
         Marked used, not merely added: you typed it on the screen that asks what
-        you wrote, immediately after writing it. Anything else would need a
+        you reached for, seconds after reaching for it. Anything else would need a
         second keystroke to say the obvious thing.
         """
         typed = event.value.strip()

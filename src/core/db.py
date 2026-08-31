@@ -40,9 +40,17 @@ from . import paths
 # 10: solving it again -- `resolves`, one row per pass after the first at the
 #    same problem in the same sitting. The attempt row stays the first pass, so
 #    nothing it already scored moves.
+# 11: methods -- the ways one problem can be solved become their own list,
+#    `problem_methods`, keyed by the problem and named in the problem's own
+#    terms, with `attempt_methods` saying which of them a solve wrote. They stop
+#    being rows in the shared strategy vocabulary, which is what
+#    `problem_solutions` made them: a strategy is a pattern that spans problems,
+#    a method is one route through one problem, and one table could not be both.
+#    `problem_solutions` is dropped and not recreated -- the log keeps every
+#    event that filled it, and the methods list starts empty.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -216,46 +224,69 @@ CREATE TABLE IF NOT EXISTS strategies (
   first_seen   TEXT NOT NULL
 );
 
--- The ways one problem can be solved: every approach you have recorded for it,
+-- The ways one problem can be solved: every method you have recorded for it,
 -- optimal or not, written or not.
 --
--- This is the problem's list, not any attempt's. A problem admits the approaches
--- it admits whether or not you have ever taken them, which is why `optimality`
+-- This is the problem's list, not any attempt's. A problem admits the methods it
+-- admits whether or not you have ever taken them, which is why `optimality`
 -- lives here and not on `attempts`: "there is an O(n log n) route" is true
 -- before you sit down and true after, and an attempt row can only ever say what
 -- *you* wrote on one particular evening.
 --
--- Accumulates. Rows come from the solutions prompt after a solve, from the
--- strategy you said you used, and from archiving code on the solutions screen.
--- Nothing removes one, because an approach that worked once did not stop
--- existing.
+-- Keyed by `(slug, key)` and holding its own `name`, because a method has no
+-- meaning away from its problem -- "sort, then two pointers from both ends" is
+-- not a technique, it is this problem's route. That is the whole difference from
+-- `strategies`, which is one vocabulary shared by every problem, and the reason
+-- these two tables never reference each other. See `methods`.
+--
+-- Accumulates. Rows come from the methods prompt after a solve and from the
+-- methods screen months later. Nothing removes one, because a route that worked
+-- once did not stop existing.
 --
 -- `optimality` is null until you say, and null is not `unsure`: an unanswered
--- question is not an answer. Same instinct that left `attempts.optimality`
--- alone rather than reinterpreting it when the cost claim grew a second axis.
+-- question is not an answer. Same instinct that left `attempts.optimality` alone
+-- rather than reinterpreting it when the cost claim grew a second axis.
 --
--- The code columns hold the *latest* write for this way. Every attempt keeps its
--- own file on disk under its own id; this is a pointer at the newest of them,
--- and replacing a pointer is not rewriting a solution.
-CREATE TABLE IF NOT EXISTS problem_solutions (
+-- The code columns hold the *latest* file written for this method. Every attempt
+-- keeps its own file on disk under its own id; this is a pointer at the newest
+-- of them, and replacing a pointer is not rewriting a solution.
+CREATE TABLE IF NOT EXISTS problem_methods (
   slug         TEXT NOT NULL REFERENCES problems(slug),
-  key          TEXT NOT NULL REFERENCES strategies(key),
-  optimality   TEXT,                      -- optimal|suboptimal|unsure|null
+  key          TEXT NOT NULL,            -- methods.normalise(name), per problem
+  name         TEXT NOT NULL,            -- 'sort, then two pointers'
+  optimality   TEXT,                     -- optimal|suboptimal|unsure|null
   code_path    TEXT,
   language     TEXT,
-  attempt_uuid TEXT,                      -- null for one added off an attempt
+  attempt_uuid TEXT,                     -- null for one added off an attempt
   attempt_id   INTEGER REFERENCES attempts(id),
   first_seen   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
   PRIMARY KEY (slug, key)
 );
-CREATE INDEX IF NOT EXISTS problem_solutions_attempt_idx
-  ON problem_solutions(attempt_uuid);
+CREATE INDEX IF NOT EXISTS problem_methods_attempt_idx
+  ON problem_methods(attempt_uuid);
 
--- What one attempt actually answered. `role` is `used` (what you wrote) or
--- `worth_learning` (the better approach you could see and did not write) --
--- the second is what `srs.rate` reads to tell a suboptimal solve you diagnosed
--- yourself from one you did not.
+-- Which method one attempt wrote. Usually one row; two on a night you solved it
+-- twice. This is the half of the methods list that is about tonight, and it is
+-- what `saw_better` compares the problem's optimal methods against -- an optimal
+-- method recorded here that is not in this table for this attempt is you having
+-- known there was better.
+CREATE TABLE IF NOT EXISTS attempt_methods (
+  attempt_uuid TEXT NOT NULL,
+  attempt_id   INTEGER REFERENCES attempts(id),
+  slug         TEXT NOT NULL,
+  key          TEXT NOT NULL,
+  PRIMARY KEY (attempt_uuid, key)
+);
+CREATE INDEX IF NOT EXISTS attempt_methods_slug_idx ON attempt_methods(slug);
+
+-- Which patterns one attempt reached for. `role` is `used` (what you wrote with)
+-- or `worth_learning` (the better approach you could see and did not write, a
+-- role nothing writes any more) -- the second is what `srs.rate` still reads to
+-- tell a suboptimal solve you diagnosed yourself from one you did not.
+--
+-- Says nothing about the ways the problem can be solved: that is
+-- `problem_methods`, and the two are never joined.
 CREATE TABLE IF NOT EXISTS attempt_strategies (
   attempt_uuid TEXT NOT NULL,
   attempt_id   INTEGER REFERENCES attempts(id),
@@ -333,7 +364,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # slug list, so replaying the log reproduces the queue exactly rather than
 # regenerating it.
 PROJECTION_TABLES = (
-    "problem_solutions",   # references attempts and strategies: children first
+    "problem_methods",     # references attempts: children first
+    "attempt_methods",     # references attempts: children first
     "attempt_strategies",  # references attempts and strategies: children first
     "strategies",
     "submissions",  # references attempts: children first, see the docstring
@@ -376,6 +408,12 @@ SHAPE_CHANGED_IN = {
     # A new table again, and again the bump is what does the work: the replay it
     # forces is what folds every `problem_resolved` already in the log.
     10: ("resolves",),
+    # `problem_solutions` is dropped and never recreated -- the DDL above no
+    # longer has it. What replaces it is not a rename: a method is keyed by its
+    # problem and carries its own name, so there is nothing in the old rows to
+    # migrate that the log does not already hold. The methods list starts empty
+    # and the replay this bump forces regrades every card without it.
+    11: ("problem_solutions", "problem_methods", "attempt_methods"),
 }
 
 

@@ -4,9 +4,9 @@
     ~/.config/<slug>/session               (0600, optional)
     ~/.local/share/<slug>/<slug>.db
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>.<ext>
-    ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-<approach>.<ext>
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-wrong<n>.<ext>
-    ~/.local/share/<slug>/code/<problem-slug>/approach-<approach>.<ext>
+    ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>-again<n>.<ext>
+    ~/.local/share/<slug>/code/<problem-slug>/method-<method>.<ext>
     ~/.local/share/<slug>/notes/<problem-slug>/<attempt_id>.md
     ~/.local/share/<slug>/audio/<problem-slug>/<attempt_id>.opus
     ~/.local/share/<slug>/cache/<problem-slug>.html
@@ -129,27 +129,16 @@ def code_path(slug: str, attempt_id: int, ext: str) -> Path:
     return code_dir() / slug / f"{attempt_id}.{ext}"
 
 
-def approach_code_path(slug: str, attempt_id: int, key: str, ext: str) -> Path:
-    """One approach's solution, when a single attempt wrote more than one.
+def method_code_path(slug: str, key: str, ext: str) -> Path:
+    """A method written from the methods screen, with no attempt behind it.
 
-    Beside the attempt's headline file rather than in a directory of its own:
-    everything one solve produced belongs in one place, and the suffix is what
-    says which route this file is. `key` is `strategies.normalise`d already, so
-    it is safe in a filename by construction.
+    Named for the method and not for an id, because there is no id: nobody sat a
+    timed attempt at this one. The `method-` prefix keeps it from ever colliding
+    with an attempt file, whose names all start with a number. `key` is
+    `methods.normalise`d already, so it is safe in a filename by construction.
     """
     ext = ext.lstrip(".")
-    return code_dir() / slug / f"{attempt_id}-{key}.{ext}"
-
-
-def library_code_path(slug: str, key: str, ext: str) -> Path:
-    """An approach written from the library, with no attempt behind it.
-
-    Named for the approach and not for an id, because there is no id: nobody sat
-    a timed attempt at this one. The `approach-` prefix keeps it from ever
-    colliding with an attempt file, whose names all start with a number.
-    """
-    ext = ext.lstrip(".")
-    return code_dir() / slug / f"approach-{key}.{ext}"
+    return code_dir() / slug / f"method-{key}.{ext}"
 
 
 def submission_path(slug: str, attempt_id: int, n: int, ext: str) -> Path:
@@ -167,12 +156,6 @@ def resolve_code_path(slug: str, attempt_id: int, n: int, ext: str) -> Path:
     """
     ext = ext.lstrip(".")
     return code_dir() / slug / f"{attempt_id}-again{n}.{ext}"
-
-
-def resolve_approach_code_path(slug: str, attempt_id: int, n: int, key: str, ext: str) -> Path:
-    """One approach's solution on a later pass. `approach_code_path` plus the pass."""
-    ext = ext.lstrip(".")
-    return code_dir() / slug / f"{attempt_id}-again{n}-{key}.{ext}"
 
 
 def note_path(slug: str, attempt_id: int) -> Path:

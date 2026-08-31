@@ -387,55 +387,55 @@ EndRunModal {
     border-left: tall $accent;
 }
 
-/* --- the solutions screen and its prompt ------------------------------- */
+/* --- the methods screen and its prompt ------------------------------- */
 
 /* Same two-pane shape as history, and the same reasoning about widths: the
-   problem list is a fixed column, the ways take the rest. Wider than #run-list
+   problem list is a fixed column, the methods take the rest. Wider than #run-list
    because a problem title plus its written/recorded ratio is longer than a
    run's rank line. */
-#solution-body {
+#method-body {
     height: 1fr;
 }
 
-#solution-problems {
+#method-problems {
     width: 36;
     border: round $panel;
     margin: 1 0 1 1;
 }
 
-#solution-problems:focus {
+#method-problems:focus {
     border: round $accent;
 }
 
-#solution-detail {
+#method-detail {
     width: 1fr;
     margin: 1 0 1 1;
     border-left: tall $panel;
     scrollbar-size-vertical: 1;
 }
 
-#solution-detail:focus {
+#method-detail:focus {
     border-left: tall $accent;
 }
 
-/* Every row render.solution_row emits carries its own leading spaces, so this
+/* Every row render.method_row emits carries its own leading spaces, so this
    borrows no columns of its own -- the same rule #run-detail follows. Unlike
    the history pane this one takes a cursor, because `o` edits the row under
    it. */
-#solution-ways {
+#method-ways {
     height: auto;
     padding: 0;
     border: none;
     background: transparent;
 }
 
-#solution-ways:focus {
+#method-ways:focus {
     border-left: tall $accent;
 }
 
 /* The prompt after a solve. Wider than the strategy modal it follows: its rows
    carry three columns where that one carries a name. */
-#solutions-box {
+#methods-box {
     width: 76;
     height: auto;
     max-height: 100%;
@@ -444,19 +444,19 @@ EndRunModal {
     background: $surface;
 }
 
-#solutions-box .field-label {
+#methods-box .field-label {
     color: $text-muted;
     margin-top: 1;
 }
 
-#solutions-list {
+#methods-list {
     height: auto;
     max-height: 12;
     border: none;
     background: $surface;
 }
 
-#solutions-box Input {
+#methods-box Input {
     width: 1fr;
     margin-top: 1;
 }
@@ -464,19 +464,19 @@ EndRunModal {
 /* The derived quality, and the inputs that decided it. Two lines, always
    present: a line that appears and disappears would move the buttons under it
    every time you press `o`. */
-#solutions-quality {
+#methods-quality {
     height: 2;
     margin-top: 1;
 }
 
-#solutions-box .hint-bar {
+#methods-box .hint-bar {
     color: $text-muted;
     margin-top: 1;
 }
 
 /* Docked for the same reason the finish modal's row is: the list above it
    scrolls, and the way out has to stay on screen. */
-#solutions-box #confirm-buttons {
+#methods-box #confirm-buttons {
     dock: bottom;
     background: $surface;
 }

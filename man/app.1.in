@@ -66,6 +66,13 @@ after a failed one \(em and stops being offered. It is hidden rather than
 deleted: losing one in a mixed run puts it back on the failed ladder. A mastered
 problem carries a star in front of its name wherever one is listed.
 .TP
+.B methods
+Every way you know to solve a problem: the route, what it costs, whether it is
+the optimal one, and whether you have written it. Name a problem for one list,
+or omit it for all of them. Read-only \(em the screen on
+.B a
+inside the app is where these are edited.
+.TP
 .B replay
 Rebuild all projections from the event log. Safe to run at any time; it changes
 no history, only the tables derived from it.
@@ -292,7 +299,8 @@ Finish: how much help you needed, how well it would stick cold in a month, the
 time and space complexities you claim with a separate
 .I "was it optimal?"
 answer for each, and the LeetCode percentiles if you have them — then the
-approach you took, then the two editor steps. None of it is scored; the run
+patterns you reached for, then the problem's methods, then the two editor
+steps. None of it is scored; the run
 score stays a function of measured facts. The time optimality answer is the one
 that moves a review, because a solution with the wrong asymptotics has not
 learned the pattern the schedule exists for. Afterwards it offers you the same
@@ -306,18 +314,24 @@ scores anything nor moves a review, because the card was scheduled by the first
 pass and one attempt is one review.
 .TP
 .B space
-On the approach prompt: mark a strategy as the one you wrote.
-.B w
-marks one as worth learning — a better approach you can see and did not write,
-which keeps the grade a beaten solve would otherwise lose.
+On the strategy prompt: mark a reusable pattern you reached for. On the methods
+prompt that follows it: mark the method you wrote tonight, which is also what
+tags the file you archive next.
 .B i
-names a new one; the list is yours and starts empty. The prompt reads back what
-it derived about the solution, with the answers that produced it. Saving with
-nothing picked records nothing.
+names a new one on either; both lists are yours and both start empty. They are
+separate lists and nothing joins them \(em a strategy means the same thing on
+every problem, a method is one route through this one and is usually built out
+of several patterns, which it says in its own name.
+.B o
+on the methods prompt cycles what a method costs: optimal, not optimal, not
+sure, unclaimed. An optimal method recorded here that is not the one you wrote
+keeps the grade a beaten solve would otherwise lose, and it can be recorded
+months later. The prompt reads back what it derived about the solution, with the
+answers that produced it. Saving with nothing picked records nothing.
 .B esc
-steps back to the verdict prompt, which reopens holding every answer you gave
-it — nothing is written until both prompts are done, so the attempt is still
-running behind them. Switchable off in the settings screen.
+steps back one screen at a time, each reopening holding every answer you gave
+it — nothing is written until all three prompts are done, so the attempt is
+still running behind them. Switchable off in the settings screen.
 .TP
 .B x
 Give up. Scores zero, and is still recorded. You are offered another pass at the
@@ -373,6 +387,9 @@ Archived solutions.
 .TP
 .I ~/.local/share/@SLUG@/code/<problem>/<attempt-id>-wrong<n>.<ext>
 Archived failed submits, beside the solution they became.
+.TP
+.I ~/.local/share/@SLUG@/code/<problem>/method-<method>.<ext>
+A method written from the methods screen, with no attempt behind it.
 .TP
 .I ~/.local/share/@SLUG@/notes/<problem>/<attempt-id>.md
 Reflection notes.

@@ -210,13 +210,13 @@ def quality_reason(attempt: Mapping[str, Any]) -> str:
     # Two ways of having known better, and the line says which one it read.
     # `worth` is the retired role, still on old attempts and still counted in
     # the words it was given in; `saw_better` without it is the problem's own
-    # list carrying an optimal way that is not the one you wrote.
+    # list of methods carrying an optimal one you did not write.
     if worth:
         bits.append(f"{len(worth)} better approach{'es' if len(worth) != 1 else ''} named")
     elif attempt.get("saw_better"):
-        bits.append("an optimal way is recorded that you did not write")
+        bits.append("an optimal method is recorded that you did not write")
     elif attempt.get("time_optimality") == "suboptimal":
-        bits.append("no optimal way recorded")
+        bits.append("no optimal method recorded")
     if attempt.get("solution_quality") == scoring.QUALITY_ALTERNATIVE and used:
         bits.append("not the route you took last time")
     return "  ·  ".join(b for b in bits if b)
@@ -237,18 +237,23 @@ def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The stat line's strategy rows: what you used, and what it came to.
+    """The stat line's rows for the two post-solve prompts, and what they came to.
 
     Same build-the-rows-or-emit-nothing rule as `approach_rows`, and for the
     same reason -- a stat line should not grow three blank lines to say that you
     skipped a prompt which was optional in the first place.
 
+    Two subjects, two rows. `patterns` is what you reached for, from the shared
+    vocabulary; `method` is the route you took through this problem, in this
+    problem's own words. They are separate lines because they are separate facts,
+    and a line that ran them together would be the conflation `methods` exists to
+    undo.
+
     Labels are short because the stat line's label column is nine wide.
-    "approach" and "better" are what fit; `strategies.ROLE_LABELS` holds the
-    long forms for the screen that has room for them.
     """
     rows = [
-        ("approach", ", ".join(attempt.get("strategies_used") or ())),
+        ("patterns", ", ".join(attempt.get("strategies_used") or ())),
+        ("method", ", ".join(attempt.get("methods_used") or ())),
         # Legacy only. Nothing writes this role any more, and the row is here so
         # that attempts recorded under it still read back the way they were
         # given -- see `strategies`.
@@ -283,17 +288,17 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 # --- the ways a problem can be solved --------------------------------------
 
 
-#: What a recorded way costs, in the words the rest of the app already uses.
+#: What a recorded method costs, in the words the rest of the app already uses.
 #: `None` is not "not sure": one is a question nobody has answered, the other is
 #: an answer. The dash says the first and `OPTIMALITY_LABELS` says the second.
-SOLUTION_OPTIMALITY_STYLE = {
+METHOD_OPTIMALITY_STYLE = {
     "optimal": "green",
     "suboptimal": "yellow",
     "unsure": "bright_black",
 }
 
 
-def solution_row(
+def method_row(
     name: str,
     optimality: str | None,
     *,
@@ -307,26 +312,28 @@ def solution_row(
     Shared by the prompt after a solve and the browsable screen, so the list you
     edit and the list you read back can never drift into two different shapes.
 
-    Four columns and every one of them can be empty. A way you have only ever
+    Four columns and every one of them can be empty. A method you have only ever
     heard of is a name and three dashes, and that row is the reason the screen
     exists -- a list of just the things you have already done would have nothing
     to tell you.
 
-    Under 78 columns, because this renders in `p99 solutions` too and a wrapped
-    row loses the last column, which is the one that says whether the code is
-    there.
+    The name column is wide, because a method name is a sentence -- "sort, then
+    two pointers from both ends" says what the route is and "sort, then two poi"
+    says nothing. Still under 78 columns in total, because this renders in
+    `p99 methods` too and a wrapped row loses the last column, which is the one
+    that says whether the code is there.
     """
     line = Text("  ")
     # A pointer, not a checkbox: nothing here is toggled by pressing it, and the
     # column exists only to say which of these you wrote tonight.
     line.append("→ " if wrote_it else "  ", style="bold green" if wrote_it else "")
-    line.append(name[:24], style="bold" if written else "")
-    line.append(" " * max(1, 26 - len(name[:24])))
+    line.append(name[:32], style="bold" if written else "")
+    line.append(" " * max(1, 34 - len(name[:32])))
 
-    line.append(f"{(complexity or '—')[:13]:<14}", style="bright_black")
+    line.append(f"{(complexity or '—')[:11]:<12}", style="bright_black")
 
     label = OPTIMALITY_LABELS.get(optimality or "", "—")
-    line.append(f"{label:<13}", style=SOLUTION_OPTIMALITY_STYLE.get(optimality or "", "bright_black"))
+    line.append(f"{label:<13}", style=METHOD_OPTIMALITY_STYLE.get(optimality or "", "bright_black"))
 
     if written:
         line.append("code", style="green")
@@ -337,56 +344,73 @@ def solution_row(
     return line
 
 
-def solution_list(solutions: Sequence[Any]) -> list[Text]:
+def method_list(ways: Sequence[Any]) -> list[Text]:
     """A problem's whole list, for the screen that only reads it."""
     rows = [
-        solution_row(
-            name=s.name,
-            optimality=s.optimality,
-            complexity=s.complexity,
-            written=s.written,
-            attempt_id=s.attempt_id,
+        method_row(
+            name=m.name,
+            optimality=m.optimality,
+            complexity=m.complexity,
+            written=m.written,
+            attempt_id=m.attempt_id,
         )
-        for s in solutions
+        for m in ways
     ]
     if not rows:
-        rows.append(Text("  no ways recorded for this problem yet", style="bright_black"))
+        rows.append(Text("  no methods recorded for this problem yet", style="bright_black"))
     return rows
 
 
-def approach_coverage_table(coverage: Sequence[Any], single_route: int) -> Group:
-    """How wide each approach reaches, and how much of that reach you have written.
+def strategy_coverage_table(coverage: Sequence[Any], methods: Any) -> Group:
+    """How wide each pattern reaches, and how much of your methods list is written.
 
-    The gap between the two numbers is the column worth reading. An approach you
-    can name on six problems and have written on one is a technique you
-    recognise rather than one you can produce, and an interview asks for the
-    second thing.
+    The table counts patterns: how many problems you have reached for each one on
+    and how many solves that took. The lines underneath count problems and
+    methods, which is why they sit under it rather than in it -- a different unit
+    in the same column would make the table lie.
 
-    `single_route` sits underneath rather than in the table: it is a count of
-    problems, not of approaches, and putting a different unit in the same column
-    would make the table lie.
+    `methods.unwritten` is the number worth reading. A route you have recorded
+    and never written is one you recognise rather than one you can produce, and
+    an interview asks for the second thing.
     """
-    rows: list[RenderableType] = [Text("  approaches", style="bold")]
+    rows: list[RenderableType] = [Text("  patterns", style="bold")]
     if not coverage:
         rows.append(Text("  nothing named yet", style="bright_black"))
+    else:
+        header = Text("  ")
+        header.append(f"{'':<28}{'problems':>9}{'solves':>9}", style="bright_black")
+        rows.append(header)
+        for entry in coverage:
+            line = Text("  ")
+            line.append(f"{entry.name[:27]:<28}")
+            line.append(f"{entry.problems:>9}", style="bright_black")
+            line.append(f"{entry.solves:>9}", style="bright_black")
+            rows.append(line)
+
+    rows.append(Text(""))
+    if not methods or not methods.ways:
+        rows.append(
+            Text(
+                "  no methods recorded yet — the prompt after your next solve "
+                "is where this fills up",
+                style="bright_black italic",
+            )
+        )
         return Group(*rows)
 
-    header = Text("  ")
-    header.append(f"{'':<28}{'problems':>9}{'written':>9}", style="bright_black")
-    rows.append(header)
-    for entry in coverage:
-        line = Text("  ")
-        line.append(f"{entry.name[:27]:<28}")
-        line.append(f"{entry.problems:>9}", style="bright_black")
-        line.append(
-            f"{entry.written:>9}",
-            style="bright_black" if entry.written else "yellow",
-        )
-        rows.append(line)
-    rows.append(Text(""))
+    summary = Text("  ")
+    summary.append(
+        f"{methods.ways} methods recorded across {methods.problems} problems, ",
+        style="bright_black italic",
+    )
+    summary.append(
+        f"{methods.unwritten} never written.",
+        style="yellow italic" if methods.unwritten else "bright_black italic",
+    )
+    rows.append(summary)
     rows.append(
         Text(
-            f"  {single_route} problems have exactly one way recorded.",
+            f"  {methods.single_route} problems have exactly one method recorded.",
             style="bright_black italic",
         )
     )

@@ -62,18 +62,14 @@ enabled = true
 # with :q! like every other capture step. Set to false to log the failed
 # submit and nothing else.
 on_failed_submit = true
-# open one editor buffer per approach you marked as used, so each route through
-# the problem is archived as its own file and lands in the problem's approach
-# library. Naming one approach is unchanged either way: one buffer, as always.
-# Set to false to always get exactly one buffer per solve.
-per_approach = true
 
 [strategy]
-# after every solve, name the approach you used and the better one you can see.
-# The list is yours: it starts empty and fills with whatever you type into it.
-# Flagging a better approach you did not write is also what tells the scheduler
-# that a suboptimal solve found the pattern late rather than missing it -- see
-# docs/spaced-repetition.md. Set to false to skip the prompt entirely.
+# after every solve, name the patterns you reached for and the method you took
+# through the problem. Both lists are yours: they start empty and fill with
+# whatever you type into them. Marking a method optimal that is not the one you
+# wrote is also what tells the scheduler that a suboptimal solve found the route
+# late rather than missing it -- see docs/spaced-repetition.md. Set to false to
+# skip both prompts entirely.
 enabled = true
 
 [scoring]
@@ -157,10 +153,6 @@ class CaptureConfig:
     language: str = "python"
     enabled: bool = True
     on_failed_submit: bool = True
-    #: One editor buffer per approach you said you wrote, rather than one for
-    #: the solve. Off, you get a single buffer whatever you named -- which is
-    #: the right trade on a night when you named three and want to be in bed.
-    per_approach: bool = True
 
     @property
     def ext(self) -> str:
@@ -169,8 +161,8 @@ class CaptureConfig:
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    #: Ask, after every solve, which approach you used and which better one you
-    #: can see. Off, the prompt never appears and nothing is recorded -- old
+    #: Ask, after every solve, which patterns you reached for and which method
+    #: you took. Off, neither prompt appears and nothing is recorded -- old
     #: answers stay exactly where they are.
     enabled: bool = True
 
@@ -427,14 +419,8 @@ def options() -> tuple[Option, ...]:
         ),
         Option(
             "strategy.enabled",
-            "name your approach",
-            "after a solve, pick the strategy you used and the better one you can see",
-            (True, False),
-        ),
-        Option(
-            "capture.per_approach",
-            "a buffer per approach",
-            "archive each approach you wrote as its own file, in the problem's library",
+            "name what you did",
+            "after a solve, name the patterns you used and the method you took",
             (True, False),
         ),
     )

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
-from . import scoring, strategies
+from . import methods, scoring, strategies
 from .scoring import Weights, fmt_duration
 
 ATTEMPT_SELECT = """
@@ -91,9 +91,9 @@ def load_attempts(
 
 
 def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
-    """Attach the strategy answer, and the quality it implies, to each attempt.
+    """Attach the strategy and method answers, and the quality they imply.
 
-    Two queries for the whole result set rather than three per row. The second
+    A handful of queries for the whole result set rather than a handful per row. The second
     one is deliberately unfiltered: `solution_quality` compares an attempt to
     your *previous* route to the same problem, and that attempt is usually
     outside whatever window the caller asked for -- a run summary showing
@@ -129,12 +129,25 @@ def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
         else:
             seq.append((r["attempt_id"], frozenset({r["key"]})))
 
-    # Which problems have an optimal way recorded, and under which keys. One
-    # query for the whole result set: `saw_better` asks it of every row.
+    # Which methods each attempt wrote, and which problems have an optimal
+    # method recorded. Two queries for the whole result set, because `saw_better`
+    # asks both of every row.
+    written: dict[str, dict[str, list[str]]] = {}
+    for r in conn.execute(
+        "SELECT am.attempt_uuid AS uuid, am.key AS key, m.name AS name "
+        "FROM attempt_methods am "
+        "LEFT JOIN problem_methods m ON m.slug = am.slug AND m.key = am.key "
+        "ORDER BY m.name"
+    ).fetchall():
+        entry = written.setdefault(r["uuid"], {"keys": [], "names": []})
+        entry["keys"].append(r["key"])
+        if r["name"]:
+            entry["names"].append(r["name"])
+
     optimal: dict[str, set[str]] = {}
     for r in conn.execute(
-        "SELECT slug, key FROM problem_solutions WHERE optimality = ?",
-        (strategies.OPTIMAL,),
+        "SELECT slug, key FROM problem_methods WHERE optimality = ?",
+        (methods.OPTIMAL,),
     ).fetchall():
         optimal.setdefault(r["slug"], set()).add(r["key"])
 
@@ -143,10 +156,13 @@ def _hydrate_strategies(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
         row["strategies_used"] = answer.get(strategies.USED, [])
         row["strategies_worth_learning"] = answer.get(strategies.WORTH_LEARNING, [])
         row["used_keys"] = frozenset(keys.get(row["uuid"], {}).get(strategies.USED, ()))
+        wrote = written.get(row["uuid"], {"keys": [], "names": []})
+        row["methods_used"] = list(wrote["names"])
+        row["method_keys"] = frozenset(wrote["keys"])
         # The same two doors `srs.grade_attempt` reads, so the screen and the
         # scheduler can never disagree about whether you knew there was better.
         row["saw_better"] = bool(row["strategies_worth_learning"]) or bool(
-            optimal.get(row["slug"], set()) - row["used_keys"]
+            optimal.get(row["slug"], set()) - row["method_keys"]
         )
         # None, not the empty set, when there is no earlier answer: a first solve
         # cannot be an alternative to anything.
@@ -644,58 +660,88 @@ def problem_history(
 
 
 @dataclass(frozen=True)
-class ApproachCoverage:
-    """One approach, across every problem you have named it on.
+class StrategyCoverage:
+    """One pattern, across every solve that reached for it.
 
-    `written` is how many of those have code archived against them. The gap
-    between the two numbers is the interesting one: an approach you can name on
-    six problems and have written on one is a technique you recognise rather
-    than one you can produce, and recognising is not what an interview asks for.
+    `problems` is how many distinct problems you have named it on and `solves` is
+    how many attempts did. Breadth and depth of the same fact: a pattern you can
+    name on six problems is one you see everywhere, and one you have reached for
+    eleven times on two problems is one those two problems keep teaching you.
     """
 
     key: str
     name: str
     problems: int
-    written: int
-
-    @property
-    def unwritten(self) -> int:
-        return self.problems - self.written
+    solves: int
 
 
-def approach_coverage(conn: sqlite3.Connection) -> list[ApproachCoverage]:
-    """Every approach in the vocabulary, widest first.
+def strategy_coverage(conn: sqlite3.Connection) -> list[StrategyCoverage]:
+    """Every pattern in the vocabulary, widest first.
 
-    Derived at read time from the projections, like everything else here --
-    there is no counter anywhere that a replay could leave stale.
+    Breadth and depth of the same fact: how many problems you have reached for
+    this pattern on, and how many solves that took. A pattern you have named on
+    six problems is one you recognise everywhere; one you have named eleven times
+    across two problems is one you keep coming back to.
+
+    Derived at read time from the projections, like everything else here -- there
+    is no counter anywhere that a replay could leave stale.
     """
     return [
-        ApproachCoverage(
-            key=r["key"], name=r["name"], problems=r["problems"], written=r["written"]
+        StrategyCoverage(
+            key=r["key"], name=r["name"], problems=r["problems"], solves=r["solves"]
         )
         for r in conn.execute(
-            "SELECT s.key AS key, s.name AS name, COUNT(*) AS problems, "
-            "SUM(CASE WHEN ps.code_path IS NULL THEN 0 ELSE 1 END) AS written "
-            "FROM problem_solutions ps "
-            "JOIN strategies s ON s.key = ps.key "
-            "GROUP BY s.key ORDER BY problems DESC, s.name ASC"
+            "SELECT s.key AS key, s.name AS name, "
+            "COUNT(DISTINCT a.slug) AS problems, COUNT(*) AS solves "
+            "FROM attempt_strategies a JOIN strategies s ON s.key = a.key "
+            "WHERE a.role = ? "
+            "GROUP BY s.key, s.name ORDER BY problems DESC, solves DESC, s.name ASC",
+            (strategies.USED,),
         ).fetchall()
     ]
 
 
-def single_route_problems(conn: sqlite3.Connection) -> int:
-    """How many problems you know exactly one way to solve.
+@dataclass(frozen=True)
+class MethodCoverage:
+    """The whole methods list in four numbers.
 
-    Not a criticism of any one of them -- most problems have one honest answer.
-    It is a count worth seeing next to the coverage table, because the problems
-    with a second route are the ones where recording it cost you nothing.
+    Sits under the strategy table rather than in it, because these count problems
+    and methods while that counts patterns -- putting a different unit in the same
+    column would make the table lie.
+
+    `ways - written` is the number worth reading: a route you have recorded and
+    never written is one you recognise rather than one you can produce, and an
+    interview asks for the second thing.
     """
+
+    problems: int
+    single_route: int
+    ways: int
+    written: int
+
+    @property
+    def unwritten(self) -> int:
+        return self.ways - self.written
+
+
+def method_coverage(conn: sqlite3.Connection) -> MethodCoverage:
+    """How many ways you have recorded, and how many of them you have written."""
     row = conn.execute(
+        "SELECT COUNT(*) AS ways, "
+        "SUM(CASE WHEN code_path IS NULL THEN 0 ELSE 1 END) AS written, "
+        "COUNT(DISTINCT slug) AS problems FROM problem_methods"
+    ).fetchone()
+    single = conn.execute(
         "SELECT COUNT(*) AS n FROM ("
-        "  SELECT slug FROM problem_solutions GROUP BY slug HAVING COUNT(*) = 1"
+        "  SELECT slug FROM problem_methods GROUP BY slug HAVING COUNT(*) = 1"
         ")"
     ).fetchone()
-    return int(row["n"]) if row else 0
+    return MethodCoverage(
+        problems=int(row["problems"] or 0),
+        single_route=int(single["n"] or 0) if single else 0,
+        ways=int(row["ways"] or 0),
+        written=int(row["written"] or 0),
+    )
 
 
 @dataclass(frozen=True)
