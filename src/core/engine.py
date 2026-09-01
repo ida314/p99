@@ -3,6 +3,12 @@
 All state changes go through here, and every one of them is an event append —
 the engine never writes a projection row directly. The TUI is a view over this.
 
+The one table written by hand is `run_checkpoint`, and it is not a projection:
+it is where the run's clock lives *between* events, so a process that dies
+without unwinding can still be picked back up. Nothing there is history — a run
+in progress has not happened yet — and `recover_crashed_runs` spends it on the
+next launch by appending the ordinary `session_suspended` the crash never wrote.
+
 Timing uses a monotonic clock, so a clock adjustment mid-attempt cannot produce
 a negative solve time.
 """
@@ -203,6 +209,197 @@ def suspended_run(conn: sqlite3.Connection) -> SuspendedRun | None:
     )
 
 
+def infer_outcome(conn: sqlite3.Connection, session_id: int, planned_n: int) -> str:
+    """How a run ended, counted off the attempts it actually finished.
+
+    Module-level because `recover_crashed_runs` has to answer it for a session
+    no engine is holding — a run whose process died a fortnight ago.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM attempts WHERE session_id = ? AND ended_at IS NOT NULL",
+        (session_id,),
+    ).fetchone()
+    done = int(row["n"])
+    if done == 0:
+        return "abandoned"
+    return "completed" if done >= planned_n else "partial"
+
+
+def recover_crashed_runs(conn: sqlite3.Connection) -> str | None:
+    """Turn runs the app never closed into ones it can offer back.
+
+    A run that was put down by hand wrote `session_suspended` on the way out; one
+    whose process was killed — the terminal window closed, `kill -9`, a machine
+    that lost power — wrote nothing, and its session row is left neither ended
+    nor suspended. `suspended_run` cannot see that, so the run reads as if it
+    never happened, and every problem in it stays out of the queue for good
+    (`queues._attempted_slugs` counts a NULL verdict as attempted).
+
+    So the crash is converted here into the suspend it should have been, and the
+    whole resume path downstream — the `c` row on home, `resume_session`,
+    `_rehydrate`, `Recorder.adopt` — carries on not knowing the difference. What
+    the run was doing when it died comes from `run_checkpoint`; a run that
+    predates that table is still recovered, just without its clock.
+
+    Only the newest is handed back. The older ones are sealed with the outcome
+    their own attempts imply, because a run you crashed out of three weeks ago is
+    not one you are coming back to — and being asked about it nine times, once
+    per launch, is worse than not being asked. Nothing is graded and no verdict
+    is written either way: those attempts keep their NULL verdicts, exactly as
+    they have them now.
+
+    Called once, from `CoreApp.on_mount`, before anything reads `sessions`.
+    Returns the uuid of the run left resumable, if there is one.
+    """
+    orphans = conn.execute(
+        "SELECT * FROM sessions WHERE ended_at IS NULL AND suspended_at IS NULL "
+        "ORDER BY id DESC"
+    ).fetchall()
+    check = conn.execute("SELECT * FROM run_checkpoint WHERE id = 1").fetchone()
+
+    resumable: str | None = None
+    for n, row in enumerate(orphans):
+        if n == 0:
+            _suspend_crashed(conn, row, check)
+            resumable = row["uuid"]
+        else:
+            _seal_crashed(conn, row)
+
+    # Unconditionally, even when nothing was found: `CoreApp.on_unmount` swallows
+    # its own failures, so a cleanly ended run can still leave a row behind, and
+    # a stale one would put the wrong clock on the next crash.
+    conn.execute("DELETE FROM run_checkpoint")
+    return resumable
+
+
+def _suspend_crashed(
+    conn: sqlite3.Connection, row: sqlite3.Row, check: sqlite3.Row | None
+) -> None:
+    """Write the `session_suspended` the crash never got to write."""
+    if check is None or check["session_uuid"] != row["uuid"]:
+        # No checkpoint, or one belonging to some other run: everything below has
+        # to come off the projections instead. This is the path every session
+        # that predates the checkpoint table takes.
+        check = None
+
+    if check is not None:
+        index = int(check["resume_index"])
+        when = check["updated_at"]
+    else:
+        done = conn.execute(
+            "SELECT COUNT(*) AS n FROM attempts "
+            "WHERE session_id = ? AND ended_at IS NOT NULL",
+            (row["id"],),
+        ).fetchone()
+        index = int(done["n"])
+        last = conn.execute(
+            "SELECT started_at FROM attempts WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        # The last thing known to have happened, rather than now: `fmt_ago` on the
+        # home row and the `away_seconds` a resume measures are both read off
+        # this, and dating the crash to this launch would claim you were sitting
+        # in front of it the whole time.
+        when = (last["started_at"] if last else None) or row["started_at"]
+
+    payload: dict[str, Any] = {"session_uuid": row["uuid"], "suspended_at": when}
+    attempt = conn.execute(
+        "SELECT * FROM attempts WHERE session_id = ? AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+
+    live = (
+        attempt is not None
+        and check is not None
+        and check["attempt_uuid"] == attempt["uuid"]
+        and not check["attempt_finished"]
+        and int(check["solves"]) == 1
+    )
+    if live:
+        assert check is not None
+        # Same nesting as `suspend_session`, for the reason given in
+        # `events.apply`: the cursor above outlives this attempt being discarded.
+        payload["attempt"] = {
+            "uuid": attempt["uuid"],
+            "active_seconds": int(check["active_seconds"] or 0),
+            "wall_seconds": int(check["wall_seconds"] or 0),
+            "paused_seconds": int(check["paused_seconds"] or 0),
+        }
+    elif check is not None and (check["attempt_finished"] or int(check["solves"]) > 1):
+        # Either the process died between `finish` and `advance` — in the editor,
+        # most likely — or it died on a second pass at the same problem. Both end
+        # the same way: the problem is graded, so the cursor moves past it rather
+        # than handing it back. A re-solve loses the re-solve and nothing else,
+        # which is what `solve_again` already promises; writing its clock would
+        # land on the first pass's row, which is why `suspend_session` refuses to
+        # do it at all.
+        index += 1
+    # Anything else — an attempt with no matching checkpoint — falls through with
+    # no timing block. The row keeps its NULL seconds and `_rehydrate` reads them
+    # as zero, so the problem comes back at 00:00: nothing was ever written down,
+    # and inventing a number would be worse than admitting that.
+
+    payload["index"] = index
+    events.append(conn, events.SESSION_SUSPENDED, payload)
+
+
+def _seal_crashed(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
+    """Close out an older crashed run, without judging anything inside it."""
+    # Read before anything below closes an attempt, so a run that finished
+    # nothing is still recorded as having finished nothing.
+    outcome = infer_outcome(conn, int(row["id"]), int(row["planned_n"] or 0))
+
+    # The problem that was on screen when the process died is closed as
+    # `ungraded` -- the verdict that exists for exactly this, and the one thing
+    # here that is not merely bookkeeping. Left with a NULL verdict it counts as
+    # attempted forever (`queues._attempted_slugs`) while never being graded, so
+    # it schedules no card and never comes due: the problem falls out of the
+    # unseen pool and out of the queue, permanently, with no way back short of
+    # picking it by hand. `ungraded` is the honest way to say nothing judged it,
+    # and it is the one verdict that pool skips. It schedules nothing either --
+    # `srs.grade_attempt` returns on `UNSCHEDULED_VERDICTS` before it touches a
+    # card -- so this closes the attempt without inventing a score for it.
+    for open_attempt in conn.execute(
+        "SELECT uuid, slug, started_at FROM attempts "
+        "WHERE session_id = ? AND ended_at IS NULL ORDER BY id",
+        (row["id"],),
+    ).fetchall():
+        events.append(
+            conn,
+            events.PROBLEM_FINISHED,
+            {
+                "attempt_uuid": open_attempt["uuid"],
+                "slug": open_attempt["slug"],
+                "verdict": "ungraded",
+                # Nothing was ever measured, so the answer is zero rather than a
+                # span invented out of two timestamps that mean nothing.
+                "active_seconds": 0,
+                "wall_seconds": 0,
+                "paused_seconds": 0,
+                "ended_at": open_attempt["started_at"],
+            },
+        )
+
+    last = conn.execute(
+        "SELECT ended_at FROM attempts WHERE session_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    events.append(
+        conn,
+        events.SESSION_ENDED,
+        {
+            "session_uuid": row["uuid"],
+            "outcome": outcome,
+            "session_note": None,
+            # Dated to the run, not to this launch. `stats.load_runs` reads it,
+            # and a run from a fortnight ago did not end tonight.
+            "ended_at": (last["ended_at"] if last else None) or row["started_at"],
+        },
+    )
+
+
 class RunEngine:
     """Owns one run. Append-only: every method below writes an event."""
 
@@ -211,6 +408,55 @@ class RunEngine:
         self.clock = clock
         self.session: Session | None = None
         self.attempt: Attempt | None = None
+
+    # --- crash recovery ---------------------------------------------------
+
+    def checkpoint(self) -> None:
+        """Write down where the run is, outside the log, in case this is the end.
+
+        The one direct row write in this class, and the module docstring says
+        why. Cheap by construction: a single-row UPSERT against a table nothing
+        else touches, called on every cursor move and on a timer in between.
+
+        Silent when there is no session -- callers reach this from a timer and
+        from teardown paths, and neither should have to check first.
+        """
+        session = self.session
+        if session is None:
+            return
+        a = self.attempt
+        timing = a.timing() if a is not None else {}
+        self.conn.execute(
+            "INSERT INTO run_checkpoint("
+            "  id, session_uuid, attempt_uuid, resume_index, solves,"
+            "  attempt_finished, active_seconds, wall_seconds, paused_seconds, updated_at"
+            ") VALUES(1,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  session_uuid = excluded.session_uuid,"
+            "  attempt_uuid = excluded.attempt_uuid,"
+            "  resume_index = excluded.resume_index,"
+            "  solves = excluded.solves,"
+            "  attempt_finished = excluded.attempt_finished,"
+            "  active_seconds = excluded.active_seconds,"
+            "  wall_seconds = excluded.wall_seconds,"
+            "  paused_seconds = excluded.paused_seconds,"
+            "  updated_at = excluded.updated_at",
+            (
+                session.uuid,
+                a.uuid if a is not None else None,
+                session.index,
+                a.solves if a is not None else 1,
+                int(a.finished) if a is not None else 0,
+                timing.get("active_seconds"),
+                timing.get("wall_seconds"),
+                timing.get("paused_seconds"),
+                events.utc_now(),
+            ),
+        )
+
+    def clear_checkpoint(self) -> None:
+        """The run is accounted for in the log. There is nothing to come back to."""
+        self.conn.execute("DELETE FROM run_checkpoint")
 
     # --- session ----------------------------------------------------------
 
@@ -240,6 +486,9 @@ class RunEngine:
             planned_n=planned_n if planned_n is not None else len(slugs),
             slugs=list(slugs),
         )
+        # Immediately: a run killed before its first problem is still a run you
+        # picked, and it comes back rather than vanishing.
+        self.checkpoint()
         return self.session
 
     def end_session(self, outcome: str | None = None, session_note: str | None = None) -> None:
@@ -259,6 +508,7 @@ class RunEngine:
             },
         )
         self.session = None
+        self.clear_checkpoint()
 
     def suspend_session(self) -> None:
         """Put the run down. `resume_session` picks it up, in any later process.
@@ -295,6 +545,8 @@ class RunEngine:
         events.append(self.conn, events.SESSION_SUSPENDED, payload)
         self.session = None
         self.attempt = None
+        # The log says everything the checkpoint did, and says it properly.
+        self.clear_checkpoint()
 
     def resume_session(self, session_uuid: str) -> Session:
         """Reopen a suspended run, live attempt and all.
@@ -346,6 +598,9 @@ class RunEngine:
         )
         self.session = session
         self.attempt = attempt
+        # Re-armed straight away: a run resumed and then killed has to come back
+        # a second time, not fall through the gap the first crash left.
+        self.checkpoint()
         return session
 
     def _rehydrate(self, row: sqlite3.Row, problem: Problem) -> Attempt:
@@ -381,14 +636,7 @@ class RunEngine:
 
     def _infer_outcome(self) -> str:
         assert self.session is not None
-        row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM attempts WHERE session_id = ? AND ended_at IS NOT NULL",
-            (self.session.id,),
-        ).fetchone()
-        done = int(row["n"])
-        if done == 0:
-            return "abandoned"
-        return "completed" if done >= self.session.planned_n else "partial"
+        return infer_outcome(self.conn, self.session.id, self.session.planned_n)
 
     # --- attempt ----------------------------------------------------------
 
@@ -434,6 +682,7 @@ class RunEngine:
             is_review=is_review,
             clock=self.clock,
         )
+        self.checkpoint()
         return self.attempt
 
     def pause(self) -> None:
@@ -582,6 +831,10 @@ class RunEngine:
             },
         )
         a.finished = True
+        # Before the capture flow, not after. What follows is two `$EDITOR`
+        # handoffs through `App.suspend()`, and the message pump — and with it
+        # the checkpoint timer — is parked for the whole of it.
+        self.checkpoint()
         return a
 
     def solve_again(self) -> Attempt:
@@ -606,6 +859,7 @@ class RunEngine:
         a.started_monotonic = self.clock()
         a.paused_at = None
         a.paused_seconds = 0.0
+        self.checkpoint()
         return a
 
     def _finish_resolve(
@@ -659,6 +913,7 @@ class RunEngine:
             },
         )
         a.finished = True
+        self.checkpoint()
         return a
 
     def abandon(self, timing: dict[str, int] | None = None) -> Attempt:
@@ -680,6 +935,7 @@ class RunEngine:
             },
         )
         a.finished = True
+        self.checkpoint()
         return a
 
     def discard(self) -> None:
@@ -702,6 +958,7 @@ class RunEngine:
             # -- the attempt goes back to being the sealed thing it was.
             a.solves -= 1
             a.finished = True
+            self.checkpoint()
             return
         if a.finished:
             raise RuntimeError("cannot discard a finished attempt")
@@ -711,6 +968,7 @@ class RunEngine:
             {"attempt_uuid": a.uuid, "slug": a.problem.slug},
         )
         self.attempt = None
+        self.checkpoint()
 
     def archive_code(
         self, path: str, language: str | None = None, method: str | None = None
@@ -781,6 +1039,7 @@ class RunEngine:
         if self.session is not None:
             self.session.index += 1
         self.attempt = None
+        self.checkpoint()
 
     # --- reads ------------------------------------------------------------
 

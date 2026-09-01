@@ -2168,6 +2168,187 @@ async def test_a_suspended_recording_is_continued_rather_than_cut_short(speaking
     assert not segments.exists()
 
 
+# --- crashing out ----------------------------------------------------------
+#
+# A kill is modelled by taking `CoreApp.on_unmount` away for the duration: that
+# handler is the whole of the orderly shutdown, and a process that is killed
+# never reaches it. Everything the next launch sees — a session neither ended nor
+# suspended, and whatever the checkpoint last wrote — is then exactly what a real
+# `kill -9` leaves behind.
+
+
+@pytest.fixture
+def killed(monkeypatch):
+    monkeypatch.setattr(CoreApp, "on_unmount", lambda self: None)
+
+
+async def test_a_killed_run_is_invisible_until_the_next_launch_recovers_it(app, killed):
+    """The bug: closing the terminal mid-run used to lose the whole evening."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+
+    session = app.conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["ended_at"] is None and session["suspended_at"] is None
+    from core import engine as engine_module
+
+    assert engine_module.suspended_run(app.conn) is None
+
+
+async def test_a_killed_app_offers_the_run_back_on_the_next_launch(app, killed):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("question_mark")     # a hint
+        await pilot.press("s")                 # and a failed submit
+        await pilot.pause()
+        slug = app.engine.attempt.problem.slug
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        # Recovered on mount, so the way back in is on the home screen already.
+        menu = later.screen.query_one("#menu-resume", OptionList)
+        assert menu.option_count == 1
+        assert menu.get_option_at_index(0).id == "resume_run"
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(later.screen, SolveScreen)
+        attempt = later.engine.attempt
+        assert attempt.problem.slug == slug
+        assert attempt.max_hint_tier == 1
+        assert attempt.submissions == 1
+        assert attempt.paused
+        assert "resumed" in _plain(later.screen.query_one("#toast", Static))
+
+    # One run throughout, and still nothing graded off it.
+    assert later.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 1
+    assert later.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+
+
+async def test_a_recovered_run_can_be_finished_normally(app, killed):
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        for _ in range(2):
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await _decline_another_pass(later, pilot)
+        assert isinstance(later.screen, SummaryScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(later.screen, HomeScreen)
+        resume = later.screen.query_one("#menu-resume", OptionList)
+        assert resume.option_count == 0 and resume.display is False
+
+    session = later.conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["outcome"] == "completed"
+    attempts = later.conn.execute("SELECT * FROM attempts ORDER BY id").fetchall()
+    assert len(attempts) == 2
+    assert all(a["verdict"] == "solved_unaided" for a in attempts)
+    # The kill counted as a break, the same as `z` does.
+    assert attempts[0]["suspends"] == 1
+    assert later.conn.execute(
+        "SELECT COUNT(*) AS n FROM run_checkpoint"
+    ).fetchone()["n"] == 0
+
+
+async def test_a_cleanly_ended_run_leaves_nothing_to_recover(app):
+    """No `killed` fixture here: this one quits properly, and must stay quit."""
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        for _ in range(2):
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM run_checkpoint").fetchone()["n"] == 0
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        resume = later.screen.query_one("#menu-resume", OptionList)
+        assert resume.option_count == 0 and resume.display is False
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(later.screen, HomeScreen)
+
+
+async def test_a_run_killed_from_the_queue_comes_back_too(app, killed):
+    """The queue and the setup screen are one path, and this is the proof."""
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        slugs = list(app.engine.session.slugs)
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(later.screen, SolveScreen)
+        assert later.engine.session.slugs == slugs
+
+
+async def test_only_the_newest_crash_is_offered_back(app):
+    """Nine crashes deep is the state this feature was written for.
+
+    Built with the engine rather than two more apps, because that is how they
+    pile up: nothing recovered them in between, so nothing sealed the older one.
+    """
+    from core import catalog
+
+    catalog.seed(app.conn)          # the app fixture seeds on mount, and this is before
+    for slugs in (["two-sum", "3sum"], ["merge-two-sorted-lists"]):
+        eng = RunEngine(app.conn)
+        eng.start_session(slugs, planned_n=len(slugs))
+        eng.start_problem(slugs[0])
+        eng.checkpoint()
+        del eng
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        assert later.screen.query_one("#menu-resume", OptionList).option_count == 1
+        await pilot.press("c")
+        await pilot.pause()
+        assert later.engine.session.slugs == ["merge-two-sorted-lists"]
+        await pilot.press("z")
+        await pilot.pause()
+        # And having put that one down, there is not an older one behind it.
+        assert later.screen.query_one("#menu-resume", OptionList).option_count == 1
+
+    rows = later.conn.execute("SELECT * FROM sessions ORDER BY id").fetchall()
+    assert [r["ended_at"] is None for r in rows] == [False, True]
+    assert rows[0]["outcome"] == "abandoned"
+    # Sealing the old one judged nothing inside it: its problem is closed as
+    # `ungraded` so it goes back in the queue, and no card moved.
+    assert later.conn.execute(
+        "SELECT verdict FROM attempts WHERE slug = 'two-sum'"
+    ).fetchone()["verdict"] == "ungraded"
+    assert later.conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+
+
 async def test_the_suspended_run_gets_its_own_full_width_row(app):
     """Its label is a sentence, not a label, and wraps to three lines in half a
     screen — so it sits above the columns rather than inside one."""

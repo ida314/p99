@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from core import engine as engine_module, events, methods, srs, stats, strategies
+from core import engine as engine_module, events, methods, queues, srs, stats, strategies
 from core.engine import RunEngine
 
 
@@ -699,6 +699,341 @@ def test_throwing_away_a_resumed_attempt_still_replays_identically(conn):
     assert session["ended_at"] is not None
     assert session["suspended_at"] is None
     assert engine_module.suspended_run(conn) is None
+
+
+# --- crash recovery ----------------------------------------------------------
+#
+# A run put down by hand writes `session_suspended` on the way out. A run whose
+# process is killed writes nothing, and every test below is about the gap that
+# leaves: the session row is neither ended nor suspended, so `suspended_run`
+# cannot see it and the whole evening reads as if it never happened.
+
+
+def _crashed_mid_problem(conn, clock, slugs=("two-sum", "3sum")):
+    """A run twelve minutes into its second problem when the process died.
+
+    The kill is modelled by walking away from the engine rather than by killing
+    anything: no `suspend_session`, no `end_session`, nothing on the way out but
+    whatever the checkpoint had already written down.
+    """
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.start_session(list(slugs), speech_mode=True)
+    eng.start_problem(slugs[0])
+    eng.finish("accepted")
+    eng.advance()
+
+    eng.start_problem(slugs[1])
+    eng.reveal_hint()
+    eng.record_submission("wrong_answer")
+    clock["t"] += 720
+    eng.checkpoint()               # the ten-second timer, one last time
+    return eng
+
+
+def test_a_killed_run_is_not_visible_without_recovery(conn):
+    """The bug, stated. Delete this and the rest of the section proves nothing."""
+    _crashed_mid_problem(conn, {"t": 1000.0})
+
+    session = conn.execute("SELECT * FROM sessions").fetchone()
+    assert session["ended_at"] is None and session["suspended_at"] is None
+    assert engine_module.suspended_run(conn) is None
+
+
+def test_a_killed_run_is_offered_back(conn):
+    clock = {"t": 1000.0}
+    _crashed_mid_problem(conn, clock)
+
+    assert engine_module.recover_crashed_runs(conn) is not None
+
+    run = engine_module.suspended_run(conn)
+    assert run.index == 1                  # still on the second problem
+    assert run.title == "3Sum"
+    assert run.active_seconds == 720       # the clock the checkpoint held
+    assert run.speech_mode is True         # the run's, not today's setting
+
+
+def test_recovery_does_not_grade_the_problem_it_hands_back(conn):
+    """A crash is not a verdict, any more than a break is."""
+    _crashed_mid_problem(conn, {"t": 1000.0})
+    engine_module.recover_crashed_runs(conn)
+
+    live = conn.execute("SELECT * FROM attempts WHERE slug = '3sum'").fetchone()
+    assert live["verdict"] is None
+    assert live["ended_at"] is None
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM fsrs_cards WHERE slug = '3sum'"
+    ).fetchone()["n"] == 0
+
+
+def test_resuming_a_recovered_run_restores_the_clock_and_the_hint(conn):
+    clock = {"t": 1000.0}
+    _crashed_mid_problem(conn, clock)
+    engine_module.recover_crashed_runs(conn)
+
+    clock["t"] += 5
+    later = RunEngine(conn, clock=lambda: clock["t"])
+    session = later.resume_session(engine_module.suspended_run(conn).session_uuid)
+
+    assert session.remaining == ["3sum"]
+    assert later.attempt.active_seconds == 720
+    assert later.attempt.max_hint_tier == 1
+    assert later.attempt.submissions == 1
+    assert later.attempt.paused          # you were not solving it while it was dead
+
+
+def test_recovery_clears_the_checkpoint(conn):
+    _crashed_mid_problem(conn, {"t": 1000.0})
+    engine_module.recover_crashed_runs(conn)
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM run_checkpoint").fetchone()["n"] == 0
+    # And so a second launch finds nothing left to recover.
+    assert engine_module.recover_crashed_runs(conn) is None
+
+
+def test_recovery_is_idempotent(conn):
+    clock = {"t": 1000.0}
+    _crashed_mid_problem(conn, clock)
+    engine_module.recover_crashed_runs(conn)
+    before = _snapshot(conn)
+
+    engine_module.recover_crashed_runs(conn)
+
+    assert _snapshot(conn) == before
+
+
+def test_a_crash_during_the_capture_flow_hands_back_the_next_problem(conn):
+    """Killed in `$EDITOR`: the problem is graded, so the cursor moves past it."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.finish("accepted")         # checkpointed here, before the handoff
+    del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    run = engine_module.suspended_run(conn)
+    assert run.index == 1
+    assert run.title is None
+    resumed = RunEngine(conn)
+    assert resumed.resume_session(run.session_uuid).remaining == ["3sum"]
+    assert resumed.attempt is None
+
+
+def test_a_crash_mid_re_solve_keeps_the_first_pass(conn):
+    """The second pass is lost. The first one was sealed when it finished."""
+    clock = {"t": 1000.0}
+    eng = RunEngine(conn, clock=lambda: clock["t"])
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    clock["t"] += 300
+    eng.finish("solved_unaided")
+    eng.solve_again()
+    clock["t"] += 90
+    eng.checkpoint()
+    del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    first = conn.execute("SELECT * FROM attempts WHERE slug = 'two-sum'").fetchone()
+    assert first["active_seconds"] == 300      # not 90, and not overwritten
+    assert first["verdict"] == "solved_unaided"
+    assert conn.execute("SELECT COUNT(*) AS n FROM resolves").fetchone()["n"] == 0
+    # The run comes back on the problem after, not into a pass that recorded
+    # nothing.
+    run = engine_module.suspended_run(conn)
+    assert run.index == 1
+    assert run.title is None
+
+
+def test_a_run_killed_before_its_first_problem_still_comes_back(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    run = engine_module.suspended_run(conn)
+    assert run.index == 0
+    assert run.slugs == ["two-sum", "3sum"]
+    assert run.title is None
+
+
+def test_older_crashed_runs_are_closed_rather_than_queued_up(conn):
+    """One resume offered, not nine. The rest are sealed where they stopped."""
+    for slug in ("two-sum", "3sum", "merge-two-sorted-lists"):
+        eng = RunEngine(conn)
+        eng.start_session([slug])
+        eng.start_problem(slug)
+        eng.checkpoint()
+        del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    rows = conn.execute("SELECT * FROM sessions ORDER BY id").fetchall()
+    assert [r["ended_at"] is None for r in rows] == [False, False, True]
+    assert [r["outcome"] for r in rows[:2]] == ["abandoned", "abandoned"]
+    # Sealed, but not judged: nothing was scheduled off any of it.
+    assert conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+    assert engine_module.suspended_run(conn).slugs == ["merge-two-sorted-lists"]
+
+
+def test_a_sealed_run_does_not_strand_the_problem_it_was_on(conn):
+    """A NULL verdict is `_attempted_slugs`'s word for a problem you have seen.
+
+    Left that way, a problem nobody ever graded is out of the unseen pool while
+    having no card to come due either -- gone from the queue for good. `ungraded`
+    is what says nothing judged it, and it is the one verdict that pool skips.
+    """
+    for slug in ("two-sum", "3sum"):
+        eng = RunEngine(conn)
+        eng.start_session([slug])
+        eng.start_problem(slug)
+        eng.checkpoint()
+        del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    sealed = conn.execute("SELECT * FROM attempts WHERE slug = 'two-sum'").fetchone()
+    assert sealed["verdict"] == "ungraded"
+    assert sealed["ended_at"] is not None
+    assert sealed["active_seconds"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM fsrs_cards").fetchone()["n"] == 0
+    assert "two-sum" not in queues._attempted_slugs(conn)
+    # The run that was handed back is untouched: it is not over, so its problem
+    # keeps the NULL verdict that says so.
+    assert conn.execute(
+        "SELECT verdict FROM attempts WHERE slug = '3sum'"
+    ).fetchone()["verdict"] is None
+    assert "3sum" in queues._attempted_slugs(conn)
+
+
+def test_sealing_does_not_promote_a_run_that_finished_nothing(conn):
+    """The outcome is read before the ungraded closes, not after."""
+    for slug in ("two-sum", "3sum"):
+        eng = RunEngine(conn)
+        eng.start_session([slug])
+        eng.start_problem(slug)
+        eng.checkpoint()
+        del eng
+
+    engine_module.recover_crashed_runs(conn)
+
+    assert conn.execute(
+        "SELECT outcome FROM sessions ORDER BY id"
+    ).fetchone()["outcome"] == "abandoned"
+
+
+def test_an_older_crashed_run_is_not_dated_to_this_launch(conn):
+    """A run from a fortnight ago did not end tonight."""
+    for slug in ("two-sum", "3sum"):
+        eng = RunEngine(conn)
+        eng.start_session([slug])
+        eng.start_problem(slug)
+        eng.finish("solved_unaided")
+        del eng
+    old = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(timespec="seconds")
+    conn.execute("UPDATE attempts SET ended_at = ? WHERE slug = 'two-sum'", (old,))
+
+    engine_module.recover_crashed_runs(conn)
+
+    sealed = conn.execute("SELECT * FROM sessions ORDER BY id").fetchone()
+    assert sealed["ended_at"] == old
+    assert sealed["outcome"] == "completed"
+
+
+def test_a_legacy_crash_with_no_checkpoint_is_still_offered(conn):
+    """Every run killed before this table existed. Recovered, just without a clock."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.finish("accepted")
+    eng.advance()
+    eng.start_problem("3sum")
+    del eng
+    conn.execute("DELETE FROM run_checkpoint")
+
+    engine_module.recover_crashed_runs(conn)
+
+    run = engine_module.suspended_run(conn)
+    assert run.index == 1
+    assert run.title == "3Sum"
+    # Nothing was ever written down, so it comes back at zero rather than at a
+    # number nobody measured.
+    assert run.active_seconds == 0
+    resumed = RunEngine(conn)
+    assert resumed.resume_session(run.session_uuid).remaining == ["3sum"]
+    assert resumed.attempt.problem.slug == "3sum"
+
+
+def test_a_checkpoint_belonging_to_another_run_is_not_believed(conn):
+    """Two crashes deep: the checkpoint describes the newest and only that one."""
+    clock = {"t": 1000.0}
+    first = RunEngine(conn, clock=lambda: clock["t"])
+    first.start_session(["two-sum"])
+    first.start_problem("two-sum")
+    clock["t"] += 600
+    first.checkpoint()
+    del first
+    second = RunEngine(conn, clock=lambda: clock["t"])
+    second.start_session(["3sum"])
+    second.start_problem("3sum")
+    del second
+    # The newest run's own checkpoint, replaced by hand with the older run's.
+    conn.execute("UPDATE run_checkpoint SET session_uuid = 'not-this-run'")
+
+    engine_module.recover_crashed_runs(conn)
+
+    run = engine_module.suspended_run(conn)
+    assert run.slugs == ["3sum"]
+    assert run.active_seconds == 0      # rather than the other run's ten minutes
+
+
+def test_recovery_survives_replay(conn):
+    clock = {"t": 1000.0}
+    _crashed_mid_problem(conn, clock)
+    engine_module.recover_crashed_runs(conn)
+    resumed = RunEngine(conn, clock=lambda: clock["t"])
+    resumed.resume_session(engine_module.suspended_run(conn).session_uuid)
+    resumed.finish("solved_with_hints")
+    resumed.advance()
+    resumed.end_session()
+    before = _snapshot(conn)
+
+    events.replay(conn)
+
+    assert _snapshot(conn) == before
+
+
+def test_a_replay_does_not_wipe_the_checkpoint(conn):
+    """It is not a projection: nothing in the log could put it back."""
+    _crashed_mid_problem(conn, {"t": 1000.0})
+    before = dict(conn.execute("SELECT * FROM run_checkpoint").fetchone())
+
+    events.replay(conn)
+
+    assert dict(conn.execute("SELECT * FROM run_checkpoint").fetchone()) == before
+
+
+def test_ending_a_run_normally_leaves_nothing_to_recover(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.advance()
+    eng.end_session()
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM run_checkpoint").fetchone()["n"] == 0
+    assert engine_module.recover_crashed_runs(conn) is None
+    assert engine_module.suspended_run(conn) is None
+
+
+def test_suspending_by_hand_leaves_nothing_to_recover(conn):
+    """`z` and a kill must not both offer the same run back."""
+    _suspended_mid_problem(conn, {"t": 1000.0})
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM run_checkpoint").fetchone()["n"] == 0
+    assert engine_module.recover_crashed_runs(conn) is None
+    assert engine_module.suspended_run(conn) is not None
 
 
 # --- the approach you wrote --------------------------------------------------

@@ -51,6 +51,10 @@ class CoreApp(App):
         config_module.write_default_config()
         if catalog.count(self.conn) == 0:
             catalog.seed(self.conn, name=self.config.session.active_list)
+        # Before home draws its menu: a run whose process was killed has to be
+        # turned back into a suspended one first, or `build_menu` reads a session
+        # that is neither ended nor suspended and shows no way back into it.
+        engine_module.recover_crashed_runs(self.conn)
         self.push_screen(HomeScreen())
 
     def on_unmount(self) -> None:

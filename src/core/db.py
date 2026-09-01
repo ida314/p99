@@ -357,6 +357,37 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 """
 
+# Where a live run keeps its clock between events, so a process that dies without
+# unwinding can still be picked up. Not a projection and not history: the log
+# records what *happened*, and a run in progress has not happened yet. Three
+# things follow from that, and all three are load-bearing.
+#
+#   * It is absent from `PROJECTION_TABLES`. A replay must not wipe it -- nothing
+#     in the log can put it back, which is the entire point of it existing.
+#   * It carries no foreign keys. `sessions` and `attempts` are truncated by a
+#     replay while this row is not, so the uuids are plain TEXT.
+#   * It gets no `SCHEMA_VERSION` bump. Nothing already on disk changes shape and
+#     there is nothing to backfill from the log, so no replay is owed; `init`'s
+#     `CREATE TABLE IF NOT EXISTS` is the whole migration.
+#
+# At most one row, always id 1: only one run can be live at a time.
+CHECKPOINT_DDL = """
+CREATE TABLE IF NOT EXISTS run_checkpoint (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  session_uuid     TEXT NOT NULL,
+  attempt_uuid     TEXT,                    -- null between problems
+  resume_index     INTEGER NOT NULL,        -- cursor into the session's `slugs`
+  solves           INTEGER NOT NULL DEFAULT 1,
+  attempt_finished INTEGER NOT NULL DEFAULT 0,
+  -- The readings `attempts` only receives at finish/abandon/suspend. Without
+  -- them a recovered run comes back at 00:00 having lost the whole solve.
+  active_seconds   INTEGER,
+  wall_seconds     INTEGER,
+  paused_seconds   INTEGER,
+  updated_at       TEXT NOT NULL            -- how long ago the crash was
+);
+"""
+
 # Projection tables that `replay` truncates. `problems` is deliberately absent.
 #
 # `queues` belongs here even though a Phase 3 queue is chosen by an LLM and
@@ -473,7 +504,7 @@ def init(conn: sqlite3.Connection) -> bool:
     """
     conn.executescript(META_DDL)
     needs_replay = migrate(conn)
-    for ddl in (EVENT_LOG_DDL, CATALOG_DDL, PROJECTION_DDL, FUTURE_DDL):
+    for ddl in (EVENT_LOG_DDL, CATALOG_DDL, PROJECTION_DDL, FUTURE_DDL, CHECKPOINT_DDL):
         conn.executescript(ddl)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "

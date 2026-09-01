@@ -35,6 +35,12 @@ from .finish import (
 from .methods import MethodsModal
 from .strategy import StrategyModal
 
+#: How often the run writes down where it is, so a process that is killed rather
+#: than quit can be picked up. Costs one UPSERT against a one-row table — less
+#: than the transaction `events.append` already runs for every hint and submit —
+#: and caps what a crash can take off the clock at ten seconds.
+CHECKPOINT_SECONDS = 10.0
+
 
 class SolveScreen(VimMotion, Screen[None]):
     # Hint is `?` and give-up is `x` because `h` and `g` are motions everywhere
@@ -103,6 +109,7 @@ class SolveScreen(VimMotion, Screen[None]):
         else:
             self._next_problem()
         self.set_interval(0.5, self._tick)
+        self.set_interval(CHECKPOINT_SECONDS, self.engine.checkpoint)
 
     def on_unmount(self) -> None:
         """A hard quit must never leave ffmpeg holding the microphone.
