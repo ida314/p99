@@ -101,13 +101,19 @@ class QueueScreen(VimMotion, Screen[None]):
     # --- rendering --------------------------------------------------------
 
     def _populate(self) -> None:
-        """Draw the rows, all checked. The queue is the default; edits are yours."""
+        """Draw the rows, checked. The queue is the default; edits are yours.
+
+        Except the ones you have already worked today, which arrive unchecked:
+        the queue is a plan for the day and the day moves, so a row you solved
+        this morning is still part of the plan and is not part of tonight's run.
+        Left checked, `enter` would restart problems you just finished.
+        """
         widget = self.query_one("#queue-list", QueueList)
         widget.clear_options()
         if self.queue is not None:
             widget.add_options(
                 [
-                    Selection(queue_row(n, item), item.slug, True)
+                    Selection(queue_row(n, item), item.slug, not item.done)
                     for n, item in enumerate(self.queue.items, 1)
                 ]
             )
@@ -142,6 +148,12 @@ class QueueScreen(VimMotion, Screen[None]):
         line.append(f"{reviews} review", style="yellow")
         line.append(" · ", style="bright_black")
         line.append(f"{len(items) - reviews} new", style="bright_black")
+        # Says why the count is short of the queue before you go looking for the
+        # row you think you unchecked.
+        done = sum(1 for i in self.queue.items if i.done)
+        if done:
+            line.append(" · ", style="bright_black")
+            line.append(f"{done} done today", style="green")
         self.query_one("#queue-status", Static).update(line)
         self.query_one("#queue-rationale", Static).update(
             Text(f"  {self.queue.rationale}", style="bright_black italic")

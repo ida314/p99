@@ -79,6 +79,12 @@ class Item:
     #: earlier day can hold one that has been mastered since. Carried so
     #: `render.queue_row` can star it rather than re-querying the card per row.
     mastered: bool = False
+    #: Worked since this queue was drawn up. A queue is a plan for a day, and
+    #: the day goes on after you open it: without this the rows you have already
+    #: solved come back checked and the next run restarts them. Read at hydrate
+    #: time rather than stored, for the same reason `is_review` is -- the stored
+    #: row is the plan, and what you did about it is not part of the plan.
+    done: bool = False
     due: str | None = None
     overdue_days: int = 0
 
@@ -101,6 +107,15 @@ class Queue:
     @property
     def new_count(self) -> int:
         return sum(1 for i in self.items if not i.is_review)
+
+    @property
+    def remaining(self) -> tuple[Item, ...]:
+        return tuple(i for i in self.items if not i.done)
+
+    @property
+    def finished(self) -> bool:
+        """Every row worked. An empty queue is not finished, it is empty."""
+        return bool(self.items) and not self.remaining
 
 
 def today(now: datetime | None = None) -> str:
@@ -509,14 +524,35 @@ def generate(
     return Queue(date=date, items=tuple(items), rationale=rationale)
 
 
+def _worked_since(conn: sqlite3.Connection, since: str) -> set[str]:
+    """Problems finished since `since` -- the queue rows you have already done.
+
+    `ungraded` does not count, on the same reasoning as `_attempted_slugs`:
+    nothing judged it, and a crashed run sealed by `engine.recover_crashed_runs`
+    must not tick a row off a queue you never worked.
+    """
+    return {
+        r["slug"]
+        for r in conn.execute(
+            "SELECT DISTINCT slug FROM attempts "
+            "WHERE started_at >= ? AND ended_at IS NOT NULL "
+            "  AND verdict IS NOT NULL AND verdict != 'ungraded'",
+            (since,),
+        )
+    }
+
+
 def _hydrate(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> Queue:
     """Rebuild a Queue from its stored row, re-reading live card state.
 
     The slug list is fixed by the event; the review markers are not, because a
     problem's card moves when you solve it. That keeps a queue you already
-    started from claiming everything on it is still due.
+    started from claiming everything on it is still due. `done` is read the same
+    way and for the same reason -- a plan drawn up this morning does not know
+    what you did this afternoon.
     """
     problems = {p.slug: p for p in catalog.all_problems(conn)}
+    worked = _worked_since(conn, row["created_at"])
     items: list[Item] = []
     for slug in json.loads(row["slugs"]):
         p = problems.get(slug)
@@ -540,6 +576,7 @@ def _hydrate(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> Queue
                 source="queued",
                 is_review=is_review,
                 mastered=srs.is_mastered(card),
+                done=slug in worked,
                 due=card["due"] if card else None,
                 overdue_days=overdue,
             )
@@ -571,13 +608,19 @@ def ensure(
 
     The morning queue is never empty and never a blank screen asking you to
     press a key first (spec §10 stage 2) — that rule is the difference between a
-    coach you trust and one you stop opening.
+    coach you trust and one you stop opening. A queue you have finished is held
+    to the same rule: finishing your work is not a reason to be shown no work.
     """
     now = now or datetime.now(timezone.utc)
     date = today(now)
     if not regenerate:
         existing = load(conn, date, now)
-        if existing is not None and existing.items:
+        # A queue you have worked through is as spent as one that was never
+        # drawn: handing it back would be a page of ticked rows and nothing to
+        # start. Generating here is what `ctrl+r` already does, and it settles
+        # immediately -- the fresh rows are not done, so the next open returns
+        # them rather than rolling again.
+        if existing is not None and existing.items and not existing.finished:
             return existing
     return generate(
         conn,

@@ -642,17 +642,25 @@ def queue_row(n: int, item) -> Text:
     as prompts, and a row that drifted from the one `p99 queue` prints would be
     two descriptions of the same queue.
     """
+    # A row you have already worked today is greyed whole rather than struck
+    # through or hidden: it stays in its place, so the queue still reads as the
+    # plan it was, and nothing about it competes for attention with the rows
+    # that are left.
+    done = getattr(item, "done", False)
+    dim = "bright_black" if done else ""
     line = Text("  ")
     line.append(f"{n} ", style="bright_black")
     line.append(mastered_prefix(getattr(item, "mastered", False)))
     title = item.title if len(item.title) <= 27 else item.title[:26] + "…"
-    line.append(f"{title:<28}", style="bold" if item.is_review else "")
+    line.append(f"{title:<28}", style=dim or ("bold" if item.is_review else ""))
     line.append(
         f"{(item.difficulty or '?')[:1].upper():<3}",
-        style=DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
+        style=dim or DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
     )
     line.append(f"{(item.pattern or '—'):<20}", style="bright_black")
-    if item.is_review:
+    if done:
+        line.append("done", style="green")
+    elif item.is_review:
         when = f"review · {item.overdue_days}d overdue" if item.overdue_days else "review · due"
         line.append(when, style="yellow")
     else:

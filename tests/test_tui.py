@@ -872,6 +872,63 @@ async def test_regenerating_keeps_one_row_per_day(app):
         assert rows == 1
 
 
+async def test_a_finished_row_comes_back_unchecked(app):
+    """Solve one, come back, and `enter` starts what is left rather than it again."""
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        planned = list(app.screen.queue.slugs)
+        first = planned[0]
+        await pilot.press("ctrl+x")             # start a run on just the first row
+        await pilot.pause()
+        app.screen.query_one("#queue-list").select(first)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SolveScreen)
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")              # summary -> home
+        await pilot.pause()
+
+        await pilot.press("q")                  # and back to the queue
+        await pilot.pause()
+        assert isinstance(app.screen, QueueScreen)
+        assert app.screen.queue.slugs == planned          # same plan, same day
+        assert [i.done for i in app.screen.queue.items] == [True] + [False] * (len(planned) - 1)
+        # The row you solved is not in tonight's run, and the page says why.
+        assert first not in app.screen.selected()
+        assert app.screen.selected() == planned[1:]
+        status = _plain(app.screen.query_one("#queue-status", Static))
+        assert "1 done today" in status
+
+
+async def test_finishing_the_whole_queue_hands_back_a_fresh_one(app):
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        planned = list(app.screen.queue.slugs)
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in planned:
+            await pilot.press("f")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await _decline_another_pass(app, pilot)
+        assert isinstance(app.screen, SummaryScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("q")
+        await pilot.pause()
+        fresh = app.screen.queue
+        assert not set(fresh.slugs) & set(planned)   # work, not a page of ticks
+        assert app.screen.selected() == fresh.slugs
+        assert "done today" not in _plain(app.screen.query_one("#queue-status", Static))
+
+
 async def test_the_queue_does_not_open_mid_run(app):
     """Same guard `n` has: one run at a time.
 

@@ -253,3 +253,89 @@ def test_hydrate_marks_reviews_from_live_cards(conn):
     reloaded = queues.load(conn, queue.date, NOW)
     assert reloaded.slugs == queue.slugs  # the list itself is fixed by the event
     assert next(i for i in reloaded.items if i.slug == target).is_review
+
+
+# --- what you have already done today ---------------------------------------
+#
+# A queue is a plan for a day, and the day goes on after you open it. These are
+# about the gap that leaves: the stored row is fixed, so nothing in it knows you
+# solved two of its rows this afternoon.
+
+
+def test_a_solved_row_comes_back_marked_done(conn):
+    q = _build(conn, n=3)
+    first = q.slugs[0]
+    _solve(conn, first, verdict="solved_unaided")
+
+    again = queues.load(conn, q.date, NOW)
+    assert [i.done for i in again.items] == [True, False, False]
+    assert again.remaining == tuple(i for i in again.items if i.slug != first)
+    assert again.finished is False
+
+
+def test_an_ungraded_row_is_not_marked_done(conn):
+    """The verdict that means nothing judged it cannot tick a row off.
+
+    This is the one `engine.recover_crashed_runs` writes when it seals a crashed
+    run, and a run you never worked must not come back as a queue you did.
+    """
+    q = _build(conn, n=3)
+    _solve(conn, q.slugs[0], verdict="ungraded")
+
+    assert [i.done for i in queues.load(conn, q.date, NOW).items] == [False] * 3
+
+
+def test_an_attempt_from_before_the_queue_does_not_tick_a_row_off(conn):
+    """`done` means done *since this queue was drawn*, not ever."""
+    _solve(conn, "two-sum", verdict="solved_unaided")
+    events.append(
+        conn,
+        events.QUEUE_GENERATED,
+        {
+            "date": "2026-07-31",
+            "slugs": ["two-sum", "3sum"],
+            "rationale": "",
+            "generated_by": "test",
+            # After the solve above, which the engine stamped with the real clock.
+            "created_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    assert [i.done for i in queues.load(conn, "2026-07-31", NOW).items] == [False, False]
+
+
+def test_a_finished_queue_hands_back_a_fresh_one(conn):
+    """Finishing your work is not a reason to be shown no work."""
+    q = _build(conn, n=3)
+    for slug in q.slugs:
+        _solve(conn, slug, verdict="solved_unaided")
+    assert queues.load(conn, q.date, NOW).finished is True
+
+    fresh = _build(conn, n=3)
+
+    assert fresh.date == q.date
+    assert not set(fresh.slugs) & set(q.slugs)
+    assert [i.done for i in fresh.items] == [False] * 3
+
+
+def test_the_fresh_queue_settles_rather_than_rolling_again(conn):
+    """Regenerating on open must not mean a different queue every open."""
+    q = _build(conn, n=3)
+    for slug in q.slugs:
+        _solve(conn, slug, verdict="solved_unaided")
+
+    first = _build(conn, n=3)
+    assert _build(conn, n=3).slugs == first.slugs
+    assert _build(conn, n=3).slugs == first.slugs
+
+
+def test_a_partly_worked_queue_is_left_alone(conn):
+    """Two of three done is still today's plan, not a spent one."""
+    q = _build(conn, n=3)
+    for slug in q.slugs[:2]:
+        _solve(conn, slug, verdict="solved_unaided")
+
+    again = _build(conn, n=3)
+
+    assert again.slugs == q.slugs
+    assert [i.done for i in again.items] == [True, True, False]
