@@ -62,6 +62,24 @@ Screen {
     scrollbar-size: 0 0;
 }
 
+/* The mastered list under the home menu. It takes whatever height is left and
+   scrolls inside it, so a list that is four rows now and forty later never
+   pushes the menu up or the footer off — the pane grows, the layout does not.
+   `min-height: 0` lets it shrink to nothing on a short terminal instead of
+   winning the fight with the menu above it. */
+#mastered-block {
+    height: 1fr;
+    min-height: 0;
+}
+
+#mastered {
+    height: 1fr;
+    margin: 0 2;
+    padding: 0 1;
+    background: transparent;
+    scrollbar-size: 1 1;
+}
+
 .section-title {
     color: $accent;
     text-style: bold;

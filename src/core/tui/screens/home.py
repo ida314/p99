@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from datetime import datetime, timezone
 
-from ... import srs, stats
-from ...render import BANNER, rule
+from ... import catalog, srs, stats
+from ...render import BANNER, mastered_table, rule
 from ...scoring import fmt_duration
 from ..vim import MOTIONS, VimMotion
 
@@ -21,6 +21,9 @@ from rich.text import Text
 
 #: (key, action, label). The key is the mnemonic shortcut; the menu is also a
 #: real list, so `j`/`k` and enter get you there without knowing any of them.
+#:
+#: `mastered` is not here either, and not anywhere: the list it used to open is
+#: drawn on this screen under the menu, so there is nothing left to open.
 #:
 #: `resume run` is not here: it only exists when there is a run to resume, and
 #: `build_menu` gives it a row of its own above the columns when there is. That
@@ -38,13 +41,9 @@ MENU = [
     ("q", "queue", "queue"),
     ("r", "history", "runs"),
     ("t", "stats", "stats"),
-    # Beside stats because it is the same kind of thing — a record to look at,
-    # not an action. `m` for mastered: `r` is already runs and `t` is stats.
-    ("m", "mastered", "mastered"),
-    # Beside mastered for the same reason mastered sits beside stats: it is a
-    # record to read, not an action. `a` because `s` is settings and `t` is
-    # already stats -- the letter is the shortcut, not an abbreviation of the
-    # word.
+    # Beside stats for the same reason stats is here at all: it is a record to
+    # read, not an action. `a` because `s` is settings and `t` is already stats
+    # -- the letter is the shortcut, not an abbreviation of the word.
     ("a", "methods", "methods"),
     # The offline cache is not here. It is packing, not practice, and it lives
     # one row under the `offline` switch on the settings screen — the switch is
@@ -74,7 +73,13 @@ class HomeScreen(VimMotion, Screen):
         Binding("q", "queue", "queue"),
         Binding("r", "history", "runs"),
         Binding("t", "stats", "stats"),
-        Binding("m", "mastered", "mastered"),
+        # `m` no longer opens anything — the mastered list is already on screen.
+        # It moves the cursor into it, and `escape` brings the cursor back, so
+        # the pane is scrollable from the keyboard without stealing `j`/`k` from
+        # the menu. Hidden: the footer is for what a screen does, and both keys
+        # are moves.
+        Binding("m", "mastered", "mastered", show=False),
+        Binding("escape", "focus_menu", "menu", show=False),
         Binding("a", "methods", "methods"),
         Binding("s", "settings", "settings"),
         Binding("ctrl+c", "quit", "quit"),
@@ -102,6 +107,10 @@ class HomeScreen(VimMotion, Screen):
     #: from, or the left one on a first move.
     _resume_target = COLUMNS[0]
 
+    #: Where `escape` puts the cursor back after `m` moved it into the mastered
+    #: list: the (list, row) it was on.
+    _menu_return = (COLUMNS[0], 0)
+
     def compose(self) -> ComposeResult:
         yield Static(BANNER, id="banner")
         yield Static(
@@ -118,6 +127,18 @@ class HomeScreen(VimMotion, Screen):
             ),
             id="menu-block",
         )
+        # Under the menu, not above it. It used to be a screen of its own on
+        # `m`, which put the scheduler's one invisible act behind a door you had
+        # to know about; it is a record you should meet by scrolling, not by
+        # opening. Under the menu rather than under the overview because it
+        # grows — a list that is four rows on Tuesday and forty in March would
+        # walk the menu down the screen and eventually off it, and the menu is
+        # the one thing on this screen whose position has to be muscle memory.
+        yield Vertical(
+            Static("  mastered problems", classes="section-title"),
+            VerticalScroll(Static(id="mastered-content"), id="mastered"),
+            id="mastered-block",
+        )
         yield Footer()
 
     def on_screen_resume(self) -> None:
@@ -125,10 +146,12 @@ class HomeScreen(VimMotion, Screen):
         # back into it has to be on screen the moment you arrive.
         self.build_menu()
         self.refresh_overview()
+        self.refresh_mastered()
 
     def on_mount(self) -> None:
         self.build_menu()  # focuses whichever list it parked the cursor on
         self.refresh_overview()
+        self.refresh_mastered()
 
     def build_menu(self) -> None:
         """Draw the menu, with the suspended run on top of it if there is one."""
@@ -198,6 +221,28 @@ class HomeScreen(VimMotion, Screen):
             rule(),
         ]
         self.query_one("#overview", Static).update(Group(*rows))
+
+    def refresh_mastered(self) -> None:
+        """Draw what has left the rotation, or nothing at all.
+
+        Hidden while there is nothing mastered rather than showing the empty
+        state the page used to: an empty state is what a page you chose to open
+        owes you, and this one you did not choose. The overview's `scheduled`
+        row is where mastery first appears anyway, the day there is one.
+        """
+        conn = self.app.conn  # type: ignore[attr-defined]
+        cfg = self.app.config  # type: ignore[attr-defined]
+        rows = srs.mastered_cards(conn)
+        self.query_one("#mastered-block", Vertical).display = bool(rows)
+        if not rows:
+            return
+        # The active list's size, not the whole catalog's: "12 of 150" has to
+        # count the list you are actually working through, and the two diverge
+        # the moment a second list is seeded.
+        size = len(catalog.all_problems(conn, cfg.session.active_list))
+        self.query_one("#mastered-content", Static).update(
+            mastered_table(rows, size, datetime.now(timezone.utc))
+        )
 
     # --- menu -------------------------------------------------------------
 
@@ -302,7 +347,25 @@ class HomeScreen(VimMotion, Screen):
         self.app.action_stats()  # type: ignore[attr-defined]
 
     def action_mastered(self) -> None:
-        self.app.action_mastered()  # type: ignore[attr-defined]
+        """Put the cursor in the mastered list so `j`/`k` scroll it.
+
+        Not an opener any more — the list is already on screen. The menu gives
+        up its highlight on the way out, because two visible cursors on one
+        screen is the thing `_hand_over` exists to prevent and focus leaving the
+        menu is no different.
+        """
+        if not self.query_one("#mastered-block", Vertical).display:
+            self.app.bell()  # nothing mastered, so nothing to move into
+            return
+        source = self._focused_list()
+        self._menu_return = (source, self._list(source).highlighted or 0)
+        self._list(source).highlighted = None
+        self.query_one("#mastered", VerticalScroll).focus()
+
+    def action_focus_menu(self) -> None:
+        """`escape` — back to the menu, on the row `m` left from."""
+        selector, row = self._menu_return
+        self._hand_over(selector, selector, row)
 
     def action_methods(self) -> None:
         self.app.action_methods()  # type: ignore[attr-defined]

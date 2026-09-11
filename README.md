@@ -107,10 +107,12 @@ Reviews score 1.25×. Retention is the thing being trained.
 A problem leaves the rotation once you have recalled it across its whole ladder:
 one clean recall after an easy solve, two after a shaky one, three after a solve
 that needed help, four after one you failed. After that it stops being offered.
-`m` from home lists everything mastered, when it went, and what it cost to get
-there — the scheduler's one otherwise invisible act. A mastered problem carries a
-★ in front of its name wherever one is listed, so the queue and the hand-picking
-screen say so too.
+Home lists everything mastered under the menu — when it went, and what it cost
+to get there — because the scheduler's one otherwise invisible act should not sit
+behind a screen you have to know to open. `m` moves the cursor into that list so
+`j`/`k` scroll it, `esc` gives the cursor back to the menu, and `p99 mastered`
+prints the same table. A mastered problem carries a ★ in front of its name
+wherever one is listed, so the queue and the hand-picking screen say so too.
 
 It is hidden, not deleted. A mastered problem can still turn up in a mixed run,
 and losing it there puts it straight back on the bottom of the failed ladder with
@@ -215,7 +217,7 @@ real points.
 | `q` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
-| `m` | mastered problems — what has left the rotation (home) |
+| `m` | into the mastered list under the menu; `esc` back to the menu (home) |
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml`, `enter` on **warm the cache** downloads the list |
 | `h` `l` | across the menu's two columns (home) |
 | `/` `i` | filter the problem list (setup); `esc` leaves the box, `esc` again leaves the screen |

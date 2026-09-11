@@ -25,7 +25,6 @@ from core.tui.screens import (
     HistoryScreen,
     HomeScreen,
     QueueScreen,
-    MasteredScreen,
     SettingsScreen,
     SetupScreen,
     MethodsModal,
@@ -93,18 +92,17 @@ async def test_stats_and_history_open_on_an_empty_database(app):
         assert isinstance(app.screen, HomeScreen)
 
 
-async def test_the_mastered_page_opens_and_says_so_when_nothing_is_mastered(app):
+async def test_the_mastered_list_stays_hidden_until_there_is_one(app):
+    """No empty state on home: an empty state is what a page you opened owes
+    you, and this list is on a page you did not open."""
     async with app.run_test() as pilot:
+        block = app.screen.query_one("#mastered-block")
+        assert block.display is False
+        # And `m` does not move the cursor into a pane that is not there.
+        menu = app.screen.query_one("#menu", OptionList)
         await pilot.press("m")
-        assert isinstance(app.screen, MasteredScreen)
-        # Asserted against the widget's own renderable rather than a screenshot:
-        # the empty state is the whole content of this screen most of the time,
-        # and a blank page and a page that failed to render look identical.
-        assert "Nothing mastered yet" in _plain(
-            app.screen.query_one("#mastered-content", Static)
-        )
-        await pilot.press("escape")
         assert isinstance(app.screen, HomeScreen)
+        assert menu.highlighted == 0
 
 
 async def test_a_mastered_problem_shows_up_starred(app):
@@ -131,15 +129,26 @@ async def test_a_mastered_problem_shows_up_starred(app):
     assert srs.is_mastered(srs.card_row(app.conn, "two-sum"))
 
     async with app.run_test() as pilot:
-        # The home overview owns the count; the page owns the list.
+        # The home overview owns the count; the list under the menu — on the
+        # same screen, no keypress — owns the names.
         assert "1 mastered" in _plain(app.screen.query_one("#overview", Static))
-
-        await pilot.press("m")
+        assert app.screen.query_one("#mastered-block").display is True
         text = _plain(app.screen.query_one("#mastered-content", Static))
         assert "Two Sum" in text
         assert "1 mastered" in text
         assert render.MASTERED_MARK in text
+
+        # `m` moves the cursor into it and `escape` brings it back, with only
+        # ever one cursor on screen.
+        from textual.containers import VerticalScroll
+
+        menu = app.screen.query_one("#menu", OptionList)
+        pane = app.screen.query_one("#mastered", VerticalScroll)
+        await pilot.press("m")
+        assert app.screen.focused is pane and menu.highlighted is None
         await pilot.press("escape")
+        assert app.screen.focused is menu and menu.highlighted == 0
+        assert isinstance(app.screen, HomeScreen)
 
         # And on the hand-picking screen, where knowing is the whole point.
         await pilot.press("n")

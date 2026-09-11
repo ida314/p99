@@ -206,8 +206,6 @@ opens today's queue,
 opens the runs,
 .B t
 opens the statistics,
-.B m
-opens the mastered problems,
 .B s
 opens the settings,
 .B q
@@ -217,7 +215,10 @@ move within a column,
 .BR h / l
 step across, and Enter reaches the same places. A suspended run gets a
 full-width row of its own above the columns, because its label says where you
-were rather than naming a screen. Warming the offline cache is not on this
+were rather than naming a screen. Everything you have mastered is listed under
+the menu on the same screen \(em
+.B m
+moves the cursor into that list and Esc gives it back to the menu. Warming the offline cache is not on this
 menu: it is a row on the settings screen, directly under the
 .I cache.offline
 switch it serves.
