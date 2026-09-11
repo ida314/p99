@@ -75,11 +75,14 @@ pattern ever runs three deep** — interleaving beats blocking for transfer, and
 is the highest-value scheduling rule in here. `enter` starts a run over it,
 `ctrl+r` rebuilds it.
 
-The other two slots go to problems you have never opened, chosen from your
-**weakest patterns**. A pattern is the unit an answer transfers along, so a
-pattern you are bad at is answered with a new problem of that shape rather than
-another pass over one you have already mastered — which is also what happens
-when a mastered problem turns up in the slow tail of the last 60 days.
+The other two slots go to problems you have never opened, one for depth and one
+for breadth. The first goes deeper into your **weakest pattern**. A pattern is
+the unit an answer transfers along, so a pattern you are bad at is answered with
+a new problem of that shape rather than another pass over one you have already
+mastered — which is also what happens when a mastered problem turns up in the
+slow tail of the last 60 days. The second opens the pattern you have **tried
+least**, since a pattern you have never touched cannot be weak and would
+otherwise never come up. Once every pattern has two attempts, both go to depth.
 
 Every row arrives checked and `space` unchecks one, so a queue of three and an
 evening with time for two is a run over two — not a queue you rebuild until it

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from core import catalog, events, queues, scoring, srs
+from core import catalog, events, queues, scoring, srs, stats
 from core.engine import RunEngine
 
 WEIGHTS = scoring.load_weights()
@@ -220,6 +220,83 @@ def test_reviews_are_ordered_most_overdue_first(conn):
     queue = _build(conn, n=10, now=later, regenerate=True)
     overdue = [i.overdue_days for i in queue.items if i.is_review]
     assert overdue == sorted(overdue, reverse=True)
+
+
+# --- depth and breadth -----------------------------------------------------
+#
+# The two new slots split: one goes deeper into your weakest pattern, one opens
+# the pattern you have tried least. Depth alone never reaches a pattern with no
+# attempts, because nothing makes it weak.
+
+
+def _by_pattern(conn):
+    """Catalog problems grouped by pattern, both in catalog order."""
+    out: dict[str, list[str]] = {}
+    for p in catalog.all_problems(conn, "neetcode150"):
+        if p.pattern:
+            out.setdefault(p.pattern, []).append(p.slug)
+    return out
+
+
+def _after_cooldown():
+    # The engine stamps attempts with the real clock, so the cooldown has to be
+    # cleared relative to that rather than to this module's fixed NOW.
+    return datetime.now(timezone.utc) + timedelta(days=queues.COOLDOWN_DAYS + 1)
+
+
+def _open_two_patterns(conn):
+    """Two patterns worked twice each -- weak, and nothing else opened."""
+    groups = _by_pattern(conn)
+    worked = list(groups)[:2]
+    for pattern in worked:
+        for slug in groups[pattern][:2]:
+            _solve(conn, slug, self_confidence=3)
+    return set(worked), _build(conn, n=3, now=_after_cooldown())
+
+
+def test_an_unopened_pattern_gets_a_slot(conn):
+    worked, queue = _open_two_patterns(conn)
+    counts = {m.name: m.attempts for m in stats.pattern_mastery(conn, WEIGHTS)}
+
+    breadth = [i for i in queue.items if i.source == "new-pattern"]
+    assert breadth, [(i.slug, i.source) for i in queue.items]
+    assert all(counts.get(i.pattern, 0) == 0 for i in breadth)
+    assert "barely tried" in queue.rationale
+
+
+def test_depth_keeps_the_other_slot(conn):
+    worked, queue = _open_two_patterns(conn)
+
+    depth = [i for i in queue.items if i.source == "weak-pattern"]
+    breadth = [i for i in queue.items if i.source == "new-pattern"]
+    assert depth and breadth, [(i.slug, i.source) for i in queue.items]
+    assert {i.pattern for i in depth} <= worked
+    assert not {i.pattern for i in depth} & {i.pattern for i in breadth}
+
+
+def test_breadth_goes_fewest_attempts_first(conn):
+    groups = _by_pattern(conn)
+    once = list(groups)[2]
+    _solve(conn, groups[once][0], self_confidence=3)
+
+    order = queues.unopened_patterns(conn, WEIGHTS, catalog.all_problems(conn, "neetcode150"))
+
+    assert order[-1] == once
+    assert order[:-1] == [p for p in groups if p != once]  # ties in catalog order
+
+
+def test_breadth_hands_off_when_every_pattern_is_open(conn):
+    """Once every pattern has two attempts the queue is depth alone, as before."""
+    for slugs in _by_pattern(conn).values():
+        for slug in slugs[:queues.MIN_PATTERN_ATTEMPTS]:
+            _solve(conn, slug, self_confidence=3)
+
+    problems = catalog.all_problems(conn, "neetcode150")
+    assert queues.unopened_patterns(conn, WEIGHTS, problems) == []
+    pool = queues.candidates(
+        conn, n=150, active_list="neetcode150", weights=WEIGHTS, now=_after_cooldown()
+    )
+    assert not [i for i in pool if i.source == "new-pattern"]
 
 
 # --- the rationale ---------------------------------------------------------

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -65,8 +66,8 @@ class Item:
     title: str
     difficulty: str
     pattern: str | None
-    #: Why it was picked: due | tail | pattern-transfer | weak-pattern |
-    #: weak-tag | unseen.
+    #: Why it was picked: due | tail | pattern-transfer | new-pattern |
+    #: weak-pattern | weak-tag | unseen.
     source: str
     #: Whether starting it counts as a review. Deliberately *not* `source ==
     #: "due"`: a problem pulled in as a tail driver still has a card, and the
@@ -310,11 +311,26 @@ def candidates(
             continue
         add(slug, "tail")
 
-    # 3. Unattempted problems in your weakest *patterns*. Ahead of the tag fill
-    #    below because a pattern is the unit an answer transfers along, where a
-    #    tag like `array` spans a dozen unrelated approaches.
-    for pattern in weak_patterns(conn, weights):
-        add_unseen_in_pattern(pattern, "weak-pattern")
+    # 3. Unattempted problems, alternating breadth and depth: the pattern you
+    #    have tried least, then your weakest, then the next of each. Ahead of the
+    #    tag fill below because a pattern is the unit an answer transfers along,
+    #    where a tag like `array` spans a dozen unrelated approaches.
+    #
+    #    Depth alone never reaches a pattern you have not opened -- it is not
+    #    weak until it has attempts -- and the 3n cut lands long before step 5.
+    #    Alternating is the whole of the split: `_select` takes the first
+    #    candidate that fits, so the day gets one of each without a cap of its
+    #    own, and if the mix blocks a pick the next one from the same list is
+    #    right behind it. The two lists can never share a pattern (fewer than
+    #    MIN_PATTERN_ATTEMPTS against at least that many), and once every
+    #    pattern is open `breadth` is empty and this is the depth loop alone.
+    breadth = unopened_patterns(conn, weights, problems.values())
+    depth = weak_patterns(conn, weights)
+    for k in range(max(len(breadth), len(depth))):
+        if k < len(breadth):
+            add_unseen_in_pattern(breadth[k], "new-pattern")
+        if k < len(depth):
+            add_unseen_in_pattern(depth[k], "weak-pattern")
 
     # 4. Unattempted problems carrying your weakest tags.
     for tag in weak_tags(conn, weights):
@@ -335,6 +351,27 @@ def weak_patterns(conn: sqlite3.Connection, weights: Weights) -> list[str]:
         m.name
         for m in stats.pattern_mastery(conn, weights, min_attempts=MIN_PATTERN_ATTEMPTS)
     ]
+
+
+def unopened_patterns(conn: sqlite3.Connection, weights: Weights, problems: Iterable) -> list[str]:
+    """Patterns with too few attempts to rank, fewest first.
+
+    Exactly the complement of `weak_patterns` over the catalog: the same counts,
+    the same threshold, so a pattern leaves this list on the attempt that makes
+    it eligible for that one and nothing falls between them. Reusing
+    MIN_PATTERN_ATTEMPTS as "opened" is a judgment call, not a measured number.
+
+    Ties fall to catalog order, so the result is reproducible.
+    """
+    counts = {
+        m.name: m.attempts for m in stats.pattern_mastery(conn, weights, min_attempts=1)
+    }
+    order = list(dict.fromkeys(p.pattern for p in problems if p.pattern))
+    # `sorted` is stable, so equal counts keep catalog order.
+    return sorted(
+        (name for name in order if counts.get(name, 0) < MIN_PATTERN_ATTEMPTS),
+        key=lambda name: counts.get(name, 0),
+    )
 
 
 def weak_tags(conn: sqlite3.Connection, weights: Weights) -> list[str]:
@@ -459,6 +496,13 @@ def _rationale(items: list[Item], relaxed: bool, weak: list[str], deferred: int 
     weak_picks = [i for i in items if i.source in ("weak-pattern", "weak-tag")]
     if weak_picks and weak:
         bits.append(f"{len(weak_picks)} on your weakest patterns ({', '.join(weak[:3])})")
+    opened = [i for i in items if i.source == "new-pattern"]
+    if opened:
+        names = ", ".join(dict.fromkeys(i.pattern for i in opened if i.pattern))
+        bits.append(
+            f"{len(opened)} from {'a pattern' if len(opened) == 1 else 'patterns'}"
+            f" you have barely tried ({names})"
+        )
 
     counts: dict[str, int] = {}
     for i in items:
