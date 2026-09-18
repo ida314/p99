@@ -1630,7 +1630,7 @@ async def test_the_finish_prompt_asks_what_the_solution_cost(app):
     """The typed complexities and the optimality answers, from keystrokes to row."""
     from textual.widgets import RadioButton, RadioSet
 
-    from core.tui.screens.finish import OPTIMALITY_AXES, OPTIMALITY_OPTIONS
+    from core.tui.screens.finish import SOLUTION_AXES
 
     async with app.run_test() as pilot:
         app.start_run(["two-sum"])
@@ -1642,15 +1642,13 @@ async def test_the_finish_prompt_asks_what_the_solution_cost(app):
 
         labels = [_plain(s) for s in screen.query(Static)]
         assert "what your solution costs — optional" in labels
-        assert "was it optimal?" in labels
-        # The axes are named on screen, or two identical ladders mean nothing.
-        assert "time" in labels and "space" in labels
+        assert "how did it come out?" in labels
+        # The axes are named on screen, or three ladders mean nothing.
+        assert "time" in labels and "space" in labels and "clarity" in labels
 
-        for radio_id, _, _ in OPTIMALITY_AXES:
+        for radio_id, _, _, options, _ in SOLUTION_AXES:
             buttons = screen.query_one(f"#{radio_id}", RadioSet).query(RadioButton)
-            assert [b.label.plain for b in buttons] == [
-                label for _, label in OPTIMALITY_OPTIONS
-            ]
+            assert [b.label.plain for b in buttons] == [label for _, label in options]
 
         screen.query_one("#complexity", Input).value = "O(n log n)"
         screen.query_one("#space-complexity", Input).value = "O(n)"
@@ -1688,9 +1686,57 @@ async def test_optimality_defaults_to_not_sure_on_both_axes(app):
     row = app.conn.execute("SELECT * FROM attempts").fetchone()
     assert row["time_optimality"] == "unsure"
     assert row["space_optimality"] == "unsure"
+    # The third ladder defaults the same way, and for the sharper reason: "clean"
+    # is the flattering answer about your own code.
+    assert row["code_clarity"] == "unsure"
     # An untouched complexity field stores nothing rather than an empty string.
     assert row["claimed_complexity"] is None
     assert row["claimed_space_complexity"] is None
+
+
+async def test_the_finish_prompt_asks_how_the_code_read(app):
+    """The third ladder, in its own words, and it does not answer the other two.
+
+    The case it exists for: optimal on both axes and still something you would
+    not have shown anyone. Nothing on this screen can say that with the
+    optimality vocabulary, which is why the words are different.
+    """
+    from textual.widgets import RadioButton, RadioSet
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen
+
+        # "not optimal" is a claim something beat you. Nothing beats formatting.
+        buttons = screen.query_one("#code-clarity", RadioSet).query(RadioButton)
+        shown = [b.label.plain for b in buttons]
+        assert shown == ["clean", "rough", "not sure"]
+        # ...and nothing is ellipsised: a third of a 74-wide box leaves fourteen
+        # characters for an answer, which is why the screen says "rough" and the
+        # stat line says "needs a rewrite".
+        assert all("…" not in label for label in shown)
+
+        for radio_id in ("#time-optimality", "#space-optimality"):
+            screen.query_one(radio_id, RadioSet).focus()
+            # Two off "not sure" is "optimal": the ladder wraps, and the cursor
+            # started where the pressed button is.
+            await pilot.press("j")
+            await pilot.press("space")
+            await pilot.pause()
+        screen.query_one("#code-clarity", RadioSet).focus()
+        await pilot.press("k")
+        await pilot.press("space")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    row = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["time_optimality"] == "optimal"
+    assert row["space_optimality"] == "optimal"
+    assert row["code_clarity"] == "rough"
 
 
 async def test_what_you_claimed_is_not_shown_back_on_the_next_attempt(app):
@@ -1746,9 +1792,10 @@ async def test_history_shows_the_approach_after_the_fact(app):
         # One row per axis, each carrying its own claim and its own answer.
         assert "time     O(n)  ·  not sure" in shown
         assert "space    O(1)  ·  not sure" in shown
+        assert "clarity  not sure" in shown
 
 
-async def test_h_and_l_cross_between_the_two_ladders(app):
+async def test_h_and_l_cross_between_the_ladders(app):
     """The one sideways move on the finish screen, and it undoes itself."""
     from textual.widgets import RadioSet
 
@@ -1762,6 +1809,13 @@ async def test_h_and_l_cross_between_the_two_ladders(app):
         screen.query_one("#time-optimality", RadioSet).focus()
         await pilot.pause()
         await pilot.press("l")
+        await pilot.pause()
+        assert screen.focused.id == "space-optimality"
+        # Clarity is the third stop, not a separate row you have to tab to.
+        await pilot.press("l")
+        await pilot.pause()
+        assert screen.focused.id == "code-clarity"
+        await pilot.press("h")
         await pilot.pause()
         assert screen.focused.id == "space-optimality"
         await pilot.press("h")
@@ -1807,7 +1861,13 @@ async def test_the_radio_cursor_starts_on_the_shown_default(app):
         await pilot.pause()
         screen = app.screen
 
-        for radio_id in ("#verdict", "#confidence", "#time-optimality", "#space-optimality"):
+        for radio_id in (
+            "#verdict",
+            "#confidence",
+            "#time-optimality",
+            "#space-optimality",
+            "#code-clarity",
+        ):
             radio = screen.query_one(radio_id, RadioSet)
             assert radio._selected == radio.pressed_index, radio_id
 

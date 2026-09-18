@@ -138,12 +138,28 @@ in settings and replaying reschedules all of it.
    complexity, each with its own *was it optimal?* answer. Two axes rather than
    one because the trade is the whole point — the hash map that buys O(n) time
    pays O(n) space for it, and one answer cannot record a decision made in two
-   directions. Both optimality answers default to *not sure*, separately — being
-   certain about time and having never thought about space is the normal state,
-   and the flattering answer is never the default here, for the same reason the
-   verdict starts on the worst thing already on the record.
+   directions.
 
-   The time answer is the one thing here that **moves a review**. A solution that
+   Beside them sits a third ladder, *clarity*, which asks whether you would have
+   handed the code in: **clean**, **rough**, **not sure**. It gets its own words
+   on purpose. *Not optimal* is a claim that something exists which
+   does it in less, and time and space each have a lower bound to make that
+   claim against; how the code reads has none, so grading it *optimal* would be
+   measuring yourself against a best nobody wrote. Finding the optimal
+   complexity and still writing something you would not show anyone is a normal
+   evening, and this is the column that can say so.
+
+   All three default to *not sure*, separately — being certain about time and
+   having never thought about space is the normal state, and the flattering
+   answer is never the default here, for the same reason the verdict starts on
+   the worst thing already on the record.
+
+   The time answer is the one thing here that **moves a review** — clarity moves
+   nothing and is scored by nothing. It is reported, not priced: every factor in
+   the score is either measured or a bounded claim, and there is no evidence
+   that clunky-but-correct code predicts forgetting, which is the only thing the
+   rating map is for. If that correlation ever turns up in the log, the tests
+   named for it are the ones that should fail first. A solution that
    passes every test with the wrong asymptotics has not learned the pattern, and
    the pattern is what the schedule is for. Nothing is compared to a reference —
    there isn't one — and nothing is scored: the run score stays a function of
@@ -231,7 +247,7 @@ real points.
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, cost, optimality, then the patterns, then the problem's methods, then capture |
+| `f` | finish — verdict, confidence, cost, optimality, clarity, then the patterns, then the problem's methods, then capture |
 | `space` | a pattern you used (strategy prompt); the method you wrote (methods prompt) |
 | `o` | what a method costs — optimal / not optimal / not sure / unclaimed (methods prompt, methods screen) |
 | `i` | name a new pattern or a new method; `enter` adds it (both prompts) |

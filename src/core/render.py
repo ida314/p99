@@ -160,6 +160,16 @@ OPTIMALITY_LABELS = {
 }
 
 
+# The third ladder's answers. Its own words, not `OPTIMALITY_LABELS`: "not
+# optimal" is a claim that something beats it, which is a thing you can say about
+# a complexity and not about how code reads. See `finish.CLARITY_OPTIONS`.
+CLARITY_LABELS = {
+    "clean": "would hand it in",
+    "rough": "needs a rewrite",
+    "unsure": "not sure",
+}
+
+
 def _cost(complexity: Any, optimality: Any) -> str:
     """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one."""
     parts = [
@@ -264,10 +274,15 @@ def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The stat line's cost rows: one per axis, labelled `time` and `space`.
+    """The stat line's rows for "how did it come out?": `time`, `space`, `clarity`.
 
     Empty when you answered nothing, which is why the rows are built rather than
     always emitted: a stat line should not grow a blank line to say nothing.
+
+    `clarity` is about the code and the other two are about the algorithm, which
+    is why it carries its own words rather than a third "not optimal". It sits
+    here anyway because it was asked here: the three are one question on screen,
+    and splitting them across two blocks of the stat line would say they are not.
 
     An attempt recorded before the question had axes gets its single unqualified
     row back, labelled `approach` exactly as it was written. Nothing here reads
@@ -275,11 +290,24 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     """
     time_row = _cost(attempt.get("claimed_complexity"), attempt.get("time_optimality"))
     space_row = _cost(attempt.get("claimed_space_complexity"), attempt.get("space_optimality"))
+    clarity_row = CLARITY_LABELS.get(attempt.get("code_clarity") or "", "")
+    # `code_clarity` is in here for the same reason the other two are: an attempt
+    # that answered any of the three ladders is not a legacy attempt, and must
+    # not fall through to a column it never filled in.
     if any(
         attempt.get(k)
-        for k in ("time_optimality", "space_optimality", "claimed_space_complexity")
+        for k in (
+            "time_optimality",
+            "space_optimality",
+            "claimed_space_complexity",
+            "code_clarity",
+        )
     ):
-        return [row for row in (("time", time_row), ("space", space_row)) if row[1]]
+        return [
+            row
+            for row in (("time", time_row), ("space", space_row), ("clarity", clarity_row))
+            if row[1]
+        ]
 
     legacy = _cost(attempt.get("claimed_complexity"), attempt.get("optimality"))
     return [("approach", legacy)] if legacy else []

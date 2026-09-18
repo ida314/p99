@@ -578,6 +578,7 @@ def apply(
             claimed_space_complexity=p.get("claimed_space_complexity"),
             time_optimality=p.get("time_optimality"),
             space_optimality=p.get("space_optimality"),
+            code_clarity=p.get("code_clarity"),
             # Only events written before the question had axes carry this, and
             # they land in the column of the same name. Nothing maps it onto
             # either axis: see the `attempts.optimality` comment.
@@ -611,8 +612,8 @@ def apply(
             "INSERT OR IGNORE INTO resolves(attempt_uuid, attempt_id, slug, n, verdict, "
             "ended_at, active_seconds, wall_seconds, paused_seconds, self_confidence, "
             "lc_runtime_pct, lc_memory_pct, claimed_complexity, claimed_space_complexity, "
-            "time_optimality, space_optimality, language) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "time_optimality, space_optimality, code_clarity, language) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 p["attempt_uuid"],
                 _attempt_id(conn, p["attempt_uuid"]),
@@ -630,6 +631,7 @@ def apply(
                 p.get("claimed_space_complexity"),
                 p.get("time_optimality"),
                 p.get("space_optimality"),
+                p.get("code_clarity"),
                 p.get("language"),
             ),
         )

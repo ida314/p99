@@ -298,20 +298,23 @@ FinishModal {
     width: 1fr;
 }
 
-#optional-row, #complexity-row, #optimality-row {
+#optional-row, #complexity-row, #solution-row {
     height: auto;
 }
 
-/* Two ladders side by side rather than stacked: the same question asked twice
-   costs one line of height this way and four the other, and this modal is the
-   one screen where height is the whole budget. */
-.optimality-axis {
+/* Three ladders side by side rather than stacked: one question asked three ways
+   costs one line of height this way and six the other, and this modal is the
+   one screen where height is the whole budget. `1fr` of a 74-wide box leaves
+   each column 23 columns -- fourteen for the answer once the RadioSet's border
+   and its button are paid for, which is the constraint on how long an answer
+   may be worded. Anything longer is silently ellipsised. */
+.solution-axis {
     width: 1fr;
     height: auto;
 }
 
 /* Nothing sets a border here on purpose: a RadioSet's border is how you see
-   which of the two axes has focus. */
+   which of the three axes has focus. */
 #finish-box .axis-label {
     color: $text-muted;
     padding-left: 1;

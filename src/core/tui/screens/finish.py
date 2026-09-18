@@ -47,15 +47,49 @@ OPTIMALITY_OPTIONS = (
 )
 OPTIMALITY_DEFAULT = len(OPTIMALITY_OPTIONS) - 1
 
-# The same ladder asked once per axis, side by side. Two answers rather than one
-# because the trade is the whole point: the hash map that turns O(n log n) into
-# O(n) pays O(n) space for it, and an answer that cannot say "bought time with
-# space" cannot record the decision you actually made. Each axis keeps its own
-# "not sure" -- being certain about time and having never thought about space is
-# the normal state, and a single answer would force you to lie about one of them.
-OPTIMALITY_AXES = (
-    ("time-optimality", "time", "time_optimality"),
-    ("space-optimality", "space", "space_optimality"),
+# Would you have handed this code in. A third ladder with its own words, and the
+# words are the reason it is a third ladder rather than a third axis of the one
+# above: `suboptimal` is a claim that something exists which does it in less,
+# and time and space each have a lower bound to make that claim against. How the
+# code reads has none. Calling a clunky solution "not optimal" would be grading
+# it against a best nobody wrote, so this asks the question the app is actually
+# for -- would you have been happy for the interviewer to read it.
+#
+# `rough` rather than `messy` or `bad`: every number this app produces rests on
+# a self-report, and a label that punishes the honest answer is how you stop
+# giving it. Last entry is the default, for the same reason as the optimality
+# axes -- see below.
+#
+# One word each, because a third column of a 74-wide box leaves fourteen
+# characters after the radio button and "needs a rewrite" came out as "needs a
+# rewri...". `render.CLARITY_LABELS` spells the answers out in full for the stat
+# line, which has the room -- the same split `CONFIDENCE_LABELS` already makes.
+CLARITY_OPTIONS = (
+    ("clean", "clean"),
+    ("rough", "rough"),
+    ("unsure", "not sure"),
+)
+CLARITY_DEFAULT = len(CLARITY_OPTIONS) - 1
+
+# The ladders that sit side by side under one question, each with its own
+# options, its own default and its own column on `attempts`.
+#
+# Three answers rather than one because they are three facts. The trade between
+# the first two is the whole point: the hash map that turns O(n log n) into O(n)
+# pays O(n) space for it, and an answer that cannot say "bought time with space"
+# cannot record the decision you actually made. The third is about the code
+# rather than the algorithm, and finding the optimal complexity and still
+# writing something you would not show anyone is a normal, recordable evening.
+#
+# Each axis keeps its own "not sure", and each defaults to it. Being certain
+# about time and having never thought about space is the usual state, a single
+# answer would force you to lie about one of them, and a default of the
+# flattering answer is how a month of solves you never actually checked quietly
+# claims to have been optimal.
+SOLUTION_AXES = (
+    ("time-optimality", "time", "time_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
+    ("space-optimality", "space", "space_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
+    ("code-clarity", "clarity", "code_clarity", CLARITY_OPTIONS, CLARITY_DEFAULT),
 )
 
 #: The two ways out of `EndRunModal` that end the run. Named rather than spelled
@@ -95,11 +129,12 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         # A chord, not a letter: focus lives in a radio set or in one of the
         # percentile inputs, where a bare `x` is something you typed.
         Binding("ctrl+x", "throw_away", "throw away"),
-        # The one place on this screen with sideways content: the two optimality
-        # ladders. `h` and `l` cross between them and mean nothing anywhere else,
-        # which keeps the rule from `vim.py` — whatever `l` does, `h` undoes.
-        Binding("h", "axis(-1)", "time / space", show=False),
-        Binding("l", "axis(1)", "time / space", show=False),
+        # The one place on this screen with sideways content: the three ladders
+        # under "how did it come out?". `h` and `l` cross between them and mean
+        # nothing anywhere else, which keeps the rule from `vim.py` — whatever
+        # `l` does, `h` undoes.
+        Binding("h", "axis(-1)", "time / space / clarity", show=False),
+        Binding("l", "axis(1)", "time / space / clarity", show=False),
     ]
 
     def __init__(
@@ -122,11 +157,12 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         self.answers = answers or {}
 
     def _prior_index(self, key: str, options: tuple, fallback: int) -> int:
-        """Where an optimality ladder starts: your last answer, or its default.
+        """Where one of the three ladders starts: your last answer, or its default.
 
-        One helper for both axes rather than the lookup written twice, because
-        they are the same question asked twice and spelling it per axis is how
-        one of them ends up quietly not restoring. The verdict and confidence
+        One helper for all three rather than the lookup written out per axis,
+        which is how one of them ends up quietly not restoring. Each caller
+        passes its own options and its own fallback, because the clarity ladder
+        does not share the other two's words. The verdict and confidence
         ladders each restore in their own way — the first has a default worth
         computing, the second is a 1..4 offset.
         """
@@ -196,15 +232,15 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                     placeholder="space   O(1)",
                     id="space-complexity",
                 )
-            yield Static("was it optimal?", classes="field-label")
-            stored = tuple(value for value, _ in OPTIMALITY_OPTIONS)
-            with Horizontal(id="optimality-row"):
-                for radio_id, axis, key in OPTIMALITY_AXES:
-                    chosen = self._prior_index(key, stored, OPTIMALITY_DEFAULT)
-                    with Vertical(classes="optimality-axis"):
+            yield Static("how did it come out?", classes="field-label")
+            with Horizontal(id="solution-row"):
+                for radio_id, axis, key, options, fallback in SOLUTION_AXES:
+                    stored = tuple(value for value, _ in options)
+                    chosen = self._prior_index(key, stored, fallback)
+                    with Vertical(classes="solution-axis"):
                         yield Static(axis, classes="axis-label")
                         with RadioSet(id=radio_id):
-                            for i, (_, label) in enumerate(OPTIMALITY_OPTIONS):
+                            for i, (_, label) in enumerate(options):
                                 yield RadioButton(label, value=(i == chosen))
             yield Static("leetcode percentiles — optional", classes="field-label")
             with Horizontal(id="optional-row"):
@@ -265,15 +301,15 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         `l` from the verdict ladder has nowhere sideways to go, and taking focus
         somewhere you were not looking is exactly what the motion rule forbids.
         """
-        ids = [radio_id for radio_id, _, _ in OPTIMALITY_AXES]
+        ids = [radio_id for radio_id, _, _, _, _ in SOLUTION_AXES]
         focused = getattr(self.focused, "id", None)
         if focused not in ids:
             return
         self.query_one(f"#{ids[(ids.index(focused) + delta) % len(ids)]}", RadioSet).focus()
 
-    def _optimality(self, radio_id: str) -> str:
+    def _axis_answer(self, radio_id: str, options: tuple, fallback: int) -> str:
         index = self.query_one(f"#{radio_id}", RadioSet).pressed_index
-        return OPTIMALITY_OPTIONS[index if index >= 0 else OPTIMALITY_DEFAULT][0]
+        return options[index if index >= 0 else fallback][0]
 
     def action_save(self) -> None:
         verdict_index = self.query_one("#verdict", RadioSet).pressed_index
@@ -288,7 +324,10 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 "claimed_space_complexity": (
                     self.query_one("#space-complexity", Input).value.strip() or None
                 ),
-                **{key: self._optimality(radio_id) for radio_id, _, key in OPTIMALITY_AXES},
+                **{
+                    key: self._axis_answer(radio_id, options, fallback)
+                    for radio_id, _, key, options, fallback in SOLUTION_AXES
+                },
                 "lc_runtime_pct": self._pct(self.query_one("#runtime", Input).value),
                 "lc_memory_pct": self._pct(self.query_one("#memory", Input).value),
             }

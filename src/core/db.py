@@ -48,9 +48,13 @@ from . import paths
 #    a method is one route through one problem, and one table could not be both.
 #    `problem_solutions` is dropped and not recreated -- the log keeps every
 #    event that filled it, and the methods list starts empty.
+# 12: clarity -- `attempts` and `resolves` gain `code_clarity`, a third answer
+#    at the finish prompt about the code rather than about the algorithm. It
+#    gets its own vocabulary and not the optimality one: time and space have a
+#    lower bound to be beaten by, and how the code reads has none.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -137,6 +141,15 @@ CREATE TABLE IF NOT EXISTS attempts (
   -- sure about time while having never thought about space is the normal state.
   time_optimality    TEXT,
   space_optimality   TEXT,
+  -- clean|rough|unsure: would you have handed this code in. Deliberately not
+  -- the optimality vocabulary, and the difference is the reason it is a
+  -- separate column rather than a third axis of the same answer. `suboptimal`
+  -- is a factual claim -- something exists that does it in less -- and time and
+  -- space both have a lower bound to make it against. How the code reads has
+  -- none, so grading it `optimal` would be measuring yourself against a best
+  -- nobody wrote. Nothing in `scoring` or `srs` reads this: it is reported, not
+  -- priced. See `render.CLARITY_LABELS` for the words it renders in.
+  code_clarity       TEXT,
   -- legacy, still in the log: the answer to "was it the optimal algorithm?",
   -- asked before the question had axes. Never written to again, and never
   -- reinterpreted as either of the two above -- an unqualified "optimal" is not
@@ -200,6 +213,10 @@ CREATE TABLE IF NOT EXISTS resolves (
   claimed_space_complexity TEXT,
   time_optimality    TEXT,
   space_optimality   TEXT,
+  -- The same answer as on `attempts`, and the one this table is most likely to
+  -- disagree with it about: a second pass is usually the tidy-up, so the pass
+  -- that reads `rough` and the pass that reads `clean` are the same evening.
+  code_clarity       TEXT,
   code_path          TEXT,
   language           TEXT,
   note_path          TEXT,
@@ -416,8 +433,12 @@ PROJECTION_TABLES = (
 # projection holds a string you typed, and even that is a fold over the
 # `problem_finished` payloads that recorded it, so dropping the table loses
 # nothing the log cannot say again.
-# Order within a version matters: `migrate` drops with foreign keys on, so a
-# child table has to go before the parent it references.
+# Order within a version is documentation, not a constraint: `migrate` turns
+# foreign keys off for the duration, because no list can be ordered against
+# tables that did not exist when it was written -- v3 drops `attempts`, and
+# `problem_methods` has carried an `attempt_id` since v11. Children are still
+# listed before parents, because reading the list should tell you what depends
+# on what.
 SHAPE_CHANGED_IN = {
     2: ("fsrs_cards", "tag_mastery"),
     3: ("submissions", "attempts"),
@@ -445,6 +466,23 @@ SHAPE_CHANGED_IN = {
     # migrate that the log does not already hold. The methods list starts empty
     # and the replay this bump forces regrades every card without it.
     11: ("problem_solutions", "problem_methods", "attempt_methods"),
+    # Two columns on two tables, so this is the first bump in a while that drops
+    # `attempts` itself -- and dropping it means dropping *everything* that
+    # references it first, because `migrate` drops with foreign keys on and
+    # SQLite runs the implicit DELETE against them. That is every table carrying
+    # an `attempt_id`, which is the same list and the same order as the head of
+    # `PROJECTION_TABLES` -- `problem_methods` included, easy as it is to read
+    # that one as belonging to the problem alone. The replay puts all of it
+    # back; `code_clarity` comes back NULL on every attempt logged before the
+    # question was asked, which is the right answer to a question nobody put.
+    12: (
+        "problem_methods",
+        "attempt_methods",
+        "attempt_strategies",
+        "submissions",
+        "resolves",
+        "attempts",
+    ),
 }
 
 
@@ -489,11 +527,24 @@ def migrate(conn: sqlite3.Connection) -> bool:
         return False
 
     dropped = False
-    for version, tables in sorted(SHAPE_CHANGED_IN.items()):
-        if from_version < version <= SCHEMA_VERSION:
-            for table in tables:
-                conn.execute(f"DROP TABLE IF EXISTS {table}")
-                dropped = True
+    # Foreign keys off for the duration, and this is not a shortcut around
+    # getting the order right. With them on, SQLite runs an implicit DELETE
+    # before each DROP and refuses if any other table still points at the rows
+    # -- which makes every version's list depend on tables added in later ones.
+    # v3 drops `attempts` and predates `problem_methods` by eight versions; the
+    # `attempt_id` that would now break it did not exist to be ordered against.
+    # Nothing is lost by switching them off: every table here is a projection
+    # about to be dropped and refilled from the log, so integrity between two of
+    # them halfway through the drops is not a fact about anything.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for version, tables in sorted(SHAPE_CHANGED_IN.items()):
+            if from_version < version <= SCHEMA_VERSION:
+                for table in tables:
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
+                    dropped = True
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
     return dropped
 
 

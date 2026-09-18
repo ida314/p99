@@ -770,6 +770,7 @@ class RunEngine:
         claimed_space_complexity: str | None = None,
         time_optimality: str | None = None,
         space_optimality: str | None = None,
+        code_clarity: str | None = None,
         strategies: dict[str, list[str]] | None = None,
         methods: list[dict] | None = None,
     ) -> Attempt:
@@ -791,6 +792,7 @@ class RunEngine:
                 claimed_space_complexity=claimed_space_complexity,
                 time_optimality=time_optimality,
                 space_optimality=space_optimality,
+                code_clarity=code_clarity,
                 strategies=strategies,
                 methods=methods,
             )
@@ -816,6 +818,10 @@ class RunEngine:
                 "claimed_space_complexity": claimed_space_complexity,
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
+                # How the code read, not how the algorithm did. Carried beside
+                # the two optimality answers and priced by neither `scoring` nor
+                # `srs` -- see the `attempts.code_clarity` comment in `db`.
+                "code_clarity": code_clarity,
                 # The patterns you reached for, as you typed them. Rides on this
                 # payload rather than a later event so that `events.apply` can
                 # write the rows before it grades the card -- `srs.rate` reads
@@ -876,6 +882,7 @@ class RunEngine:
         claimed_space_complexity: str | None = None,
         time_optimality: str | None = None,
         space_optimality: str | None = None,
+        code_clarity: str | None = None,
         strategies: dict[str, list[str]] | None = None,
         methods: list[dict] | None = None,
     ) -> Attempt:
@@ -908,6 +915,10 @@ class RunEngine:
                 "claimed_space_complexity": claimed_space_complexity,
                 "time_optimality": time_optimality,
                 "space_optimality": space_optimality,
+                # How the code read, not how the algorithm did. Carried beside
+                # the two optimality answers and priced by neither `scoring` nor
+                # `srs` -- see the `attempts.code_clarity` comment in `db`.
+                "code_clarity": code_clarity,
                 **({"strategies": strategies} if strategies else {}),
                 **({"methods": methods} if methods else {}),
             },

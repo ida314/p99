@@ -219,6 +219,22 @@ def test_used_editorial_rates_like_gave_up():
     assert "used_editorial" in scoring.ZERO_VERDICTS
 
 
+def test_clarity_never_moves_the_rating():
+    """The rating map is for things that predict forgetting. This is not one.
+
+    A solve you would not have handed in is worth recording and worth going back
+    to tidy -- `resolves` is where that second pass lands -- but nothing measured
+    says it comes back any faster than a clean one. Demoting on it would be a
+    judgment dressed as a schedule. If the log ever shows the correlation, this
+    is the test that should fail first.
+    """
+    fast = {"verdict": "accepted", "active_seconds": 100, **PRICED}
+    at_par = {"verdict": "accepted", "active_seconds": PAR_MEDIUM, **PRICED}
+    for clarity in ("clean", "rough", "unsure"):
+        assert srs.rate({**fast, "code_clarity": clarity}, "medium", WEIGHTS) == Rating.Easy
+        assert srs.rate({**at_par, "code_clarity": clarity}, "medium", WEIGHTS) == Rating.Good
+
+
 def test_the_self_report_only_ever_costs_you():
     """It is read in one direction, because it is only trustworthy in one.
 

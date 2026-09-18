@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from core import engine as engine_module, events, methods, queues, srs, stats, strategies
+from core import db, engine as engine_module, events, methods, queues, srs, stats, strategies
 from core.engine import RunEngine
 
 
@@ -86,6 +86,38 @@ def test_replay_is_idempotent(conn):
     once = _snapshot(conn)
     events.replay(conn)
     assert _snapshot(conn) == once
+
+
+def test_a_schema_bump_can_drop_attempts_with_foreign_keys_on(conn):
+    """`migrate` drops with foreign keys on, so the order in `SHAPE_CHANGED_IN`
+    is load-bearing: SQLite runs an implicit DELETE before dropping a table, and
+    a parent still referenced by a child fails outright.
+
+    Nothing on a fresh database exercises this -- a new file is stamped at the
+    current version and never migrates -- so the first time it runs is on
+    somebody's real log. This is that run, in a test: stamp the version back,
+    reopen, and everything has to come out of the log identical.
+
+    v12 is the case that found the gap. `problem_methods` reads as a table about
+    the problem, and carries an `attempt_id` all the same.
+    """
+    _run_a_session(conn)
+    before = _snapshot(conn)
+    cards = _rows_of(conn, "fsrs_cards")
+
+    for version in sorted(db.SHAPE_CHANGED_IN):
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            (str(version - 1),),
+        )
+        assert db.init(conn), f"v{version} should owe a replay"
+        events.replay(conn)
+        assert _snapshot(conn) == before, f"v{version} did not come back identical"
+        assert _rows_of(conn, "fsrs_cards") == cards, f"v{version} moved a card"
+
+
+def _rows_of(conn, table):
+    return [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
 
 
 def test_attempt_ids_are_stable_across_replay(conn):
@@ -1462,6 +1494,7 @@ def _solve_it_twice(conn, slug="two-sum"):
         language="python",
         claimed_complexity="O(n log n)",
         time_optimality="suboptimal",
+        code_clarity="rough",
         strategies=strategies.payload(["sorting"]),
         methods=methods.payload([{"name": "sort then scan", "used": True}]),
     )
@@ -1475,6 +1508,7 @@ def _solve_it_twice(conn, slug="two-sum"):
         language="python",
         claimed_complexity="O(n)",
         time_optimality="optimal",
+        code_clarity="clean",
         strategies=strategies.payload(["hash map"]),
         methods=methods.payload(
             [{"name": "one pass with a complement map", "used": True}]
@@ -1506,6 +1540,47 @@ def test_a_second_pass_is_recorded_beside_the_attempt_not_over_it(conn):
     assert resolve["time_optimality"] == "optimal"
     assert resolve["code_path"] == "/tmp/two-sum-again2.py"
     assert resolve["note_path"] == "/tmp/two-sum-again2.md"
+
+
+def test_clarity_is_recorded_on_the_attempt_and_on_the_pass_that_tidied_it(conn):
+    """The one answer the two passes are most likely to disagree about.
+
+    A second pass at the same problem in the same sitting is usually the
+    clean-up, which is the whole reason `resolves` carries this column: writing
+    the tidy version over the attempt row would erase the fact that the first
+    draft was the one you would not have handed in.
+    """
+    _solve_it_twice(conn)
+
+    attempt = conn.execute("SELECT * FROM attempts").fetchone()
+    resolve = conn.execute("SELECT * FROM resolves").fetchone()
+    assert attempt["code_clarity"] == "rough"
+    assert resolve["code_clarity"] == "clean"
+
+
+def test_clarity_is_not_the_optimality_answer(conn):
+    """Two questions, two columns, and neither one answers the other.
+
+    Finding the optimal complexity and still writing something you would not
+    show anyone is the case this whole column exists for, so the row has to be
+    able to say `optimal` and `rough` at the same time.
+    """
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish(
+        "solved_unaided",
+        claimed_complexity="O(n)",
+        claimed_space_complexity="O(n)",
+        time_optimality="optimal",
+        space_optimality="optimal",
+        code_clarity="rough",
+    )
+
+    row = conn.execute("SELECT * FROM attempts").fetchone()
+    assert row["time_optimality"] == "optimal"
+    assert row["space_optimality"] == "optimal"
+    assert row["code_clarity"] == "rough"
 
 
 def test_a_second_pass_does_not_grade_a_second_time(conn):

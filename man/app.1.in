@@ -299,12 +299,19 @@ like every capture step, and switchable off in the settings screen.
 Finish: how much help you needed, how well it would stick cold in a month, the
 time and space complexities you claim with a separate
 .I "was it optimal?"
-answer for each, and the LeetCode percentiles if you have them — then the
+answer for each, a
+.I clarity
+answer saying whether you would have handed the code in, and the LeetCode
+percentiles if you have them — then the
 patterns you reached for, then the problem's methods, then the two editor
 steps. None of it is scored; the run
 score stays a function of measured facts. The time optimality answer is the one
 that moves a review, because a solution with the wrong asymptotics has not
-learned the pattern the schedule exists for. Afterwards it offers you the same
+learned the pattern the schedule exists for. Clarity moves nothing: it is
+recorded and shown back, and it answers in its own words
+.RB ( clean ", " rough ", " "not sure" )
+rather than the optimality ones, because nothing beats how code reads the way a
+better complexity beats a worse one. Afterwards it offers you the same
 problem again, with a fresh clock:
 .B y
 reruns it and
