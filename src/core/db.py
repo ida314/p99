@@ -48,13 +48,20 @@ from . import paths
 #    a method is one route through one problem, and one table could not be both.
 #    `problem_solutions` is dropped and not recreated -- the log keeps every
 #    event that filled it, and the methods list starts empty.
-# 12: clarity -- `attempts` and `resolves` gain `code_clarity`, a third answer
-#    at the finish prompt about the code rather than about the algorithm. It
-#    gets its own vocabulary and not the optimality one: time and space have a
-#    lower bound to be beaten by, and how the code reads has none.
+# 12: code style -- `attempts` and `resolves` gain the third answer at the
+#    finish prompt, about the code rather than about the algorithm. It gets its
+#    own vocabulary and not the optimality one: time and space have a lower
+#    bound to be beaten by, and how the code reads has none. The column was
+#    called `code_clarity` under this version; see 13.
+# 13: `code_clarity` becomes `code_style`, on the column and on the
+#    `problem_finished` and `problem_resolved` payloads. A plain rename and not
+#    a reinterpretation -- same question, same three answers -- and it needs no
+#    legacy read on the way in, because the answer was asked for in 12 and no
+#    event carrying the old key was ever written. The replay this bump forces is
+#    what puts the renamed column back.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -148,8 +155,8 @@ CREATE TABLE IF NOT EXISTS attempts (
   -- space both have a lower bound to make it against. How the code reads has
   -- none, so grading it `optimal` would be measuring yourself against a best
   -- nobody wrote. Nothing in `scoring` or `srs` reads this: it is reported, not
-  -- priced. See `render.CLARITY_LABELS` for the words it renders in.
-  code_clarity       TEXT,
+  -- priced. See `render.STYLE_LABELS` for the words it renders in.
+  code_style         TEXT,
   -- legacy, still in the log: the answer to "was it the optimal algorithm?",
   -- asked before the question had axes. Never written to again, and never
   -- reinterpreted as either of the two above -- an unqualified "optimal" is not
@@ -216,7 +223,7 @@ CREATE TABLE IF NOT EXISTS resolves (
   -- The same answer as on `attempts`, and the one this table is most likely to
   -- disagree with it about: a second pass is usually the tidy-up, so the pass
   -- that reads `rough` and the pass that reads `clean` are the same evening.
-  code_clarity       TEXT,
+  code_style         TEXT,
   code_path          TEXT,
   language           TEXT,
   note_path          TEXT,
@@ -473,9 +480,22 @@ SHAPE_CHANGED_IN = {
     # an `attempt_id`, which is the same list and the same order as the head of
     # `PROJECTION_TABLES` -- `problem_methods` included, easy as it is to read
     # that one as belonging to the problem alone. The replay puts all of it
-    # back; `code_clarity` comes back NULL on every attempt logged before the
+    # back; `code_style` comes back NULL on every attempt logged before the
     # question was asked, which is the right answer to a question nobody put.
     12: (
+        "problem_methods",
+        "attempt_methods",
+        "attempt_strategies",
+        "submissions",
+        "resolves",
+        "attempts",
+    ),
+    # A renamed column on the same two tables, so the same list in the same
+    # order for the same reason: dropping `attempts` means dropping everything
+    # holding an `attempt_id` first. Nothing is lost in the rename -- no event
+    # in the log carries the old key -- and the replay puts the column back
+    # under the new name.
+    13: (
         "problem_methods",
         "attempt_methods",
         "attempt_strategies",

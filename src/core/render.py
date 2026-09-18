@@ -104,9 +104,12 @@ def stat_line(
     head.append(f"[{difficulty.upper()}]", style=DIFFICULTY_STYLE.get(difficulty.lower(), "white"))
 
     rows: list[RenderableType] = [head, rule()]
+    # Twelve for the label column: every row here shares it, the widest label
+    # is `code style`, and the two spare characters keep a label off the detail
+    # column the way the shorter ones are. Four columns, still inside `WIDTH`.
     for c in score.components:
         line = Text("  ")
-        line.append(f"{c.label:<9}", style="bright_black")
+        line.append(f"{c.label:<12}", style="bright_black")
         line.append(f"{c.detail:<26}", style=VERDICT_LABEL_STYLE.get(c.detail, ""))
         line.append(f"{bar(c.ratio):<14}", style="cyan")
         line.append(f"{signed(c.delta):>6}", style=delta_style(c.delta))
@@ -118,7 +121,7 @@ def stat_line(
     # a zero-delta row appended there would silently absorb it.
     for label, detail in approach:
         line = Text("  ")
-        line.append(f"{label:<9}", style="bright_black")
+        line.append(f"{label:<12}", style="bright_black")
         line.append(f"{detail:<26}")
         line.append(f"{'':<14}")
         line.append(f"{'':>6}")
@@ -126,7 +129,7 @@ def stat_line(
 
     if confidence:
         line = Text("  ")
-        line.append(f"{'recall':<9}", style="bright_black")
+        line.append(f"{'recall':<12}", style="bright_black")
         line.append(f"{CONFIDENCE_LABELS.get(confidence, str(confidence)):<26}")
         line.append(f"{'':<14}")
         line.append(f"{'':>6}")
@@ -162,8 +165,8 @@ OPTIMALITY_LABELS = {
 
 # The third ladder's answers. Its own words, not `OPTIMALITY_LABELS`: "not
 # optimal" is a claim that something beats it, which is a thing you can say about
-# a complexity and not about how code reads. See `finish.CLARITY_OPTIONS`.
-CLARITY_LABELS = {
+# a complexity and not about how code reads. See `finish.STYLE_OPTIONS`.
+STYLE_LABELS = {
     "clean": "would hand it in",
     "rough": "needs a rewrite",
     "unsure": "not sure",
@@ -274,12 +277,12 @@ def strategy_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The stat line's rows for "how did it come out?": `time`, `space`, `clarity`.
+    """The stat line's rows for "how did it come out?": `time`, `space`, `code style`.
 
     Empty when you answered nothing, which is why the rows are built rather than
     always emitted: a stat line should not grow a blank line to say nothing.
 
-    `clarity` is about the code and the other two are about the algorithm, which
+    `code style` is about the code and the other two are about the algorithm, which
     is why it carries its own words rather than a third "not optimal". It sits
     here anyway because it was asked here: the three are one question on screen,
     and splitting them across two blocks of the stat line would say they are not.
@@ -290,8 +293,8 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     """
     time_row = _cost(attempt.get("claimed_complexity"), attempt.get("time_optimality"))
     space_row = _cost(attempt.get("claimed_space_complexity"), attempt.get("space_optimality"))
-    clarity_row = CLARITY_LABELS.get(attempt.get("code_clarity") or "", "")
-    # `code_clarity` is in here for the same reason the other two are: an attempt
+    style_row = STYLE_LABELS.get(attempt.get("code_style") or "", "")
+    # `code_style` is in here for the same reason the other two are: an attempt
     # that answered any of the three ladders is not a legacy attempt, and must
     # not fall through to a column it never filled in.
     if any(
@@ -300,12 +303,12 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
             "time_optimality",
             "space_optimality",
             "claimed_space_complexity",
-            "code_clarity",
+            "code_style",
         )
     ):
         return [
             row
-            for row in (("time", time_row), ("space", space_row), ("clarity", clarity_row))
+            for row in (("time", time_row), ("space", space_row), ("code style", style_row))
             if row[1]
         ]
 

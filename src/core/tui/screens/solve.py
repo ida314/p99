@@ -651,7 +651,7 @@ class SolveScreen(VimMotion, Screen[None]):
                 claimed_space_complexity=answers.get("claimed_space_complexity"),
                 time_optimality=answers.get("time_optimality"),
                 space_optimality=answers.get("space_optimality"),
-                code_clarity=answers.get("code_clarity"),
+                code_style=answers.get("code_style"),
                 strategies=chosen if isinstance(chosen, dict) else None,
                 methods=methods_block if isinstance(methods_block, list) else None,
             )

@@ -1494,7 +1494,7 @@ def _solve_it_twice(conn, slug="two-sum"):
         language="python",
         claimed_complexity="O(n log n)",
         time_optimality="suboptimal",
-        code_clarity="rough",
+        code_style="rough",
         strategies=strategies.payload(["sorting"]),
         methods=methods.payload([{"name": "sort then scan", "used": True}]),
     )
@@ -1508,7 +1508,7 @@ def _solve_it_twice(conn, slug="two-sum"):
         language="python",
         claimed_complexity="O(n)",
         time_optimality="optimal",
-        code_clarity="clean",
+        code_style="clean",
         strategies=strategies.payload(["hash map"]),
         methods=methods.payload(
             [{"name": "one pass with a complement map", "used": True}]
@@ -1542,7 +1542,7 @@ def test_a_second_pass_is_recorded_beside_the_attempt_not_over_it(conn):
     assert resolve["note_path"] == "/tmp/two-sum-again2.md"
 
 
-def test_clarity_is_recorded_on_the_attempt_and_on_the_pass_that_tidied_it(conn):
+def test_code_style_is_recorded_on_the_attempt_and_on_the_pass_that_tidied_it(conn):
     """The one answer the two passes are most likely to disagree about.
 
     A second pass at the same problem in the same sitting is usually the
@@ -1554,11 +1554,11 @@ def test_clarity_is_recorded_on_the_attempt_and_on_the_pass_that_tidied_it(conn)
 
     attempt = conn.execute("SELECT * FROM attempts").fetchone()
     resolve = conn.execute("SELECT * FROM resolves").fetchone()
-    assert attempt["code_clarity"] == "rough"
-    assert resolve["code_clarity"] == "clean"
+    assert attempt["code_style"] == "rough"
+    assert resolve["code_style"] == "clean"
 
 
-def test_clarity_is_not_the_optimality_answer(conn):
+def test_code_style_is_not_the_optimality_answer(conn):
     """Two questions, two columns, and neither one answers the other.
 
     Finding the optimal complexity and still writing something you would not
@@ -1574,13 +1574,13 @@ def test_clarity_is_not_the_optimality_answer(conn):
         claimed_space_complexity="O(n)",
         time_optimality="optimal",
         space_optimality="optimal",
-        code_clarity="rough",
+        code_style="rough",
     )
 
     row = conn.execute("SELECT * FROM attempts").fetchone()
     assert row["time_optimality"] == "optimal"
     assert row["space_optimality"] == "optimal"
-    assert row["code_clarity"] == "rough"
+    assert row["code_style"] == "rough"
 
 
 def test_a_second_pass_does_not_grade_a_second_time(conn):

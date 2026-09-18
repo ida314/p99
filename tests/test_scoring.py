@@ -313,8 +313,8 @@ def test_the_quality_reason_names_the_inputs_that_decided_it():
     assert "1 better approach named" in reason
 
 
-def test_clarity_is_reported_and_never_priced(w):
-    """`code_clarity` changes no number. That is the design, not an oversight.
+def test_code_style_is_reported_and_never_priced(w):
+    """`code_style` changes no number. That is the design, not an oversight.
 
     Every factor in `score_attempt` is either measured (the clock, the submits,
     the hint tier) or a bounded claim (optimal on an axis that has a lower
@@ -323,41 +323,41 @@ def test_clarity_is_reported_and_never_priced(w):
     It is recorded and shown; if a correlation with forgetting ever turns up in
     the log, this is the test that should fail first.
     """
-    for clarity in ("clean", "rough", "unsure", None):
-        assert score_attempt(attempt(code_clarity=clarity), "medium", w).total == (
+    for style in ("clean", "rough", "unsure", None):
+        assert score_attempt(attempt(code_style=style), "medium", w).total == (
             score_attempt(attempt(), "medium", w).total
         )
 
 
-def test_clarity_is_not_folded_into_the_derived_quality():
-    """`solution_quality` reads the algorithm, and clarity is not about it.
+def test_code_style_is_not_folded_into_the_derived_quality():
+    """`solution_quality` reads the algorithm, and code style is not about it.
 
     A clean write-up of the brute force is still the brute force, and a rough
     one of the optimal route is still optimal. Letting the two answers into one
-    label would lose exactly the distinction that made clarity a column.
+    label would lose exactly the distinction that made code style a column.
     """
     beaten = {**SOLVED, "time_optimality": "suboptimal"}
-    assert scoring.solution_quality({**beaten, "code_clarity": "clean"}) == (
+    assert scoring.solution_quality({**beaten, "code_style": "clean"}) == (
         scoring.QUALITY_BRUTEFORCE
     )
     optimal = {**SOLVED, "time_optimality": "optimal"}
-    assert scoring.solution_quality({**optimal, "code_clarity": "rough"}) == (
+    assert scoring.solution_quality({**optimal, "code_style": "rough"}) == (
         scoring.QUALITY_OPTIMAL
     )
 
 
-def test_the_clarity_row_carries_its_own_words():
+def test_the_code_style_row_carries_its_own_words():
     """Not "not optimal": nothing beat your formatting, so nothing may say so."""
     from core import render
-    from core.tui.screens.finish import CLARITY_OPTIONS
+    from core.tui.screens.finish import STYLE_OPTIONS
 
-    for stored, _ in CLARITY_OPTIONS:
-        label = render.CLARITY_LABELS[stored]
+    for stored, _ in STYLE_OPTIONS:
+        label = render.STYLE_LABELS[stored]
         # The stat line's detail column is 26 wide, same bound as the quality row.
         assert 0 < len(label) <= 26
-    assert "optimal" not in " ".join(render.CLARITY_LABELS.values())
+    assert "optimal" not in " ".join(render.STYLE_LABELS.values())
     # An unanswered question is not an answer, and gets no row at all.
     assert render.approach_rows({}) == []
-    assert render.approach_rows({"code_clarity": "rough"}) == [
-        ("clarity", "needs a rewrite")
+    assert render.approach_rows({"code_style": "rough"}) == [
+        ("code style", "needs a rewrite")
     ]

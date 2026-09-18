@@ -219,7 +219,7 @@ def test_used_editorial_rates_like_gave_up():
     assert "used_editorial" in scoring.ZERO_VERDICTS
 
 
-def test_clarity_never_moves_the_rating():
+def test_code_style_never_moves_the_rating():
     """The rating map is for things that predict forgetting. This is not one.
 
     A solve you would not have handed in is worth recording and worth going back
@@ -230,9 +230,9 @@ def test_clarity_never_moves_the_rating():
     """
     fast = {"verdict": "accepted", "active_seconds": 100, **PRICED}
     at_par = {"verdict": "accepted", "active_seconds": PAR_MEDIUM, **PRICED}
-    for clarity in ("clean", "rough", "unsure"):
-        assert srs.rate({**fast, "code_clarity": clarity}, "medium", WEIGHTS) == Rating.Easy
-        assert srs.rate({**at_par, "code_clarity": clarity}, "medium", WEIGHTS) == Rating.Good
+    for style in ("clean", "rough", "unsure"):
+        assert srs.rate({**fast, "code_style": style}, "medium", WEIGHTS) == Rating.Easy
+        assert srs.rate({**at_par, "code_style": style}, "medium", WEIGHTS) == Rating.Good
 
 
 def test_the_self_report_only_ever_costs_you():

@@ -62,14 +62,14 @@ OPTIMALITY_DEFAULT = len(OPTIMALITY_OPTIONS) - 1
 #
 # One word each, because a third column of a 74-wide box leaves fourteen
 # characters after the radio button and "needs a rewrite" came out as "needs a
-# rewri...". `render.CLARITY_LABELS` spells the answers out in full for the stat
+# rewri...". `render.STYLE_LABELS` spells the answers out in full for the stat
 # line, which has the room -- the same split `CONFIDENCE_LABELS` already makes.
-CLARITY_OPTIONS = (
+STYLE_OPTIONS = (
     ("clean", "clean"),
     ("rough", "rough"),
     ("unsure", "not sure"),
 )
-CLARITY_DEFAULT = len(CLARITY_OPTIONS) - 1
+STYLE_DEFAULT = len(STYLE_OPTIONS) - 1
 
 # The ladders that sit side by side under one question, each with its own
 # options, its own default and its own column on `attempts`.
@@ -89,7 +89,7 @@ CLARITY_DEFAULT = len(CLARITY_OPTIONS) - 1
 SOLUTION_AXES = (
     ("time-optimality", "time", "time_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
     ("space-optimality", "space", "space_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
-    ("code-clarity", "clarity", "code_clarity", CLARITY_OPTIONS, CLARITY_DEFAULT),
+    ("code-style", "code style", "code_style", STYLE_OPTIONS, STYLE_DEFAULT),
 )
 
 #: The two ways out of `EndRunModal` that end the run. Named rather than spelled
@@ -133,8 +133,8 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         # under "how did it come out?". `h` and `l` cross between them and mean
         # nothing anywhere else, which keeps the rule from `vim.py` — whatever
         # `l` does, `h` undoes.
-        Binding("h", "axis(-1)", "time / space / clarity", show=False),
-        Binding("l", "axis(1)", "time / space / clarity", show=False),
+        Binding("h", "axis(-1)", "time / space / code style", show=False),
+        Binding("l", "axis(1)", "time / space / code style", show=False),
     ]
 
     def __init__(
@@ -161,7 +161,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
 
         One helper for all three rather than the lookup written out per axis,
         which is how one of them ends up quietly not restoring. Each caller
-        passes its own options and its own fallback, because the clarity ladder
+        passes its own options and its own fallback, because the code style ladder
         does not share the other two's words. The verdict and confidence
         ladders each restore in their own way — the first has a default worth
         computing, the second is a 1..4 offset.
