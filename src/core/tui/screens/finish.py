@@ -24,13 +24,20 @@ from ..vim import MOTIONS, VimMotion
 # What changed is the question. "How well will this stick?" is a prediction made
 # with the solution still in front of you, which is the condition under which
 # self-assessment is least reliable; you are rating how clear it feels now, not
-# how it will go cold. Naming the retrieval condition -- a month, no warning --
-# is the standard correction, and it costs nothing to ask it this way instead.
+# how it will go cold. Naming the retrieval condition -- a month, nothing to
+# work from -- is the standard correction, and it costs nothing to ask it this
+# way instead.
+#
+# And the four answers name the same act the question does. "I'd nail it" is a
+# rating of yourself; "I'd reconstruct it quickly" is a claim about a thing you
+# would do, with a month and a blank page as the conditions. The rung you pick
+# is the same rung either way -- the wording just makes it harder to answer the
+# easier question by mistake.
 CONFIDENCE_OPTIONS = [
-    "1  no idea",
-    "2  I'd struggle",
-    "3  I'd get there",
-    "4  I'd nail it",
+    "1  I'd be lost",
+    "2  I'd struggle to reconstruct it",
+    "3  I'd reconstruct it",
+    "4  I'd reconstruct it quickly",
 ]
 
 # Stored value first, wording second, so the vocabulary that reaches the database
@@ -214,7 +221,10 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             with RadioSet(id="verdict"):
                 for i, v in enumerate(VERDICTS):
                     yield RadioButton(VERDICT_LABELS[v], value=(i == default))
-            yield Static("if this came up cold in a month?", classes="field-label")
+            yield Static(
+                "a month from now, no hints or notes — could you reconstruct it?",
+                classes="field-label",
+            )
             confidence = self.answers.get("self_confidence")
             selected = int(confidence) - 1 if confidence else 2
             with RadioSet(id="confidence"):

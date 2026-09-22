@@ -303,8 +303,8 @@ rejected. Skippable with
 like every capture step, and switchable off in the settings screen.
 .TP
 .B f
-Finish: how much help you needed, how well it would stick cold in a month, the
-time and space complexities you claim with a separate
+Finish: how much help you needed, whether you could reconstruct it cold in a
+month, the time and space complexities you claim with a separate
 .I "was it optimal?"
 answer for each, a
 .I "code style"

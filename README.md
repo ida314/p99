@@ -133,8 +133,8 @@ in settings and replaying reschedules all of it.
    `?` reveals the next hint tier, `s` logs a submission, `f` finishes.
    You solve in the browser and self-report the verdict; LeetCode is the judge —
    except [offline](#offline), where there isn't one.
-3. **Finish** — how much help you needed, how well it would stick cold in a
-   month, and what you say the solution costs: a time complexity and a space
+3. **Finish** — how much help you needed, whether you could reconstruct it cold
+   in a month, and what you say the solution costs: a time complexity and a space
    complexity, each with its own *was it optimal?* answer. Two axes rather than
    one because the trade is the whole point — the hash map that buys O(n) time
    pays O(n) space for it, and one answer cannot record a decision made in two

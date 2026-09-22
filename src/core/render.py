@@ -143,14 +143,16 @@ def stat_line(
     return Group(*rows)
 
 
-# The finish modal's four answers, short enough to sit in a stat line. Same 1..4
-# the log has always stored, so an attempt recorded under the old wording still
-# renders at the rung it was given.
+# The finish modal's four answers, trimmed to fit a stat line: the prompt spells
+# "I'd struggle to reconstruct it" out in full and has the room, a row that also
+# carries a time, a score and a verdict does not. Same 1..4 the log has always
+# stored, so an attempt recorded under either wording still renders at the rung
+# it was given.
 CONFIDENCE_LABELS = {
-    1: '"no idea"',
+    1: '"I\'d be lost"',
     2: '"I\'d struggle"',
-    3: '"I\'d get there"',
-    4: '"I\'d nail it"',
+    3: '"I\'d reconstruct it"',
+    4: '"reconstruct it quickly"',
 }
 
 # The finish modal's optimality answers, short enough to sit beside a complexity.

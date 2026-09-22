@@ -41,7 +41,7 @@ in `srs.rate`, in this order:
 | Not solved, or solved after seeing pseudocode or the implementation (help tier ≥ 3) | `Again` |
 | Any help at all (tier ≥ 1), or slower than 1.5× par | `Hard` |
 | You said the solution was beaten on time, and named no better approach | `Hard` |
-| You said you'd have no idea / would struggle in a month (confidence ≤ 2) | `Hard` |
+| You said you'd be lost / would struggle to reconstruct it in a month (confidence ≤ 2) | `Hard` |
 | Faster than 0.6× par, no help at all, optimal on time, priced on both axes | `Easy` |
 | Everything else | `Good` |
 
@@ -63,9 +63,12 @@ after a delay, because in the moment you are reading working memory rather than
 anything durable. So a *high* rating runs with that bias and buys nothing: it can
 no longer promote anything. A *low* rating runs against it — volunteering that a
 solve won't stick, right after producing one, is the case the bias does not
-explain — so it is allowed to demote. This is why the finish prompt asks *"if this
-came up cold in a month?"* rather than *"how well will this stick?"*: naming the
-retrieval condition is the standard correction for the bias, and it costs nothing.
+explain — so it is allowed to demote. This is why the finish prompt asks *"a month
+from now, no hints or notes — could you reconstruct it?"* rather than *"how well
+will this stick?"*: naming the retrieval condition is the standard correction for
+the bias, and it costs nothing. The four answers name the act too — *"I'd
+reconstruct it quickly"* rather than *"I'd nail it"* — so the rung you pick is a
+claim about what you would do, not a rating of yourself.
 
 **Correctness, cost and implementation are three questions, not one.** Nothing
 here compares your solution to a reference, because there is no reference: p99

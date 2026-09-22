@@ -1574,7 +1574,7 @@ async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
         shown = _plain(panel)
         assert "SOLVED WITH HINTS" in shown
         assert "09:12" in shown  # 552 seconds, the time it took
-        assert "\"I'd get there\"" in shown  # self_confidence 3, as you rated it
+        assert "\"I'd reconstruct it\"" in shown  # self_confidence 3, as you rated it
         # The whole point of the panel: it can never hand you the answer back.
         assert code_path not in shown
         assert "only-you-know" not in shown
@@ -1638,14 +1638,14 @@ async def test_the_confidence_knob_asks_about_recall_not_about_now(app):
         assert isinstance(screen, FinishModal)
 
         labels = [_plain(s) for s in screen.query(Static)]
-        assert "if this came up cold in a month?" in labels
+        assert "a month from now, no hints or notes — could you reconstruct it?" in labels
         assert "how well will this stick?" not in labels
 
         buttons = screen.query_one("#confidence", RadioSet).query(RadioButton)
         shown = [b.label.plain for b in buttons]
         assert shown == list(CONFIDENCE_OPTIONS)
         # Apostrophes survive the trip; nothing was swallowed as markup.
-        assert "I'd nail it" in shown[3]
+        assert "I'd reconstruct it quickly" in shown[3]
 
 
 async def test_the_finish_prompt_asks_what_the_solution_cost(app):
