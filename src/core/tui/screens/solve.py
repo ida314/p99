@@ -18,7 +18,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import audio, branding, cache, capture, methods, scoring, stats, strategies
+from ... import audio, branding, cache, capture, events, methods, scoring, stats, strategies
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
@@ -590,7 +590,11 @@ class SolveScreen(VimMotion, Screen[None]):
             # Everything above that line is a prompt, and the attempt is still
             # live behind it.
             answers: dict[str, Any] = {}
-            used: list[tuple[str, str]] = []
+            # `None` until the patterns prompt has been answered once, because
+            # the prompt opens with the problem's saved tags ticked and only a
+            # real previous answer may overrule that -- an empty list here means
+            # "you unticked them all", not "nothing yet". See `StrategyModal`.
+            used: list[tuple[str, str]] | None = None
             ways: list[dict[str, Any]] = []
             chosen: dict | None = None
             methods_block: list[dict[str, Any]] | None = None
@@ -655,14 +659,38 @@ class SolveScreen(VimMotion, Screen[None]):
                 strategies=chosen if isinstance(chosen, dict) else None,
                 methods=methods_block if isinstance(methods_block, list) else None,
             )
+            self._record_tags(attempt.problem.slug, chosen)
             self._stop_recording()
             await self._capture_flow(ways=methods_block)
         finally:
             self._busy = False
 
+    def _record_tags(self, slug: str, chosen: Any) -> None:
+        """Set this problem's tags to what the patterns prompt came back with.
+
+        After `engine.finish` and not folded into it, because this is not an
+        answer about the attempt. `problem_finished` carries the same names --
+        that is what `attempt_strategies` is built from, the tags this problem
+        wore on the night of this solve -- while the problem's live list is set
+        here, by an event that carries the whole list and so can express a tag
+        being taken off. See `strategies.set_payload`.
+
+        Sent whenever the prompt was answered, including with nothing ticked:
+        clearing the list is exactly the edit that needs an event of its own.
+        Skipped entirely when the prompt never ran, since a question nobody was
+        asked cannot have emptied anything.
+        """
+        if not isinstance(chosen, dict) or chosen.get(SIGNAL_BACK):
+            return
+        events.append(
+            self.app.conn,  # type: ignore[attr-defined]
+            events.PROBLEM_STRATEGIES_SET,
+            strategies.set_payload(slug, chosen.get(strategies.USED) or []),
+        )
+
     @staticmethod
     def _used_pairs(chosen: Any) -> list[tuple[str, str]]:
-        """The `(key, name)` of every pattern the strategy prompt marked used.
+        """The `(key, name)` of every pattern the patterns prompt came back with.
 
         Both halves, because stepping back has to be a round trip: the key is
         what the list is rebuilt against and the name is the only record of a
@@ -675,8 +703,8 @@ class SolveScreen(VimMotion, Screen[None]):
             for entry in strategies.clean(chosen.get(strategies.USED) or [])
         ]
 
-    async def _ask_strategies(self, answers: dict, used: list) -> dict | None:
-        """Which patterns did you reach for, from the shared vocabulary.
+    async def _ask_strategies(self, answers: dict, used: list | None) -> dict | None:
+        """Which patterns can solve this problem, from the shared vocabulary.
 
         Before `engine.finish`, not after: the strategy rows have to exist by the
         time the card is graded. Asking afterwards would need a second event and

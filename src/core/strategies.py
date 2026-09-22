@@ -1,25 +1,41 @@
 """Solving strategies — the reusable patterns you name yourself.
 
-A strategy is what you reached for: "bottom-up tabulation", "monotonic stack",
+A strategy is a technique: "bottom-up tabulation", "monotonic stack",
 "quickselect". It is deliberately not `problems.pattern`, which is the catalog's
 word for where a problem sits in someone else's list. This is your word for the
-technique you actually used, and there is no supplied taxonomy — the vocabulary
-is empty until you type into it.
+technique, and there is no supplied taxonomy — the vocabulary is empty until you
+type into it.
 
 Shared across problems, and that is the whole reason it is a vocabulary. The same
 technique turning up on `coin-change` and on `house-robber` is the fact worth
 having: a strategy you keep being slow under is a weak spot in its own right,
-which a per-problem note could never say, and `stats.distributions` slices your
-solve times by it for exactly that reason.
+which a per-problem note could never say.
 
-Not a way of solving any one problem. That is `methods` — the whole route through
-one problem, named in that problem's own terms and keyed by its slug. The two
-lists are independent: this one says which patterns you reached for, that one says
-which ways the problem admits, and nothing joins a row of one to a row of the
-other. A method is usually built out of several strategies, and it says so in its
-own name rather than in a foreign key.
+**Tagged on the problem, not on the solve.** The prompt after a solve asks which
+patterns *can* solve this problem, and the answer keeps every tag you have ever
+put on it — tick min-heap, quickselect and sorting, and all three stay ticked the
+next time you come back, whichever one you actually wrote tonight. A problem
+solvable three ways is solvable three ways on an evening you took none of them.
 
-One role now: `used`, the patterns you reached for this time.
+What that buys is the question the per-attempt version could not answer: *every
+problem quickselect is an answer to*, which is the list you want when you sit
+down to drill quickselect. The per-attempt version could only say which problems
+quickselect happened to be the answer you gave, which is a fact about your
+evenings and not about the problems.
+
+Which route you took tonight is not asked here, and not lost either: it is the
+methods prompt one screen later, where a whole route through one problem gets a
+row of its own. Splitting the two is the point — `problem_strategies` is what the
+problem admits, `problem_methods` is the way through it — and the two tables
+still never join. See `methods`.
+
+Unticking removes. A tag is a claim about the problem, so taking one off is
+saying the claim was wrong, and the next solve opens without it. The log still
+only grows: the removal rides a `problem_strategies_set` event carrying the whole
+list, exactly the way `settings_changed` carries a value rather than a diff.
+
+One role now: `used`, which since the question changed means "this problem can be
+solved with it" on every attempt that has been open while the tags stood.
 
 `worth_learning` is **legacy**: it was a second role here, naming a better
 approach you could see and had not written, and attempts recorded under it keep
@@ -39,7 +55,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 #: The patterns you reached for. The only role a new attempt can record.
 USED = "used"
@@ -126,21 +142,58 @@ def vocabulary(conn: sqlite3.Connection) -> list[Strategy]:
 
 
 def for_problem(conn: sqlite3.Connection, slug: str) -> list[Strategy]:
-    """The strategies you have named on one problem, in any role.
+    """Every technique you have said can solve this problem.
 
-    Read straight off the attempts rather than out of a per-problem list, because
-    there is no per-problem list to keep: a strategy belongs to the vocabulary and
-    to the solves that reached for it, and "which patterns have I used on this
-    problem" is a question those two already answer between them. Nothing extra is
-    written, so nothing extra can fall out of step.
+    The problem's own list, read from `problem_strategies` and not folded up out
+    of the attempts. It used to be the union over the attempts, and that read
+    could only ever grow: unticking a tag you had decided was wrong changed
+    nothing, because the solve that first recorded it still said so. A list you
+    cannot take something off is not a list you can trust to be a claim.
+
+    This is what the prompt after a solve opens with already ticked, so tagging a
+    problem is something you do once and correct rather than something you redo
+    every time you solve it.
     """
     return _rows(
         conn,
         "SELECT s.key AS key, s.name AS name, s.first_seen AS first_seen "
-        "FROM attempt_strategies a JOIN strategies s ON s.key = a.key "
-        "WHERE a.slug = ? GROUP BY s.key, s.name, s.first_seen ORDER BY s.name",
+        "FROM problem_strategies p JOIN strategies s ON s.key = p.key "
+        "WHERE p.slug = ? ORDER BY s.name",
         (slug,),
     )
+
+
+def problems_with_strategies(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every problem carrying at least one tag, most recently tagged first.
+
+    Ordered by when the problem was last tagged rather than alphabetically, for
+    the same reason `methods.problems_with_methods` is: this is a list you open
+    right after a solve, and the problem you just worked on should be the row the
+    cursor is already on.
+    """
+    return conn.execute(
+        "SELECT p.slug AS slug, pr.title AS title, pr.difficulty AS difficulty, "
+        "COUNT(*) AS tags, MAX(p.updated_at) AS last_tagged "
+        "FROM problem_strategies p JOIN problems pr ON pr.slug = p.slug "
+        "GROUP BY p.slug ORDER BY last_tagged DESC, pr.title ASC"
+    ).fetchall()
+
+
+def problem_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """How many problems carry each technique, keyed by strategy.
+
+    The number that makes a tag worth reading back: "hash map — 14 problems"
+    says this is a technique you keep meeting, and a 1 says you have named
+    something once and may have meant a word you already had. It is also the
+    shape of the question the tags were moved onto the problem to answer, one
+    step short of asking it: which problems, rather than how many.
+    """
+    return {
+        r["key"]: r["problems"]
+        for r in conn.execute(
+            "SELECT key, COUNT(*) AS problems FROM problem_strategies GROUP BY key"
+        ).fetchall()
+    }
 
 
 def payload(used: Iterable[str]) -> dict[str, list[str]]:
@@ -154,8 +207,29 @@ def payload(used: Iterable[str]) -> dict[str, list[str]]:
     One role. `worth_learning` used to be the second parameter here and is now
     something the log can contain but nothing can produce -- what it was reaching
     for is a property of the problem, and `methods.payload` is where that goes.
+
+    Still carried on the finish, now that the tags belong to the problem, because
+    it is what `attempt_strategies` is folded from: which tags this problem wore
+    on the night of this attempt. The problem's live list is set by the
+    `problem_strategies_set` event that rides alongside -- see `set_payload`.
     """
     return {USED: [entry.name for entry in clean(used)]}
+
+
+def set_payload(slug: str, names: Iterable[str]) -> dict[str, Any]:
+    """The whole `problem_strategies_set` payload: this problem's tags, entire.
+
+    The list and not a diff, which is what makes a removal expressible in an
+    append-only log: the event says what the set *is*, the fold makes the table
+    match, and a replay lands on the same set by reading the same last word.
+    `settings_changed` carries a value for the same reason.
+
+    No `attempt_uuid`, deliberately. A tag is a claim about the problem, so it
+    outlives the attempt that happened to be on screen when you made it -- and
+    throwing that attempt away, which skips its `problem_finished` outright, must
+    not quietly untag the problem.
+    """
+    return {"slug": slug, USED: [entry.name for entry in clean(names)]}
 
 
 def is_empty(block: Mapping[str, list[str]] | None) -> bool:

@@ -65,6 +65,7 @@ def _snapshot(conn):
         rows("resolves"),
         keyed("strategies", "key"),
         keyed("attempt_strategies", "attempt_uuid, key"),
+        keyed("problem_strategies", "slug, key"),
         keyed("attempt_methods", "attempt_uuid, key"),
         keyed("problem_methods", "slug, key"),
     )
@@ -1160,6 +1161,154 @@ def test_discarding_an_attempt_forgets_its_strategy_answer(conn):
     assert (
         conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 0
     )
+
+
+def test_a_problems_tags_are_kept_between_solves(conn):
+    """Tag it once and it stays tagged — the list belongs to the problem.
+
+    Two solves naming different patterns leave the problem carrying both, because
+    the question is which techniques can solve it and not which one you took
+    tonight. This is the fold that reads a whole history of answers written when
+    the question was the other one.
+    """
+    eng = RunEngine(conn)
+    for names in (["Min-Heap"], ["Quickselect"]):
+        eng.start_session(["two-sum"])
+        eng.start_problem("two-sum")
+        eng.finish("accepted", strategies=strategies.payload(names))
+        eng.advance()
+        eng.end_session()
+
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == [
+        "min-heap",
+        "quickselect",
+    ]
+    # The attempts still each say what they were solved under: one row apiece,
+    # not the problem's whole list copied onto both.
+    assert sorted(
+        r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")
+    ) == ["min-heap", "quickselect"]
+
+
+def test_setting_a_problems_tags_takes_the_missing_ones_off(conn):
+    """The one fold that removes, and it removes exactly what the event omits."""
+    _solve(conn, strategies=strategies.payload(["Min-Heap", "Quickselect", "Sorting"]))
+    assert len(strategies.for_problem(conn, "two-sum")) == 3
+
+    events.append(
+        conn,
+        events.PROBLEM_STRATEGIES_SET,
+        strategies.set_payload("two-sum", ["Min-Heap", "Sorting"]),
+    )
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == [
+        "min-heap",
+        "sorting",
+    ]
+    # Off the problem, not out of the vocabulary: `quickselect` is still a word
+    # you have, and another problem may still be tagged with it.
+    assert "quickselect" in {s.key for s in strategies.vocabulary(conn)}
+    # And the attempt keeps what it was solved under. History is not rewritten
+    # by a tag you took off tonight.
+    assert (
+        conn.execute("SELECT COUNT(*) AS n FROM attempt_strategies").fetchone()["n"] == 3
+    )
+
+
+def test_setting_a_problems_tags_to_nothing_clears_them(conn):
+    """An empty list is an answer here, which is why the prompt always sends one."""
+    _solve(conn, strategies=strategies.payload(["Min-Heap"]))
+    events.append(conn, events.PROBLEM_STRATEGIES_SET, strategies.set_payload("two-sum", []))
+    assert strategies.for_problem(conn, "two-sum") == []
+
+
+def test_tagging_a_problem_names_a_pattern_the_vocabulary_has_not_met(conn):
+    """The patterns screen is a way into the vocabulary, like the prompt is."""
+    events.append(
+        conn,
+        events.PROBLEM_STRATEGIES_SET,
+        strategies.set_payload("two-sum", ["Monotonic Stack"]),
+    )
+    assert [(s.key, s.name) for s in strategies.vocabulary(conn)] == [
+        ("monotonic-stack", "Monotonic Stack")
+    ]
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == ["monotonic-stack"]
+    # A tag is not a way of solving the problem, here as everywhere else.
+    assert conn.execute("SELECT COUNT(*) AS n FROM problem_methods").fetchone()["n"] == 0
+
+
+def test_a_problems_tags_outlive_the_attempt_that_set_them(conn):
+    """Throwing the attempt away does not untag the problem, live or on replay.
+
+    The claim was about the problem. The event that carries it has no
+    `attempt_uuid` for exactly this reason, so the tombstone that skips the
+    finish does not reach it and the rebuild lands where the live path does.
+    """
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    uuid = eng.attempt.uuid
+    events.append(
+        conn, events.PROBLEM_STRATEGIES_SET, strategies.set_payload("two-sum", ["Sorting"])
+    )
+    eng.discard()
+    events.append(conn, events.ATTEMPT_DISCARDED, {"attempt_uuid": uuid, "slug": "two-sum"})
+
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == ["sorting"]
+    events.replay(conn)
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == ["sorting"]
+
+
+def test_a_log_written_before_the_tags_moved_still_tags_the_problems(conn):
+    """The backfill v14 exists for: every old answer named a technique that worked.
+
+    Raw `problem_finished` payloads, of the shape the prompt wrote when it asked
+    what you reached for tonight. A replay has nothing else to go on and should
+    reach the same list the prompt would show today.
+    """
+    eng = RunEngine(conn)
+    for names in (["hash map"], ["two pointers"]):
+        eng.start_session(["two-sum"])
+        eng.start_problem("two-sum")
+        events.append(
+            conn,
+            events.PROBLEM_FINISHED,
+            {
+                "attempt_uuid": eng.attempt.uuid,
+                "slug": "two-sum",
+                "verdict": "solved_unaided",
+                "strategies": {"used": names},
+            },
+        )
+        eng.advance()
+        eng.end_session()
+
+    conn.execute("DELETE FROM problem_strategies")
+    events.replay(conn)
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == [
+        "hash-map",
+        "two-pointers",
+    ]
+
+
+def test_a_legacy_worth_learning_answer_tags_the_problem_too(conn):
+    """It named a better way through this problem, which is a tag by any reading."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    events.append(
+        conn,
+        events.PROBLEM_FINISHED,
+        {
+            "attempt_uuid": eng.attempt.uuid,
+            "slug": "two-sum",
+            "verdict": "solved_unaided",
+            "strategies": {"used": ["brute force"], "worth_learning": ["hash map"]},
+        },
+    )
+    assert [s.key for s in strategies.for_problem(conn, "two-sum")] == [
+        "brute-force",
+        "hash-map",
+    ]
 
 
 def test_a_discarded_run_takes_its_strategy_answers_down_with_it(conn):

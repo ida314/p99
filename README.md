@@ -166,16 +166,17 @@ in settings and replaying reschedules all of it.
    measured facts, and what a solution costs is a claim, not a measurement. See
    [the methods page](#the-methods-page) for the one thing that buys the
    demotion back.
-4. **Name the patterns** — which reusable techniques you reached for, from a
-   vocabulary that is [yours](#strategies) and starts empty.
+4. **Tag the patterns** — which reusable techniques *can* solve this problem,
+   from a vocabulary that is [yours](#strategies) and starts empty. Every tag the
+   problem already carries is ticked when the prompt opens, so this is a list you
+   correct rather than one you fill in again.
 5. **Name the method** — the [ways this problem can be solved](#the-methods-page),
    optimal and not, with the one you wrote tonight marked. A method is the whole
    route through *this* problem and is a separate list from the patterns: one is
    `two pointers`, the other is `sort, then two pointers from both ends`. `esc`
    steps back one screen at a time — methods to patterns to verdict — carrying
    every answer, because nothing is written until all three are done and the
-   attempt is still live behind them. Save with nothing changed and nothing is
-   recorded.
+   attempt is still live behind them.
 6. **Capture** — one `$EDITOR` handoff for the solution, tagged with the method
    you marked, then a reflection note pre-filled with three questions. Both skippable with `:q!`, and skipping
    costs nothing. `s` opens a third one on the spot, for the code that just got
@@ -248,11 +249,12 @@ real points.
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve) |
 | `f` | finish — verdict, confidence, cost, optimality, code style, then the patterns, then the problem's methods, then capture |
-| `space` | a pattern you used (strategy prompt); the method you wrote (methods prompt) |
+| `space` | a pattern that can solve this problem (patterns prompt); the method you wrote (methods prompt) |
 | `o` | what a method costs — optimal / not optimal / not sure / unclaimed (methods prompt, methods screen) |
 | `i` | name a new pattern or a new method; `enter` adds it (both prompts) |
 | `a` | the methods screen — every way you know to solve a problem (home) |
-| `e` | write the code for a method you have never written (methods screen) |
+| `p` | the patterns screen — which techniques can solve which problems (home) |
+| `e` | write the code for a method you have never written (methods screen); tag the highlighted problem (patterns screen) |
 | `esc` | back one screen — every post-solve prompt steps back to the one before it, and the verdict prompt back to the problem |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded); on a rerun it drops the rerun and keeps the solve behind it |
 | `y` `n` | solve it again / move on, at the offer after every finished pass |
@@ -264,18 +266,35 @@ real points.
 
 ## Strategies
 
-After a solve, p99 asks which patterns you reached for. Not from a menu it supplies —
-the list starts **empty** and fills with whatever you type into it: `bottom-up
-tabulation`, `monotonic stack`, `quickselect`, whatever you actually call the
-thing. `space` marks one, `i` names a new one, and saving with nothing picked
-records nothing — skipping stays free.
+After a solve, p99 asks which patterns **can** solve this problem. Not from a
+menu it supplies — the list starts **empty** and fills with whatever you type
+into it: `bottom-up tabulation`, `monotonic stack`, `quickselect`, whatever you
+actually call the thing. `space` ticks one, `i` names a new one.
 
-The vocabulary is **shared across problems**, not filed under one. Type
+The tags belong to the **problem**, not to the evening. A problem you can do with
+a min-heap, with quickselect or by sorting gets all three ticked, and all three
+are still ticked next time — including the times you reach for none of them. That
+is the question the list is built to answer: *every problem quickselect is an
+answer to*, which is what you want when you sit down to drill quickselect. Which
+route you actually took tonight is the [methods](#the-methods-page) prompt one
+screen later.
+
+Unticking takes a tag **off** the problem: a tag is a claim, and taking one back
+is an edit you meant. It rides its own event carrying the whole list, so an
+append-only log can still express a removal and a replay lands in the same place.
+Save with nothing ticked and the problem carries no tags.
+
+The vocabulary itself is **shared across problems**, not filed under one. Type
 "bottom-up tabulation" on `coin-change` and it is on offer for `house-robber`,
 which is the point: a technique you keep being slow under is a weak spot in its
 own right, and the stats screen slices solve times by strategy the same way it
 slices them by pattern. A pattern is where a problem sits in someone else's
-list; a strategy is what you reached for.
+list; a strategy is a technique in your own words.
+
+**`p` from home** opens the same list out of a run: problems on the left, their
+tags on the right, `e` to edit the highlighted one. That is where the tag you
+think of a week later goes, instead of waiting for the problem to come round
+again.
 
 A strategy is **not** a way of solving one problem. That is a
 [method](#the-methods-page), and the two lists are completely separate: nothing
@@ -386,11 +405,14 @@ computed at read time. Editing the weights rescores all history instantly. The
 same rule covers the quality verdict on a solution: it is read off the optimality
 answer and the problem's methods at display time, and there is no column for it.
 
-`strategies`, `attempt_strategies`, `problem_methods` and `attempt_methods` are
-projections too. They hold the only strings in any projection that you typed
-rather than picked — the name of a pattern and the name of a method — and even
-those are a fold over the `problem_finished` payloads that recorded them, so
-dropping all four and replaying loses nothing. A name is stored as you first
+`strategies`, `problem_strategies`, `attempt_strategies`, `problem_methods` and
+`attempt_methods` are projections too. They hold the only strings in any
+projection that you typed rather than picked — the name of a pattern and the name
+of a method — and even those are a fold over the payloads that recorded them, so
+dropping all five and replaying loses nothing. `problem_strategies` is the one
+projection a fold ever *deletes* from, and only because the event it folds
+(`problem_strategies_set`) carries the whole list rather than a change to it: the
+replay reads the same last word and lands in the same place. A name is stored as you first
 spelled it and keyed on a normalised form, so "Top-Down DP" and "top down dp" are
 one entry with your spelling on it.
 

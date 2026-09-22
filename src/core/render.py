@@ -392,6 +392,37 @@ def method_list(ways: Sequence[Any]) -> list[Text]:
     return rows
 
 
+def strategy_row(name: str, problems: int) -> Text:
+    """One of a problem's tags: the technique, and how far it reaches.
+
+    The count is of *other* problems too, and that is the column worth having on
+    a per-problem screen -- a tag on fourteen problems is a technique, a tag on
+    one is a note.
+
+    Thirty-seven columns, which is the width discipline `method_row` documents
+    seen from the other side: this draws in the right-hand pane of a two-pane
+    screen, and on an 80-column terminal that pane has exactly that much room
+    once the problem list beside it is paid for. A row that outgrows it wraps
+    rather than ellipsising, and only a rendered screen shows it.
+    """
+    line = Text("  ")
+    name = name[:22]
+    line.append(name)
+    line.append(" " * max(1, 24 - len(name)))
+    line.append(
+        "1 problem" if problems == 1 else f"{problems} problems", style="bright_black"
+    )
+    return line
+
+
+def strategy_list(tags: Sequence[Any], counts: Mapping[str, int]) -> list[Text]:
+    """A problem's whole tag list, for the screen that only reads it."""
+    rows = [strategy_row(t.name, counts.get(t.key, 1)) for t in tags]
+    if not rows:
+        rows.append(Text("  nothing tagged yet — e to tag it", style="bright_black"))
+    return rows
+
+
 def strategy_coverage_table(coverage: Sequence[Any], methods: Any) -> Group:
     """How wide each pattern reaches, and how much of your methods list is written.
 

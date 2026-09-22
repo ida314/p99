@@ -148,12 +148,22 @@ class MethodsScreen(VimMotion, Screen[None]):
         `2/3` rather than a bare count, because the ratio is what you scan the
         list for — three methods with one written is a different state from
         three of three, and it is the one worth walking over to.
+
+        Thirty columns and not a column more: the pane is 36 wide, its rounded
+        border takes two, the `OptionList`'s own padding takes two more, and the
+        scrollbar takes another two once the list outgrows the window. A row
+        wider than that wraps onto a second line rather than ellipsising, which
+        only a rendered screen shows -- the same budget `StrategyScreen` writes
+        down beside its own copy of this list.
         """
-        line = Text("  ")
-        line.append(row["title"][:26])
         counts = f"{row['written'] or 0}/{row['ways']}"
-        pad = max(1, 32 - len(row["title"][:26]) - len(counts))
-        line.append(" " * pad)
+        # The title gives way to the ratio, which is what the row is scanned
+        # for and is unreadable cut; `10/12` is five columns where `1/1` is
+        # three, so the title's share is what moves.
+        title = row["title"][: 27 - len(counts)]
+        line = Text("  ")
+        line.append(title)
+        line.append(" " * max(1, 28 - len(title) - len(counts)))
         line.append(counts, style="bright_black")
         return line
 

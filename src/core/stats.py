@@ -84,8 +84,8 @@ def load_attempts(
     if strategy:
         # After hydration, like the `tag` filter above it and for the same
         # reason: the answer is not a column on `attempts`. Matched on the
-        # `used` role only -- an approach you named but did not write says
-        # nothing about how long writing it takes.
+        # `used` role only -- the legacy `worth_learning` role named a route you
+        # did not write, which says nothing about how long writing it takes.
         rows = [r for r in rows if strategy in (r.get("used_keys") or ())]
     return rows
 
@@ -338,8 +338,16 @@ def distributions_by(
 
     'pattern', 'difficulty', 'tag' — and 'strategy', which is the one slice the
     catalog did not supply. A pattern is where a problem sits in someone else's
-    list; a strategy is what you actually reached for, and "how long do my
-    top-down solves take" is a question only the second one can be asked.
+    list; a strategy is a technique in your own words, and "how long do the
+    problems I call top-down take me" is a question only the second one can be
+    asked.
+
+    Sliced on the tags the problem wore on the night of each attempt, which is
+    what `used_keys` holds. Since the tags became the problem's rather than the
+    solve's, the slice reads "problems this technique answers" and no longer
+    "solves where I took it" -- a wider net, and the one that matches how the
+    tags are now put on. Retagging a problem tonight does not move an attempt
+    from last March into the slice; the attempt keeps what it was solved under.
     """
     attempts = load_attempts(conn, days=days)
     keys: list[str]
@@ -678,10 +686,16 @@ class StrategyCoverage:
 def strategy_coverage(conn: sqlite3.Connection) -> list[StrategyCoverage]:
     """Every pattern in the vocabulary, widest first.
 
-    Breadth and depth of the same fact: how many problems you have reached for
-    this pattern on, and how many solves that took. A pattern you have named on
-    six problems is one you recognise everywhere; one you have named eleven times
-    across two problems is one you keep coming back to.
+    Breadth and depth of the same fact: how many problems this pattern is an
+    answer to, and how many solves you have done on them. A pattern tagged on six
+    problems is one that keeps coming up; one tagged on two and solved eleven
+    times is one you keep coming back to.
+
+    The two numbers come from two tables on purpose. `problems` is the tags, so
+    it counts a problem you tagged on the patterns screen and have not solved
+    since -- that is a fact about the technique's reach, and it is true before
+    you sit down. `solves` is the attempts, so it counts evenings and only
+    evenings the tag was already on.
 
     Derived at read time from the projections, like everything else here -- there
     is no counter anywhere that a replay could leave stale.
@@ -692,11 +706,20 @@ def strategy_coverage(conn: sqlite3.Connection) -> list[StrategyCoverage]:
         )
         for r in conn.execute(
             "SELECT s.key AS key, s.name AS name, "
-            "COUNT(DISTINCT a.slug) AS problems, COUNT(*) AS solves "
-            "FROM attempt_strategies a JOIN strategies s ON s.key = a.key "
-            "WHERE a.role = ? "
-            "GROUP BY s.key, s.name ORDER BY problems DESC, solves DESC, s.name ASC",
-            (strategies.USED,),
+            "(SELECT COUNT(*) FROM problem_strategies p WHERE p.key = s.key) AS problems, "
+            "(SELECT COUNT(*) FROM attempt_strategies a WHERE a.key = s.key AND a.role = ?) "
+            "  AS solves "
+            "FROM strategies s "
+            # A name in the vocabulary that is on no problem and in no attempt
+            # is a word you have since taken off everything it was on. It stays
+            # a word -- nothing deletes from `strategies` -- but a row of two
+            # zeroes in a coverage table is noise, so it is left out here rather
+            # than erased anywhere.
+            "WHERE EXISTS(SELECT 1 FROM problem_strategies p WHERE p.key = s.key) "
+            "   OR EXISTS(SELECT 1 FROM attempt_strategies a "
+            "             WHERE a.key = s.key AND a.role = ?) "
+            "ORDER BY problems DESC, solves DESC, s.name ASC",
+            (strategies.USED, strategies.USED),
         ).fetchall()
     ]
 

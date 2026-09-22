@@ -20,6 +20,7 @@ from .screens import (
     MethodsScreen,
     SolveScreen,
     StatsScreen,
+    StrategyScreen,
     SummaryScreen,
 )
 
@@ -180,6 +181,9 @@ class CoreApp(App):
 
     def action_methods(self) -> None:
         self.push_screen(MethodsScreen())
+
+    def action_patterns(self) -> None:
+        self.push_screen(StrategyScreen())
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen())

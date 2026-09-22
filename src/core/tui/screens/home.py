@@ -45,6 +45,10 @@ MENU = [
     # read, not an action. `a` because `s` is settings and `t` is already stats
     # -- the letter is the shortcut, not an abbreviation of the word.
     ("a", "methods", "methods"),
+    # And the other half of the same shelf: `methods` is how you solved one
+    # problem, `patterns` is which techniques solve it at all. `p` for its own
+    # word, which was free where `s` and `t` were not.
+    ("p", "patterns", "patterns"),
     # The offline cache is not here. It is packing, not practice, and it lives
     # one row under the `offline` switch on the settings screen — the switch is
     # useless without it, and turning offline mode on without warming the cache
@@ -81,6 +85,7 @@ class HomeScreen(VimMotion, Screen):
         Binding("m", "mastered", "mastered", show=False),
         Binding("escape", "focus_menu", "menu", show=False),
         Binding("a", "methods", "methods"),
+        Binding("p", "patterns", "patterns"),
         Binding("s", "settings", "settings"),
         Binding("ctrl+c", "quit", "quit"),
         # `l` used to be a second `enter`, which quietly broke the one rule
@@ -369,6 +374,9 @@ class HomeScreen(VimMotion, Screen):
 
     def action_methods(self) -> None:
         self.app.action_methods()  # type: ignore[attr-defined]
+
+    def action_patterns(self) -> None:
+        self.app.action_patterns()  # type: ignore[attr-defined]
 
     def action_settings(self) -> None:
         self.app.action_settings()  # type: ignore[attr-defined]

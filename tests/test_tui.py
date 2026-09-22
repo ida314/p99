@@ -32,6 +32,7 @@ from core.tui.screens import (
     SolveScreen,
     StatsScreen,
     StrategyModal,
+    StrategyScreen,
     SummaryScreen,
 )
 
@@ -2626,6 +2627,201 @@ async def test_the_strategy_prompt_records_the_pattern_you_name(strategy_app):
     # Typed on the screen that asks what you reached for, so that is the role.
     assert (answered["key"], answered["role"]) == ("bottom-up-tabulation", "used")
     assert conn.execute("SELECT verdict FROM attempts").fetchone()["verdict"] is not None
+
+
+def _tag(app, slug: str, *names: str):
+    """Put tags on a problem the way the patterns screen does."""
+    from core import events, strategies
+
+    events.append(
+        app.conn, events.PROBLEM_STRATEGIES_SET, strategies.set_payload(slug, list(names))
+    )
+
+
+def _tags(app, slug: str) -> list[str]:
+    from core import strategies
+
+    return [s.key for s in strategies.for_problem(app.conn, slug)]
+
+
+async def test_the_patterns_prompt_opens_with_the_problems_tags_ticked(strategy_app):
+    """Every technique you have ever said solves this problem, already ticked.
+
+    The whole shape of the screen: you are correcting a list, not filling one in,
+    and a pattern you tagged in March is still a pattern that solves it tonight
+    whether or not it is the one you wrote.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap", "Quickselect")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, StrategyModal)
+        assert screen.chosen == {"min-heap", "quickselect"}
+        rendered = _option_prompts(screen)
+        assert "[x] Min-Heap" in rendered and "[x] Quickselect" in rendered
+        # The question on the screen is about the problem, not about tonight.
+        labels = [_plain(s) for s in screen.query(Static)]
+        assert "which patterns can solve this problem? — optional" in labels
+
+
+async def test_unticking_a_pattern_takes_it_off_the_problem(strategy_app):
+    """Space on a carried tag is how you take a claim back.
+
+    Off the problem, not off tonight: the next solve opens without it. The
+    attempt still records what the problem was tagged with when it was solved.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap", "Quickselect")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("space")  # the cursor starts on Min-Heap, alphabetically
+        await pilot.pause()
+        assert app.screen.chosen == {"quickselect"}
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")  # through the methods prompt
+        await pilot.pause()
+
+    assert _tags(app, "two-sum") == ["quickselect"]
+    # The vocabulary keeps the word, and the attempt keeps what it was solved
+    # under — a tag taken off tonight does not rewrite March.
+    assert app.conn.execute(
+        "SELECT COUNT(*) AS n FROM strategies WHERE key = 'min-heap'"
+    ).fetchone()["n"] == 1
+    assert sorted(
+        r["key"] for r in app.conn.execute("SELECT key FROM attempt_strategies")
+    ) == ["quickselect"]
+
+
+async def test_saving_the_patterns_prompt_with_nothing_ticked_clears_the_list(strategy_app):
+    """An empty list is an answer, now that the list is the problem's."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert _tags(app, "two-sum") == []
+
+
+async def test_stepping_back_keeps_a_pattern_you_unticked_unticked(strategy_app):
+    """The round trip carries the untick, not just the ticks.
+
+    Restoring the problem's saved tags over the top of a step back would
+    silently undo the only edit the screen was open for.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap", "Quickselect")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("space")          # untick Min-Heap
+        await pilot.press("ctrl+s")         # on to the methods prompt
+        await pilot.pause()
+        assert isinstance(app.screen, MethodsModal)
+        await pilot.press("escape")         # and back again
+        await pilot.pause()
+        assert isinstance(app.screen, StrategyModal)
+        assert app.screen.chosen == {"quickselect"}
+
+
+async def test_the_patterns_screen_tags_a_problem_out_of_a_run(strategy_app):
+    """The tag you think of a week later, with no solve to hang it on.
+
+    The same picker the prompt after a solve opens, the same event out of it —
+    `esc` is a cancel here because there is no verdict prompt behind it.
+    """
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap")
+        await pilot.press("p")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, StrategyScreen)
+        assert [row["slug"] for row in screen.problems] == ["two-sum"]
+        assert "Min-Heap" in _plain(screen.query_one("#pattern-tags", Static))
+
+        await pilot.press("e")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, StrategyModal)
+        assert modal.chosen == {"min-heap"}
+        await _name_a_strategy(app, pilot, "Quickselect")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, StrategyScreen)
+
+    assert _tags(app, "two-sum") == ["min-heap", "quickselect"]
+    types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
+    assert types[-1] == "problem_strategies_set"
+    # Tagging a problem is not solving it: no attempt, no card, no schedule.
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
+
+
+def test_the_two_shelf_screens_rows_fit_their_panes():
+    """A row wider than its pane wraps, silently, and only a render shows it.
+
+    The left pane is 36 wide, and its border, padding and scrollbar take six of
+    those between them. The right pane has thirty-seven on an 80-column
+    terminal. Nothing raises when a row outgrows either — the list simply stops
+    being one line per problem — so the budgets are asserted here.
+    """
+    from core import render
+    from core.tui.screens.methodsscreen import MethodsScreen
+    from core.tui.screens.strategyscreen import StrategyScreen
+
+    long_title = {"title": "Longest Substring Without Repeating Characters", "tags": 12}
+    assert len(StrategyScreen._problem_label(long_title).plain) <= 30
+
+    long_method = {**long_title, "written": 10, "ways": 12}
+    assert len(MethodsScreen._problem_label(long_method).plain) <= 30
+
+    assert len(render.strategy_row("bottom-up tabulation over the coin axis", 12).plain) <= 37
+
+
+async def test_escape_on_the_patterns_screen_picker_changes_nothing(strategy_app):
+    """No verdict prompt behind it, so `esc` is a cancel rather than a step back."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap")
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, StrategyModal)
+        await pilot.press("space")   # untick it, then change your mind
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, StrategyScreen)
+
+    assert _tags(app, "two-sum") == ["min-heap"]
 
 
 async def test_the_methods_prompt_follows_the_strategy_one(strategy_app):

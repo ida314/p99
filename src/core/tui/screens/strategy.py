@@ -1,18 +1,26 @@
-"""The strategy prompt: which patterns did you reach for.
+"""The strategy prompt: which patterns can solve this problem.
 
 Runs once per solve, after the verdict prompt and before the methods page. One
-question, and it is a question about *you*: which reusable techniques did you use.
-The answer is a word from a vocabulary that spans every problem you have ever
-solved, and that sharing is the whole point -- a technique you keep being slow
-under is a weak spot in its own right, and the stats screen slices solve times by
-strategy the same way it slices them by pattern.
+question, and it is a question about the *problem*: which reusable techniques are
+an answer to it. Every tag you have ever put on this problem is already ticked
+when it opens, so tonight you are correcting a list rather than filling one in.
 
-Not the way you solved the problem. That is the methods page that follows this
-one, where a whole route through this one problem gets a row of its own, with its
-own cost and its own code. The two lists never reference each other: a strategy
-means the same thing on every problem, a method means nothing away from its own,
-and a method that is built out of three patterns says so in its name. See
-`methods`.
+Tick min-heap, quickselect and sorting on a problem that admits all three, and
+all three stay ticked next time -- including the times you reach for none of
+them. That is what makes the vocabulary worth having: "every problem quickselect
+is an answer to" is the list you want when you sit down to drill quickselect, and
+a list of the evenings quickselect happened to be the route you took is not it.
+
+Which route you took tonight is the methods page that follows this one, where a
+whole route through this one problem gets a row of its own, with its own cost and
+its own code. The two lists never reference each other: a strategy means the same
+thing on every problem, a method means nothing away from its own, and a method
+built out of three patterns says so in its name. See `methods`.
+
+Unticking is how you take a tag off, and it takes it off the problem rather than
+off tonight -- a claim you have decided is wrong should not come back on the next
+solve. Saving with nothing ticked clears the list, which is why saving here
+always answers, where it used to answer only when something was picked.
 
 It used to ask more than this. A second role named the better approach you could
 see and had not written, and a third named an equal one. Both were answers about
@@ -27,8 +35,11 @@ the retired roles keep grading exactly as they did -- see `strategies` and
 because `esc` means "back one screen" on every other modal in here and this one
 is not special. Nothing has been written by the time you get here -- the attempt
 is committed after all three prompts, not before -- so the step back is real
-rather than an undo. Skipping still costs nothing: save with nothing picked and
-nothing is recorded.
+rather than an undo.
+
+The same screen opens off a run, from the patterns screen, to tag a problem you
+never sat down to tonight. There `esc` is a cancel rather than a step back, since
+there is no verdict prompt behind it to step to: see `offer_back`.
 
 The list is alphabetical and starts empty: there is no supplied taxonomy of
 techniques here, because the vocabulary that helps is the one in the words you
@@ -59,17 +70,17 @@ MARKS = {
 
 
 class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
-    """Pick the patterns you reached for, from the vocabulary you have built.
+    """Tick every pattern that can solve this problem, from your own vocabulary.
 
-    Dismisses with a `strategies.payload()` block, with `{SIGNAL_BACK: True}` to
-    reopen the verdict prompt, or with None when nothing was picked -- because
-    recording that you looked at the list and chose nothing is not a fact about
-    the solve.
+    Dismisses with a `strategies.payload()` block -- always, even an empty one,
+    because the list is the problem's and clearing it is an answer. `None` is a
+    cancel and only reachable when `offer_back` is off; the step back to the
+    verdict prompt is `{SIGNAL_BACK: True}`.
     """
 
     BINDINGS = [
         *MOTIONS,
-        Binding("space", "toggle_used", "used"),
+        Binding("space", "toggle_used", "solves it"),
         # `h`/`l` are not bound at all here: there is nothing sideways on this
         # screen, and a motion that does nothing is better than one that guesses.
         Binding("i", "focus_filter", "add one", show=False),
@@ -85,10 +96,17 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         title: str,
         slug: str,
         picked: list[tuple[str, str]] | None = None,
+        *,
+        offer_back: bool = True,
     ):
         super().__init__()
         self.problem_title = title
         self.slug = slug
+        #: Whether `esc` steps back to the verdict prompt or simply closes. True
+        #: in a run, where there is a screen behind this one; False off the
+        #: patterns screen, where "back" would have nowhere to go and a cancel is
+        #: the honest thing to offer.
+        self.offer_back = offer_back
         #: Every strategy on offer, alphabetical. The ones you have already named
         #: on this problem first, then the rest of the vocabulary, because a
         #: technique you named on another problem is exactly the one worth being
@@ -101,13 +119,19 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         #: Names as typed, keyed the same way, so what is saved is your spelling.
         self.names: dict[str, str] = {}
         self._syncing = False
-        # What was picked before you stepped back, as `(key, name)` pairs, so
+        # What was ticked before you stepped back, as `(key, name)` pairs, so
         # coming forward again is a round trip rather than a form to fill in
         # twice. The name travels with the key because `on_mount` rebuilds the
         # list from the database and nothing about this attempt is in the
         # database yet -- a strategy you typed here exists only in this list
         # until the attempt is committed.
-        self._restore = list(picked or [])
+        #
+        # `None` and `[]` mean different things and the difference is the whole
+        # round trip. `None` is "no answer yet", and the screen opens with the
+        # problem's saved tags ticked; `[]` is "you came back having unticked
+        # every one of them", and restoring the problem's tags over the top of
+        # that would silently undo the only edit you made.
+        self._restore = None if picked is None else list(picked)
 
     # --- composition -----------------------------------------------------
 
@@ -115,18 +139,21 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         with Vertical(id="strategy-box"):
             yield Static(self.problem_title, classes="modal-title")
             yield Static(
-                "which patterns did you reach for? — optional", classes="field-label"
+                "which patterns can solve this problem? — optional",
+                classes="field-label",
             )
             yield OptionList(id="strategy-list")
             yield Input(placeholder="name another pattern…  enter adds it", id="strategy-new")
             yield Static(
-                "  space  a pattern you used    i add one"
-                "    ctrl+s save    esc back to the verdict",
+                "  space  a pattern that solves it    i add one    ctrl+s save"
+                + ("    esc back to the verdict" if self.offer_back else "    esc cancel"),
                 classes="hint-bar",
             )
             with Horizontal(id="confirm-buttons"):
                 yield Button("save  (ctrl+s)", variant="primary", id="save")
-                yield Button("back  (esc)", id="back")
+                yield Button(
+                    "back  (esc)" if self.offer_back else "cancel  (esc)", id="back"
+                )
 
     def on_mount(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
@@ -134,14 +161,24 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             strategies.for_problem(conn, self.slug), strategies.vocabulary(conn)
         )
         self.names = {s.key: s.name for s in self.known}
-        # Anything picked before a step back, including a name that only exists
-        # because you typed it: it is in `_restore` and not yet in `known`, so
-        # it has to be put back on the list as well as back in the picks.
-        for key, name in self._restore:
-            if key not in self.names:
-                self.known = self._merge(self.known, [strategies.Strategy(key=key, name=name)])
-                self.names[key] = name
-            self.chosen.add(key)
+        if self._restore is None:
+            # First time through: the problem's own tags, already ticked. This is
+            # the screen's whole shape -- you are correcting a list, not filling
+            # one in, and a technique that solved this problem in March is still
+            # a technique that solves it tonight.
+            self.chosen = {s.key for s in strategies.for_problem(conn, self.slug)}
+        else:
+            # Coming forward again after a step back, exactly as you left it,
+            # including a name that only exists because you typed it: it is in
+            # `_restore` and not yet in `known`, so it has to be put back on the
+            # list as well as back in the ticks.
+            for key, name in self._restore:
+                if key not in self.names:
+                    self.known = self._merge(
+                        self.known, [strategies.Strategy(key=key, name=name)]
+                    )
+                    self.names[key] = name
+                self.chosen.add(key)
         self._populate()
         self.query_one("#strategy-list", OptionList).focus()
 
@@ -172,10 +209,10 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         line.append(mark, style=style)
         line.append(" ")
         line.append(self.names.get(key, key))
-        if key in self.chosen:
-            pad = max(1, 40 - len(self.names.get(key, key)))
-            line.append(" " * pad)
-            line.append(strategies.ROLE_LABELS[strategies.USED], style="bright_black")
+        # No word after the name. There was one -- "used" -- back when a tick
+        # meant "I reached for this tonight" and the column had something to add
+        # to the box. A tick now means the problem can be solved this way, which
+        # the question at the top already says and the box already shows.
         return line
 
     def _visible(self) -> list[str]:
@@ -247,7 +284,9 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             return
         # Toggling off rather than cycling: `space` undoes itself, which is the
         # only sane behaviour for a checkbox and the only behaviour this screen
-        # needs now that there is one thing to check.
+        # needs now that there is one thing to check. Untick a tag the problem
+        # came in wearing and saving takes it off the problem -- see
+        # `strategies.set_payload`.
         self.chosen.symmetric_difference_update({key})
         self._populate()
 
@@ -259,11 +298,11 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             self._populate()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Enter in the box names a new strategy and marks it used.
+        """Enter in the box names a new pattern and ticks it.
 
-        Marked used, not merely added: you typed it on the screen that asks what
-        you reached for, seconds after reaching for it. Anything else would need a
-        second keystroke to say the obvious thing.
+        Ticked, not merely added: you typed it on the screen that asks which
+        patterns solve this problem, while looking at the problem. Anything else
+        would need a second keystroke to say the obvious thing.
         """
         typed = event.value.strip()
         widget = event.input
@@ -305,15 +344,27 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         )
 
     def action_save(self) -> None:
-        block = strategies.payload(self._named())
-        self.dismiss(None if strategies.is_empty(block) else block)
+        """Answer with the list as it now stands, empty or not.
+
+        Empty is an answer here and did not used to be. When a tick meant "I
+        reached for this tonight", saving with nothing ticked was a prompt you
+        skipped and recording it would have been recording that you looked at a
+        list. The tick means the problem can be solved this way now, so an empty
+        list says this problem carries no tags -- which is a thing you can only
+        say by unticking the ones it had.
+        """
+        self.dismiss(strategies.payload(self._named()))
 
     def action_back(self) -> None:
         """Step back to the verdict prompt, keeping both screens' answers.
 
         Not an undo and not a cancel: nothing about this attempt has been
         written yet, so the verdict prompt reopens as the live screen it was.
-        The caller carries what is picked here back forward.
+        The caller carries what is ticked here back forward -- including what you
+        unticked, which is why the ticks travel as a list and not as a flag.
+
+        Off a run there is nothing behind this screen, so `esc` is a plain
+        cancel: `None`, and the problem's tags are left exactly as they were.
 
         `escape` inside the text box goes back to the list instead, so the way
         out of insert mode is never also the way out of the screen -- the same
@@ -321,6 +372,9 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         """
         if getattr(self.focused, "id", None) == "strategy-new":
             self.query_one("#strategy-list", OptionList).focus()
+            return
+        if not self.offer_back:
+            self.dismiss(None)
             return
         self.dismiss(
             {

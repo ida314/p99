@@ -71,7 +71,10 @@ Every way you know to solve a problem: the route, what it costs, whether it is
 the optimal one, and whether you have written it. Name a problem for one list,
 or omit it for all of them. Read-only \(em the screen on
 .B a
-inside the app is where these are edited.
+inside the app is where these are edited. Which patterns a problem can be solved
+with is a separate list, on
+.B p
+inside the app.
 .TP
 .B replay
 Rebuild all projections from the event log. Safe to run at any time; it changes
@@ -208,6 +211,10 @@ opens the runs,
 opens the statistics,
 .B s
 opens the settings,
+.B a
+opens the methods screen,
+.B p
+opens the patterns screen,
 .B q
 quits. The menu is also a list, drawn in two columns, so
 .BR j / k
@@ -303,8 +310,8 @@ answer for each, a
 .I "code style"
 answer saying whether you would have handed the code in, and the LeetCode
 percentiles if you have them — then the
-patterns you reached for, then the problem's methods, then the two editor
-steps. None of it is scored; the run
+patterns that can solve the problem, then the problem's methods, then the two
+editor steps. None of it is scored; the run
 score stays a function of measured facts. The time optimality answer is the one
 that moves a review, because a solution with the wrong asymptotics has not
 learned the pattern the schedule exists for. Code style moves nothing: it is
@@ -322,7 +329,12 @@ scores anything nor moves a review, because the card was scheduled by the first
 pass and one attempt is one review.
 .TP
 .B space
-On the strategy prompt: mark a reusable pattern you reached for. On the methods
+On the patterns prompt: tick a reusable pattern that can solve this problem. The
+prompt opens with every pattern the problem is already tagged with ticked, and
+they stay ticked whichever route you took tonight \(em the tags belong to the
+problem, so the list answers "every problem quickselect is an answer to" rather
+than "the evenings I reached for it". Ticking one off takes it off the problem,
+and saving with nothing ticked leaves the problem untagged. On the methods
 prompt that follows it: mark the method you wrote tonight, which is also what
 tags the file you archive next.
 .B i
@@ -335,7 +347,9 @@ on the methods prompt cycles what a method costs: optimal, not optimal, not
 sure, unclaimed. An optimal method recorded here that is not the one you wrote
 keeps the grade a beaten solve would otherwise lose, and it can be recorded
 months later. The prompt reads back what it derived about the solution, with the
-answers that produced it. Saving with nothing picked records nothing.
+answers that produced it. Saving the methods prompt with nothing picked records
+nothing; saving the patterns prompt always records the list, because an empty
+list is an answer about the problem.
 .B esc
 steps back one screen at a time, each reopening holding every answer you gave
 it — nothing is written until all three prompts are done, so the attempt is

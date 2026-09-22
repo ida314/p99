@@ -49,6 +49,15 @@ METHOD_UPDATED = "method_updated"
 #: `apply` folds them nowhere, because the table they were written for is gone.
 SOLUTION_ARCHIVED = "solution_archived"
 SOLUTION_UPDATED = "solution_updated"
+#: Which techniques can solve one problem, entire. Carries the whole list and not
+#: a change to it, which is what lets an append-only log express a tag being
+#: taken off: the fold makes the table match the event, so the last one written
+#: wins on a replay exactly as it does live.
+#:
+#: No `attempt_uuid`, and that is deliberate. This is a claim about the problem,
+#: not about the evening -- it survives the attempt that was on screen being
+#: thrown away, which skips that attempt's `problem_finished` entirely.
+PROBLEM_STRATEGIES_SET = "problem_strategies_set"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
@@ -83,6 +92,7 @@ EVENT_TYPES = frozenset(
         METHOD_UPDATED,
         SOLUTION_ARCHIVED,
         SOLUTION_UPDATED,
+        PROBLEM_STRATEGIES_SET,
         NOTE_WRITTEN,
         AUDIO_RECORDED,
         SESSION_ENDED,
@@ -281,9 +291,19 @@ def _record_strategies(
     erase them on the next replay. History is not rewritten here; it is simply no
     longer added to.
 
-    Writes the vocabulary and the attempt's link to it, and nothing else. Naming a
-    pattern is not recording a way to solve the problem -- that is the `methods`
-    block, folded right after this one, and the two tables are never joined.
+    Writes the vocabulary, the attempt's link to it, and the problem's tags.
+    Still not a way of solving the problem: that is the `methods` block, folded
+    right after this one, and the two tables are never joined.
+
+    The problem's tags are *added* here and never removed, which is the opposite
+    of how `problem_strategies_set` folds and is the reason both exist. This fold
+    has to read a log written when the question was "which did you reach for
+    tonight": every such answer named a technique that solved the problem, so
+    every one of them is a tag, and unioning is what recovers a whole history of
+    tagging from events that never knew they were doing it. Taking one off is a
+    thing you do on purpose, so it gets an event that says so -- and because the
+    prompt emits that event on every save, the two never disagree about anything
+    written from here on.
     """
     if not isinstance(block, dict):
         return
@@ -298,6 +318,62 @@ def _record_strategies(
                 "(attempt_uuid, attempt_id, slug, key, role) VALUES(?,?,?,?,?)",
                 (attempt_uuid, _attempt_id(conn, attempt_uuid), slug, entry.key, role),
             )
+            _tag_problem(conn, event, slug, entry.key)
+
+
+def _tag_problem(conn: sqlite3.Connection, event: Event, slug: str, key: str) -> None:
+    """Put one technique on one problem's list. Keeps the date it first went on.
+
+    `INSERT OR IGNORE` and then a bare `updated_at` bump, the same shape
+    `_touch_method` uses: the row keeps `first_seen` from the night you first
+    said this problem could be solved this way, and the problem still sorts to
+    the top of the patterns screen when you touch it tonight.
+    """
+    if not slug or not key:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO problem_strategies(slug, key, first_seen, updated_at) "
+        "VALUES(?,?,?,?)",
+        (slug, key, event.ts, event.ts),
+    )
+    conn.execute(
+        "UPDATE problem_strategies SET updated_at = ? WHERE slug = ? AND key = ?",
+        (event.ts, slug, key),
+    )
+
+
+def _set_problem_strategies(conn: sqlite3.Connection, event: Event, payload: Any) -> None:
+    """Fold `problem_strategies_set`: make this problem's tags be exactly this list.
+
+    The one fold in here that deletes, and it deletes only what this event's own
+    list leaves out. That is not a hole in the append-only rule -- the event
+    stays in the log saying what the tags were as of tonight, and a replay
+    reaches the same table by reading the same events in the same order. It is
+    `settings_changed` folding a value rather than a diff, applied to a set.
+
+    Names go into the vocabulary on the way in, exactly as they do on a finish,
+    because tagging a problem with a technique you have never named anywhere else
+    is the ordinary way a technique gets named.
+    """
+    if not isinstance(payload, dict):
+        return
+    slug = payload.get("slug") or ""
+    if not slug:
+        return
+    entries = strategies.clean(payload.get(strategies.USED) or [])
+    for entry in entries:
+        conn.execute(
+            "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
+            (entry.key, entry.name, event.ts),
+        )
+        _tag_problem(conn, event, slug, entry.key)
+    keys = [entry.key for entry in entries]
+    placeholders = ",".join("?" * len(keys))
+    conn.execute(
+        "DELETE FROM problem_strategies WHERE slug = ?"
+        + (f" AND key NOT IN ({placeholders})" if keys else ""),
+        (slug, *keys),
+    )
 
 
 def _touch_method(
@@ -424,12 +500,18 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
         # skips `problem_resolved` on the strength of its top-level
         # `attempt_uuid`, so the live path has to reach the same place.
         conn.execute("DELETE FROM resolves WHERE attempt_uuid = ?", (attempt_uuid,))
-        # The attempt's answer goes; the vocabulary and the problem's list of
-        # methods stay. A strategy you named is a thing you learned about the
-        # problem, and it did not stop being true because the attempt that
-        # taught it to you should not have counted. A replay reaches the same
-        # place from the other direction: it skips the event entirely, so a
-        # strategy that *only* this attempt ever named is simply never created.
+        # The attempt's answer goes; the vocabulary, the problem's tags and the
+        # problem's list of methods stay. A technique you tagged is a thing you
+        # learned about the problem, and it did not stop being true because the
+        # attempt that taught it to you should not have counted.
+        #
+        # A replay reaches the same place, and since the tags moved onto the
+        # problem it reaches it exactly rather than nearly: the prompt emits a
+        # `problem_strategies_set` beside the finish, that event carries no
+        # `attempt_uuid`, and so the tombstone does not skip it. The old gap --
+        # a strategy that only the discarded attempt ever named is never created
+        # on a rebuild -- is left for answers written before the set event
+        # existed, where the log genuinely says nothing else.
         conn.execute("DELETE FROM attempt_strategies WHERE attempt_uuid = ?", (attempt_uuid,))
         # Which method this attempt wrote goes with it, for the same reason its
         # strategy answer does: `replay` skips the `problem_finished` outright,
@@ -722,6 +804,14 @@ def apply(
         # exactly the same code. No `attempt_uuid`: nothing here is an answer
         # about a solve.
         _record_methods(conn, event, p.get("slug", ""), p.get("methods"))
+
+    elif event.type == PROBLEM_STRATEGIES_SET:
+        # The problem's tags, entire, from the prompt after a solve or from the
+        # patterns screen months later -- the same event either way, for the
+        # same reason `method_updated` is one event from two places. No
+        # `attempt_uuid` and no grading: which techniques a problem admits is
+        # not an answer about a solve, and nothing in `srs.rate` reads it.
+        _set_problem_strategies(conn, event, p)
 
     # `SOLUTION_ARCHIVED` and `SOLUTION_UPDATED` fold nowhere on purpose. They
     # named a row in the shared strategy vocabulary, which is what the ways list

@@ -59,9 +59,18 @@ from . import paths
 #    legacy read on the way in, because the answer was asked for in 12 and no
 #    event carrying the old key was ever written. The replay this bump forces is
 #    what puts the renamed column back.
+# 14: patterns become the problem's, not the attempt's -- `problem_strategies`
+#    comes back (it was absorbed in 9), holding every technique you have said
+#    can solve one problem. Not the ways *you* took: that is `problem_methods`,
+#    and the two stay as separate as they have been since 11. What changed is
+#    the question the prompt after a solve asks -- "which patterns can solve
+#    this" rather than "which did you reach for tonight" -- so the answer is a
+#    property of the problem and has to be somewhere the next solve reads back.
+#    The replay this bump forces backfills it from every strategy answer already
+#    in the log, so nothing you ever tagged is lost.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -304,6 +313,34 @@ CREATE TABLE IF NOT EXISTS attempt_methods (
 );
 CREATE INDEX IF NOT EXISTS attempt_methods_slug_idx ON attempt_methods(slug);
 
+-- Every technique that can solve one problem. The problem's list, not any
+-- attempt's -- see `strategies` for why the prompt after a solve now asks the
+-- question that way round.
+--
+-- "I could solve this with a min-heap, with quickselect, or by sorting" is true
+-- of the problem on the night you notice it and true every night after, whatever
+-- you happened to write tonight. That makes it the list to open when you want to
+-- drill one technique: every problem quickselect is an answer to, whether or not
+-- quickselect is the answer you gave.
+--
+-- Deliberately not `problem_methods`, and the split is the same one v11 made. A
+-- strategy is a pattern that spans problems and is a row in one shared
+-- vocabulary; a method is one route through one problem, named in that problem's
+-- own terms. These two tables still never join.
+--
+-- Unlike `problem_methods`, rows here *can* go away: a tag is a claim about what
+-- the problem admits, and unticking one says you were wrong about it. The
+-- removal is an event like everything else -- `problem_strategies_set` carries
+-- the whole list -- so the log still only ever grows.
+CREATE TABLE IF NOT EXISTS problem_strategies (
+  slug         TEXT NOT NULL REFERENCES problems(slug),
+  key          TEXT NOT NULL REFERENCES strategies(key),
+  first_seen   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (slug, key)
+);
+CREATE INDEX IF NOT EXISTS problem_strategies_key_idx ON problem_strategies(key);
+
 -- Which patterns one attempt reached for. `role` is `used` (what you wrote with)
 -- or `worth_learning` (the better approach you could see and did not write, a
 -- role nothing writes any more) -- the second is what `srs.rate` still reads to
@@ -422,6 +459,7 @@ PROJECTION_TABLES = (
     "problem_methods",     # references attempts: children first
     "attempt_methods",     # references attempts: children first
     "attempt_strategies",  # references attempts and strategies: children first
+    "problem_strategies",  # references strategies: listed before it, same rule
     "strategies",
     "submissions",  # references attempts: children first, see the docstring
     "resolves",     # references attempts: children first, same as above
@@ -503,6 +541,14 @@ SHAPE_CHANGED_IN = {
         "resolves",
         "attempts",
     ),
+    # A table coming back rather than one changing: `problem_strategies` was
+    # dropped in 9 and is created again by the DDL above, with a shape of its
+    # own and none of the old one's columns. The `DROP TABLE IF EXISTS` is not a
+    # formality -- a database that last ran before 9 still has the v7 table
+    # sitting there, and creating over it would leave the old columns in place.
+    # The replay this bump forces is what fills it, from `problem_finished`
+    # payloads written long before the question changed.
+    14: ("problem_strategies",),
 }
 
 

@@ -454,6 +454,35 @@ EndRunModal {
     border-left: tall $accent;
 }
 
+/* The patterns screen: the same two panes as the methods screen, and the same
+   widths, because they are two views of one shelf and landing on either should
+   not move the split. The right pane is a Static and takes no cursor — nothing
+   there is acted on one row at a time. */
+#pattern-body {
+    height: 1fr;
+}
+
+#pattern-problems {
+    width: 36;
+    border: round $panel;
+    margin: 1 0 1 1;
+}
+
+#pattern-problems:focus {
+    border: round $accent;
+}
+
+#pattern-detail {
+    width: 1fr;
+    margin: 1 0 1 1;
+    border-left: tall $panel;
+    scrollbar-size-vertical: 1;
+}
+
+#pattern-detail:focus {
+    border-left: tall $accent;
+}
+
 /* The prompt after a solve. Wider than the strategy modal it follows: its rows
    carry three columns where that one carries a name. */
 #methods-box {
