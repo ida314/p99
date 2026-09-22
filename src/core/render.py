@@ -719,7 +719,11 @@ def queue_row(n: int, item) -> Text:
         f"{(item.difficulty or '?')[:1].upper():<3}",
         style=dim or DIFFICULTY_STYLE.get((item.difficulty or "").lower(), ""),
     )
-    line.append(f"{(item.pattern or '—'):<20}", style="bright_black")
+    # No pattern column, and nothing here names the techniques the problem
+    # takes. A queue is read before the solve, and "monotonic stack" in the row
+    # you are about to open is most of the answer — the same spoiler the solve
+    # screen keeps folded behind `c`, handed over for free. What kind of problem
+    # it is stays a thing you choose to look at.
     if done:
         line.append("done", style="green")
     elif item.is_review:
@@ -744,8 +748,11 @@ def queue_panel(queue, show_rationale: bool = True) -> RenderableType:
 
     rows: list[RenderableType] = [rule()]
     header = Text("  ")
-    header.append(f"{'problem':<34}", style="bright_black")
-    header.append(f"{'pattern':<20}", style="bright_black")
+    # 35, not 34: the row spends two on the index, two on the mastered column,
+    # 28 on the title and three on the difficulty letter. With the pattern
+    # column gone "when" is the next thing along, so the header sitting a column
+    # short of its values is now a visible misalignment rather than a gap.
+    header.append(f"{'problem':<35}", style="bright_black")
     header.append("when", style="bright_black")
     rows.append(header)
 

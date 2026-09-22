@@ -798,6 +798,27 @@ async def test_q_opens_the_queue_and_it_is_never_empty(app):
         assert isinstance(app.screen, HomeScreen)
 
 
+async def test_the_queue_names_no_patterns(app):
+    """A row says what to open, not what it takes.
+
+    The queue is read before the solve, so "monotonic stack" next to a title you
+    are about to click is most of the answer — the same thing the solve screen
+    keeps folded behind `c`, given away for free. Titles, difficulty and when it
+    was owed; nothing that categorises the problem.
+    """
+    async with app.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        screen = app.screen
+        rows = screen.query_one("#queue-list")
+        patterns = {i.pattern for i in screen.queue.items if i.pattern}
+        assert patterns  # the fixture catalog does carry them, or this proves nothing
+        shown = " ".join(
+            rows.get_option_at_index(k).prompt.plain for k in range(rows.option_count)
+        )
+        assert not [p for p in patterns if p in shown]
+
+
 async def test_the_queue_starts_a_run(app):
     async with app.run_test() as pilot:
         await pilot.press("q")
