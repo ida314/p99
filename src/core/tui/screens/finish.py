@@ -15,6 +15,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 
+from ... import clipboard
+from ...config import DEFAULT_POST_SOLVE_PROMPT
 from ...scoring import VERDICTS, VERDICT_LABELS, fmt_duration
 from ..vim import MOTIONS, VimMotion
 
@@ -136,6 +138,9 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         # A chord, not a letter: focus lives in a radio set or in one of the
         # percentile inputs, where a bare `x` is something you typed.
         Binding("ctrl+x", "throw_away", "throw away"),
+        # `y` for yank. Copies and stays put: the point is to paste it into
+        # LeetCode and come back here with the answers.
+        Binding("ctrl+y", "copy_prompt", "copy AI prompt"),
         # The one place on this screen with sideways content: the three ladders
         # under "how did it come out?". `h` and `l` cross between them and mean
         # nothing anywhere else, which keeps the rule from `vim.py` — whatever
@@ -266,6 +271,9 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                     id="memory",
                     type="number",
                 )
+                # Beside the percentiles because both are errands to the
+                # LeetCode tab you just submitted in.
+                yield Button("copy AI prompt  (ctrl+y)", id="copy-prompt")
             with Horizontal(id="confirm-buttons"):
                 yield Button("save  (ctrl+s)", variant="primary", id="save")
                 yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
@@ -288,6 +296,8 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             self.action_save()
         elif event.button.id == "discard":
             self.action_throw_away()
+        elif event.button.id == "copy-prompt":
+            self.action_copy_prompt()
         else:
             self.action_cancel()
 
@@ -345,6 +355,22 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_copy_prompt(self) -> None:
+        """Put the post-solve prompt on the clipboard for LeetCode's AI.
+
+        A clipboard tool first, since that is the copy you can count on; the
+        terminal's OSC 52 escape otherwise, which reaches the clipboard over ssh
+        but which some terminals quietly drop -- so that path says it tried
+        rather than that it worked.
+        """
+        ai = getattr(getattr(self.app, "config", None), "ai", None)
+        prompt = ai.post_solve_prompt if ai is not None else DEFAULT_POST_SOLVE_PROMPT
+        if clipboard.copy(prompt):
+            self.notify("prompt copied — paste it into LeetCode's AI")
+            return
+        self.app.copy_to_clipboard(prompt)
+        self.notify("prompt sent to the terminal's clipboard — if paste comes up empty, install wl-copy or xclip")
 
     def action_throw_away(self) -> None:
         """Ask for the attempt to be dropped entirely.

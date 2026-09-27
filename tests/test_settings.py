@@ -87,7 +87,8 @@ def test_every_option_points_at_a_real_config_field(conn):
     cfg = config.load()
     for option in config.options():
         assert config.value_of(cfg, option) is not None
-        assert option.choices
+        # A free-text knob has no choices; every other one must offer some.
+        assert option.choices or isinstance(config.value_of(cfg, option), str)
 
 
 def test_stepping_wraps_and_recovers_from_an_unknown_value():
@@ -200,4 +201,40 @@ def test_new_options_go_on_the_end(conn):
     so the two newest have to be the last two.
     """
     keys = [o.key for o in config.options()]
-    assert keys[-3:] == ["audio.speech_mode", "audio.bitrate_kbps", "strategy.enabled"]
+    assert keys[-4:] == [
+        "audio.speech_mode",
+        "audio.bitrate_kbps",
+        "strategy.enabled",
+        "ai.post_solve_prompt",
+    ]
+
+
+def test_the_post_solve_prompt_has_a_default(conn):
+    assert config.load(conn).ai.post_solve_prompt == config.DEFAULT_POST_SOLVE_PROMPT
+    assert config.DEFAULT_POST_SOLVE_PROMPT.startswith(
+        "What was the time and space complexity of my solution?"
+    )
+
+
+def test_the_written_config_file_carries_the_default_prompt(conn):
+    config.write_default_config()
+    assert config.load().ai.post_solve_prompt == config.DEFAULT_POST_SOLVE_PROMPT
+
+
+def test_the_post_solve_prompt_is_free_text_in_the_settings_layer(conn):
+    config.set_option(conn, "ai.post_solve_prompt", "Grade my solution.")
+    assert config.load(conn).ai.post_solve_prompt == "Grade my solution."
+
+    # Blank is not a prompt; it is ignored rather than copied.
+    config.set_option(conn, "ai.post_solve_prompt", "   ")
+    assert "ai.post_solve_prompt" not in config.overrides(conn)
+
+    config.clear_option(conn, "ai.post_solve_prompt")
+    assert config.load(conn).ai.post_solve_prompt == config.DEFAULT_POST_SOLVE_PROMPT
+
+
+def test_a_free_text_value_renders_short_and_never_steps():
+    option = {o.key: o for o in config.options()}["ai.post_solve_prompt"]
+    assert option.free_text
+    assert len(option.render(config.DEFAULT_POST_SOLVE_PROMPT)) == 15
+    assert option.step("anything", 1) == "anything"

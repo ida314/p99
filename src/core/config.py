@@ -26,6 +26,17 @@ from typing import Any
 
 from . import branding, events, paths
 
+#: What the finish screen copies for LeetCode's AI to diagnose the solve. One
+#: line, so it pastes as one message and sits in config.toml as a plain string.
+DEFAULT_POST_SOLVE_PROMPT = (
+    "What was the time and space complexity of my solution? "
+    "How is the coding style of my solution? "
+    "Did I reach the optimal solution? "
+    "What would you name my solution? "
+    "What other methods exist that I should know to solve this problem? "
+    "What other suggestions do you have to make my solution more interview ready?"
+)
+
 DEFAULT_CONFIG_TOML = f"""\
 # {branding.NAME} config
 
@@ -118,6 +129,12 @@ offline = false
 # active list in priority order until this is spent; the whole neetcode150 is
 # about 1.5 MB, so this is a runaway guard, not a budget you have to manage.
 max_mb = 50
+
+[ai]
+# ctrl+y on the finish screen copies this to the clipboard, for pasting into
+# LeetCode's AI assistant once you have submitted. It is sent as-is: the
+# assistant already has the problem and your code open beside it.
+post_solve_prompt = "{DEFAULT_POST_SOLVE_PROMPT}"
 """
 
 EXT_BY_LANGUAGE = {
@@ -202,6 +219,11 @@ class CacheConfig:
 
 
 @dataclass(frozen=True)
+class AiConfig:
+    post_solve_prompt: str = DEFAULT_POST_SOLVE_PROMPT
+
+
+@dataclass(frozen=True)
 class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
@@ -211,6 +233,7 @@ class Config:
     stats: StatsConfig = field(default_factory=StatsConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    ai: AiConfig = field(default_factory=AiConfig)
 
     @property
     def active_lists(self) -> tuple[str, ...]:
@@ -259,6 +282,7 @@ def _build(raw: dict[str, Any]) -> Config:
         stats=pick(StatsConfig, "stats"),
         audio=pick(AudioConfig, "audio"),
         cache=pick(CacheConfig, "cache"),
+        ai=pick(AiConfig, "ai"),
     )
 
 
@@ -302,7 +326,18 @@ class Option:
     key: str  # dotted: "capture.on_failed_submit"
     label: str
     help: str
+    #: Empty means free text: there is nothing to step through, so the
+    #: settings screen opens an editor for it instead.
     choices: tuple[Any, ...]
+
+    @property
+    def free_text(self) -> bool:
+        return not self.choices
+
+    def accepts(self, value: Any) -> bool:
+        if self.free_text:
+            return isinstance(value, str) and bool(value.strip())
+        return value in self.choices
 
     @property
     def section(self) -> str:
@@ -315,10 +350,14 @@ class Option:
     def render(self, value: Any) -> str:
         if isinstance(value, bool):
             return "on" if value else "off"
-        return str(value)
+        text = " ".join(str(value).split())
+        # The value column is 16 wide; a prompt would push "set here" off the row.
+        return text if len(text) <= 15 else text[:14] + "…"
 
     def step(self, value: Any, delta: int) -> Any:
         """The next choice along, wrapping. Unknown values land on the first."""
+        if self.free_text:
+            return value
         try:
             index = self.choices.index(value)
         except ValueError:
@@ -423,6 +462,12 @@ def options() -> tuple[Option, ...]:
             "after a solve, name the patterns you used and the method you took",
             (True, False),
         ),
+        Option(
+            "ai.post_solve_prompt",
+            "post-solve prompt",
+            "what ctrl+y on the finish screen copies, for LeetCode's AI to review the solve",
+            (),
+        ),
     )
 
 
@@ -450,7 +495,7 @@ def overrides(conn: sqlite3.Connection) -> dict[str, Any]:
             value = json.loads(row["value"])
         except (TypeError, ValueError):
             continue
-        if value in option.choices:
+        if option.accepts(value):
             out[option.key] = value
     return out
 

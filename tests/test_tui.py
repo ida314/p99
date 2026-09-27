@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from textual.widgets import Input, OptionList, RadioSet, SelectionList, Static
+from textual.widgets import Button, Input, OptionList, RadioSet, SelectionList, Static
 
 from core import branding, db, paths, stats
 from core.engine import RunEngine
@@ -1446,7 +1446,9 @@ async def test_the_finish_buttons_stay_on_screen_on_a_short_terminal(isolated_ho
         assert isinstance(app.screen, FinishModal)
         box = app.screen.query_one("#finish-box")
         assert box.region.bottom <= 24
-        for button in app.screen.query("Button"):
+        # The pinned row only. The copy-prompt button scrolls with the
+        # percentiles beside it, and ctrl+y reaches it from anywhere.
+        for button in app.screen.query("#confirm-buttons Button"):
             assert button.region.bottom <= 24, f"{button.id} is below the fold"
             assert button.region.right <= box.region.right, f"{button.id} overflows"
 
@@ -3593,3 +3595,91 @@ async def test_the_second_method_you_wrote_joins_the_problems_list(strategy_app)
     # solved the problem two ways in one sitting.
     used = {r["key"] for r in conn.execute("SELECT key FROM attempt_methods")}
     assert used == {"try-every-pair", "one-pass-with-a-map"}
+
+
+# --- the post-solve prompt ----------------------------------------------------
+
+
+async def test_ctrl_y_copies_the_post_solve_prompt(app, monkeypatch):
+    """From the finish prompt, without leaving it."""
+    from core import clipboard, config as config_module
+
+    copied: list[str] = []
+    monkeypatch.setattr(clipboard, "copy", lambda text: copied.append(text) or True)
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen, FinishModal)
+
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        assert copied == [config_module.DEFAULT_POST_SOLVE_PROMPT]
+        assert isinstance(app.screen, FinishModal)
+
+        # The box scrolls at the test terminal's size, so press it rather than
+        # click where it would be.
+        app.screen.query_one("#copy-prompt", Button).press()
+        await pilot.pause()
+        assert len(copied) == 2
+
+
+async def test_the_prompt_falls_back_to_the_terminal_clipboard(app, monkeypatch):
+    from core import clipboard
+
+    monkeypatch.setattr(clipboard, "copy", lambda text: False)
+    sent: list[str] = []
+    monkeypatch.setattr(app, "copy_to_clipboard", sent.append)
+
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+    assert sent == [app.config.ai.post_solve_prompt]
+
+
+async def test_the_post_solve_prompt_is_edited_in_settings(app, monkeypatch):
+    from textual.widgets import TextArea
+
+    from core import config as config_module
+    from core.tui.screens.settings import TextSettingModal
+
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        screen = app.screen
+        listing = screen.query_one("#settings-list", OptionList)
+        listing.highlighted = [r.key for r in screen.rows].index("ai.post_solve_prompt")
+        await pilot.pause()
+
+        await pilot.press("h")  # back never opens anything
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert isinstance(app.screen, TextSettingModal)
+        area = app.screen.query_one(TextArea)
+        assert area.text == config_module.DEFAULT_POST_SOLVE_PROMPT
+        area.text = "Review my\nsolution."
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        assert app.config.ai.post_solve_prompt == "Review my solution."
+
+        # Escape keeps what was there.
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one(TextArea).text = "something else"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.config.ai.post_solve_prompt == "Review my solution."
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.config.ai.post_solve_prompt == config_module.DEFAULT_POST_SOLVE_PROMPT

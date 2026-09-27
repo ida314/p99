@@ -19,8 +19,9 @@ from dataclasses import dataclass
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import Footer, OptionList, Static
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, Footer, OptionList, Static, TextArea
 from textual.widgets.option_list import Option as ListOption
 
 from rich.text import Text
@@ -59,6 +60,49 @@ ACTIONS_BELOW = {
         "action_fetch",
     ),
 }
+
+
+class TextSettingModal(ModalScreen[str | None]):
+    """Edit one free-text setting. Dismisses with the new text, or None.
+
+    In the app rather than an $EDITOR handoff: a prompt is a sentence or two,
+    and suspending the whole screen for that is more ceremony than the edit.
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "save"),
+        Binding("escape", "cancel", "cancel"),
+    ]
+
+    def __init__(self, label: str, value: str):
+        super().__init__()
+        self.label = label
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="text-setting-box"):
+            yield Static(self.label, classes="modal-title")
+            yield TextArea(self.value, soft_wrap=True, id="text-setting")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("save  (ctrl+s)", variant="primary", id="save")
+                yield Button("cancel  (esc)", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#text-setting", TextArea).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.action_save()
+        else:
+            self.action_cancel()
+
+    def action_save(self) -> None:
+        # Newlines folded: the prompt is pasted as one message, and a stray
+        # return in LeetCode's chat box would send half of it.
+        self.dismiss(" ".join(self.query_one("#text-setting", TextArea).text.split()))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class SettingsScreen(VimMotion, Screen):
@@ -212,9 +256,34 @@ class SettingsScreen(VimMotion, Screen):
         getattr(self.app, row.app_action)()
         return True
 
+    def _edit_text(self, option: config_module.Option) -> None:
+        cfg = self.app.config  # type: ignore[attr-defined]
+
+        def done(text: str | None) -> None:
+            if text is None:
+                return
+            if text:
+                config_module.set_option(self.app.conn, option.key, text)  # type: ignore[attr-defined]
+            elif option.key in self._overrides():
+                # Emptied out: there is no such thing as an empty prompt, so
+                # this means "whatever config.toml says", the same as `x`.
+                config_module.clear_option(self.app.conn, option.key)  # type: ignore[attr-defined]
+            self.app.reload_config()  # type: ignore[attr-defined]
+            self._populate()
+
+        self.app.push_screen(
+            TextSettingModal(option.label, str(config_module.value_of(cfg, option))), done
+        )
+
     def _apply(self, delta: int) -> None:
         option = self.current
         if not isinstance(option, config_module.Option):
+            return
+        if option.free_text:
+            # Only forward opens the editor, for the same reason `h` never
+            # fires an action: a key that goes back must not start anything.
+            if delta > 0:
+                self._edit_text(option)
             return
         cfg = self.app.config  # type: ignore[attr-defined]
         new_value = option.step(config_module.value_of(cfg, option), delta)
