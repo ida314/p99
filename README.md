@@ -36,6 +36,8 @@ p99 queue           # what to do today, and why
 p99 stats           # percentile distributions, sliceable
 p99 history         # run rankings, you vs. your past self
 p99 fetch           # cache the problem list for offline use
+p99 seed            # bring in every problem set the config names
+p99 types           # the problem types, and what each one asks
 p99 replay          # rebuild every projection from the event log
 p99 doctor          # paths, catalog, editor, cache, config
 ```
@@ -47,6 +49,7 @@ p99 stats --pattern sliding-window
 p99 stats --difficulty medium --days 30
 p99 stats --by pattern            # every pattern, ranked by volume
 p99 stats --tag graph
+p99 stats --type system-design    # one type at a time; the active list's by default
 ```
 
 ## The queue
@@ -100,6 +103,12 @@ How many the queue holds is `session.queue_n`. It is a separate knob from
 number could not say. Left unset, `queue_n` follows `planned_n`, so splitting
 them is opt-in.
 
+With more than one [problem set](#types-and-sets) there is one queue per list,
+and `h`/`l` step across them. Everything above holds for each on its own: its
+own reviews, its own weakest pattern, its own backlog. A set may carry its own
+`queue_n` and `reviews_per_day` in its `[sets]` table, for a list that should
+not be sized like the others.
+
 Reviews score 1.25×. Retention is the thing being trained.
 
 ## Mastering a problem
@@ -125,7 +134,85 @@ every one of them from the event log, so the schedule seeds itself retroactively
 from history you logged before any of this existed. Swapping the parameter file
 in settings and replaying reschedules all of it.
 
+## Types and sets
+
+p99 is not only for LeetCode. A **type** is what kind of thing a problem is —
+what the prompt after a solve asks, which screens follow it, how the answers
+move a review, what par is — and a **set** is a list of problems that names the
+type they are. Both are files you write.
+
+```toml
+# ~/.config/p99/config.toml
+[sets.system-design]
+type = "system-design"            # a bundled type, or one in types/
+path = "sets/system-design.json"  # relative to this file; leave it out for a bundled list
+queue_n = 1                       # optional: this set's own queue size
+```
+
+That is the whole of adding a set: it is there the next time the app opens.
+`p99 seed` does it now and names anything it left out.
+
+Adding a new *kind* of problem is one step more — write the type first:
+
+```sh
+p99 types --new distributed-systems --from system-design   # 1. a type to edit
+$EDITOR ~/.config/p99/types/distributed-systems.toml       #    make it ask what you would
+p99 types distributed-systems                              #    read it back; it names what is wrong
+$EDITOR ~/.config/p99/sets/distributed-systems.json        # 2. the problems: a JSON list of titles
+$EDITOR ~/.config/p99/config.toml                          # 3. a [sets] table naming both
+p99 seed                                                   # 4. check what came in
+```
+
+Then `q` in the app, `l` across to the new list, `enter`. The walkthrough, with
+what goes in each file:
+[`docs/problem-types.md`](docs/problem-types.md#adding-a-new-kind-of-problem-start-to-finish).
+
+Two types are bundled. `leetcode` asks what this app has always asked, and
+`system-design` is the worked example of a second one: no judge, so no failed
+submits; no complexity to claim, so it asks **how many of the requirements you
+covered** instead, and that is the answer that moves its review. `p99 types`
+prints both, and `p99 types --new system-design` copies one into
+`~/.config/p99/types/` for you to edit — a file there wins over the bundled type
+of the same name, which is also how you change what LeetCode asks.
+
+```toml
+# ~/.config/p99/types/system-design.toml
+[[fields]]
+key = "requirements"
+kind = "fraction"                 # "7/10", "70%", "0.7" — stored as you typed it
+label = "coverage"
+group = "what you covered — optional"
+placeholder = "requirements   7/10"
+review = { again_below = 0.4, hard_below = 0.7, easy_from = 0.9 }
+```
+
+**One schedule for all of it.** There is one event log, one `fsrs_cards` table
+and one rating map: a design gets a card the way `two-sum` does, comes due the
+same way and masters the same way. The half of the rating map that reads the
+clock, the hints and the verdict is the same code for every type; the half that
+reads your answers is each field's own `review` rule. A new type is a TOML file,
+not a second scheduler — and adding a question to one is never a migration,
+because everything a type asks lands in one `answers` column.
+
+Each set is its own track, with its own queue for the day. The queue and the
+setup screen open on `session.active_list`, and **`h`/`l` step across the
+lists** on both. Picks on the setup screen come with you, so one run can hold a
+LeetCode warm-up and a design: the run loop asks each problem what type it is,
+not the run. Anything that ranks — the slow tail, the weakest pattern, the stats
+screen — ranks within one type, because a forty-minute design and a
+twelve-minute LeetCode problem are both `medium` and a percentile across the two
+is a number about neither.
+
+Nothing about a type can stop a run. A set that will not load costs that set, a
+field that makes no sense is dropped and the rest of the file stands, and
+`p99 doctor` says what was wrong in words. The whole format, and what each rule
+does to a review: [`docs/problem-types.md`](docs/problem-types.md).
+
 ## A run
+
+What follows is a LeetCode run, which is the bundled `leetcode` type. Steps 3–7
+are the ones a [type](#types-and-sets) decides: what the finish prompt asks, and
+which of the screens after it run at all.
 
 1. **Start** — pick how many problems. Selection is random-from-list or manual.
    `ctrl+a` turns [speech mode](#speech-mode) on or off for this run.
@@ -216,7 +303,7 @@ still work.
 | | |
 |---|---|
 | `j` `k` | down, up |
-| `h` `l` | left, right — between panes, between the time and space ladders at the finish prompt, or through the values of a setting |
+| `h` `l` | left, right — between panes, between the ladders that share a row at the finish prompt, through the values of a setting, or across the problem lists (queue, setup) |
 | `gg` `G` | top, bottom |
 | `ctrl+d` `ctrl+u` | half a screen |
 | `ctrl+f` `ctrl+b` | a full screen |
@@ -234,6 +321,7 @@ real points.
 | `q` | today's queue — due reviews and new coverage (home) |
 | `r` | runs — the history screen (home) |
 | `t` | stats (home) |
+| `y` | the next problem type (stats); only there once you have more than one |
 | `m` | into the mastered list under the menu; `esc` back to the menu (home) |
 | `s` | settings (home); `h`/`l` change a value, `x` puts it back to `config.toml`, `enter` on **warm the cache** downloads the list |
 | `h` `l` | across the menu's two columns (home) |
@@ -247,8 +335,8 @@ real points.
 | `c` | show / hide the problem's pattern and tags (hidden by default) |
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
-| `s` | log a failed submit, then paste the code behind it (solve) |
-| `f` | finish — verdict, confidence, cost, optimality, code style, then the patterns, then the problem's methods, then capture |
+| `s` | log a failed submit, then paste the code behind it (solve); only for a type with a judge to submit to |
+| `f` | finish — verdict, confidence, then whatever the problem's type asks (for LeetCode: cost, optimality, code style), then the patterns, then the problem's methods, then capture |
 | `space` | a pattern that can solve this problem (patterns prompt); the method you wrote (methods prompt) |
 | `o` | what a method costs — optimal / not optimal / not sure / unclaimed (methods prompt, methods screen) |
 | `i` | name a new pattern or a new method; `enter` adds it (both prompts) |
@@ -430,6 +518,17 @@ second one is an event (`method_updated`) rather than an in-place update
 because it feeds a rating — and everything that feeds a rating has to survive a
 replay.
 
+`attempts.answers` is where everything a type asks is kept that has no column of
+its own: one JSON object per attempt, keyed by field, stored as you typed it.
+One column rather than one per question, because the questions are a file you
+are expected to edit. What an answer *means* — which rung of the review it lands
+on — is read off the type when the card is graded, so editing a rule and
+replaying regrades history, the same bargain the weights make. The seven fields
+LeetCode asks keep the columns they always had.
+
+`queues` holds one row per day *per list*, since each set has its own plan for
+today.
+
 `fsrs_cards` and `queues` are projections too. A card is a fold over the ratings
 your finished attempts imply, so replaying the log rebuilds every one of them —
 which is also why the FSRS scheduler is constructed with fuzzing **off**. It is
@@ -442,6 +541,7 @@ them in vim:
 
 ```
 ~/.config/p99/config.toml
+~/.config/p99/types/<type>.toml
 ~/.local/share/p99/p99.db
 ~/.local/share/p99/code/<slug>/<attempt_id>.<ext>
 ~/.local/share/p99/code/<slug>/<attempt_id>-wrong<n>.<ext>
@@ -463,14 +563,15 @@ opens a problem, `P99_FFMPEG` points at the recorder speech mode spawns, and
 directory names are both derived from one constant — see [Renaming](#renaming).
 
 **No problem content is ever in the database.** The catalog holds title, slug,
-URL, difficulty, tags and pattern — nothing else. The one copy of problem
+URL, difficulty, tags, pattern and which type the problem is — nothing else. A
+prompt you wrote yourself lives in the file its `url` points at. The one copy of problem
 content that exists is the offline cache below, which lives in its own directory
 as files, is never read by a projection, and can be deleted at any time.
 
 ## Offline
 
-`p99 fetch`, or **warm the cache** in settings, downloads the active list's
-problem statements into `~/.local/share/p99/cache/` as self-contained HTML —
+`p99 fetch`, or **warm the cache** in settings, downloads your lists' problem
+statements into `~/.local/share/p99/cache/` as self-contained HTML —
 images inlined, official hints folded away behind `<details>`, the starter
 snippet for your language, nothing left to request. Then flip `offline` one row
 above it and `o` opens the cached copy instead of leetcode.com.
@@ -487,6 +588,13 @@ missing the problem you were handed fails at the one moment nothing can be done
 about it. All 150 problems cost about 3 MB, so there is nothing to ration; the
 `[cache] max_mb` ceiling exists so that pointing this at a far larger catalog
 truncates in a defined order rather than filling the disk.
+
+Every list, for the same reason: `h`/`l` can step you onto any of them at
+30,000 feet. The active list goes first, so it is what a budget too small for
+everything keeps. Only lists whose [type](#types-and-sets) has somewhere to
+fetch from, which today means LeetCode's — a set of system design prompts has
+no statements to download, `o` opens whatever its `url` points at, and offline
+mode changes nothing about it.
 
 Seven neetcode150 entries are premium-only. Without a LeetCode subscription they
 can be neither cached nor opened, and `p99 doctor` names them. With one:
@@ -674,6 +782,16 @@ make clean    # caches and the rendered man page
 `blind75` membership marked where it overlaps. Blind 75 membership is
 approximate — correct it in place and re-run `p99 seed`, which upserts and never
 touches attempt history.
+
+`src/core/data/system-design.json` is a starter list for the bundled
+`system-design` type: a dozen common prompts, titles only, with nothing to
+open. It is not seeded until a `[sets]` table names it, and it is
+there to be replaced by a list of your own.
+
+`problems` is seeded, not projected: a replay leaves it alone, and the sync that
+runs on every launch is an upsert that never touches attempt history. Every set
+stamps its problems with its type, and a slug two sets of *different* types both
+claim stays with the first — see [`docs/problem-types.md`](docs/problem-types.md).
 
 ## Reviews
 

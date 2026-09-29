@@ -24,7 +24,8 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import branding, events, paths
+from . import branding, catalog, events, paths, problemtypes
+from .catalog import ProblemSet
 
 #: What the finish screen copies for LeetCode's AI to diagnose the solve. One
 #: line, so it pastes as one message and sits in config.toml as a plain string.
@@ -57,10 +58,31 @@ queue_n = 3
 # when several are due the queue spends the slot on the weakest and lets the
 # rest wait. Raise it to work off a backlog faster, at the cost of new coverage.
 reviews_per_day = 1
-# which catalog list is active: neetcode150 | blind75
+# which list runs are drawn from: neetcode150 | blind75 | any set named under
+# [sets] below. The queue and the setup screen open on this one; `h` and `l`
+# step across to the others without changing it.
 active_list = "neetcode150"
 # random | manual
 selection = "random"
+
+# Problem sets. Each one is a JSON list of problems and the *type* every problem
+# in it is -- the type decides what the prompt after a solve asks, which screens
+# follow it and how the answers move a review. `neetcode150` is bundled and is
+# always there; add your own underneath:
+#
+#   [sets.system-design]
+#   type = "system-design"            # a bundled type, or one in types/
+#   path = "sets/system-design.json"  # relative to this file; ~ works too
+#   queue_n = 1                       # optional: this set's own queue size
+#   reviews_per_day = 1               # optional: and its own review budget
+#
+# Leave `path` out to use a list bundled with {branding.NAME}: `system-design`
+# is one, a dozen prompts to get started on. A set is picked up the next time
+# the app opens; `{branding.COMMAND} seed` does it now and says what it found.
+#
+# Types are TOML files of their own. `{branding.COMMAND} types` lists them, and
+# `{branding.COMMAND} types --new <name>` writes one into types/ beside this
+# file for you to edit.
 
 [capture]
 # language solutions are archived as; drives the temp-file extension so your
@@ -153,6 +175,8 @@ EXT_BY_LANGUAGE = {
     "scala": "scala",
     "csharp": "cs",
     "sql": "sql",
+    # Not a language you solve in: what a problem type archives a write-up as.
+    "markdown": "md",
 }
 
 
@@ -223,6 +247,12 @@ class AiConfig:
     post_solve_prompt: str = DEFAULT_POST_SOLVE_PROMPT
 
 
+#: Lists that live inside a bundled set rather than being one. `blind75` is a
+#: mark on seventy-nine of `neetcode150`'s entries, so no `[sets]` table names
+#: it and it is still a list you can run from.
+BUNDLED_LISTS = (catalog.DEFAULT_LIST, "blind75")
+
+
 @dataclass(frozen=True)
 class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
@@ -234,16 +264,60 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    #: Every problem set, bundled ones first, then yours in the order the file
+    #: names them. The order is `catalog.sync`'s order of precedence.
+    sets: tuple[ProblemSet, ...] = catalog.BUNDLED_SETS
+
+    @property
+    def lists(self) -> tuple[str, ...]:
+        """Every list a run can be drawn from, in the order they are stepped through."""
+        return list_names(self.sets)
+
+    def set_named(self, name: str) -> ProblemSet | None:
+        for problem_set in self.sets:
+            if problem_set.name == name:
+                return problem_set
+        return None
+
+    def type_of(self, name: str) -> str:
+        """The type a list's problems are, as `config.toml` has it.
+
+        A list that is not a set is LeetCode's. The only one a run can be drawn
+        from is `blind75`, which is a mark on entries of the bundled set.
+        """
+        problem_set = self.set_named(name)
+        return problem_set.type if problem_set else problemtypes.DEFAULT_TYPE
+
+    def queue_n_for(self, name: str) -> int:
+        """How many problems one list's queue holds: its own number, or the session's."""
+        problem_set = self.set_named(name)
+        if problem_set is not None and problem_set.queue_n is not None:
+            return problem_set.queue_n
+        return self.session.queue_n
+
+    def reviews_per_day_for(self, name: str) -> int:
+        problem_set = self.set_named(name)
+        if problem_set is not None and problem_set.reviews_per_day is not None:
+            return problem_set.reviews_per_day
+        return self.session.reviews_per_day
 
     @property
     def active_lists(self) -> tuple[str, ...]:
-        """Every catalog list in play, for the things that span more than one.
+        """Every list the offline cache covers: the active one, then the rest.
 
-        One today. It is a tuple rather than `session.active_list` spelled out
-        at each call site because the offline cache is scoped by it: when a
-        second list arrives, this property changes and nothing downstream does.
+        A tuple rather than `session.active_list` spelled out at each call site
+        because the cache is scoped by it, and now that a second list can exist
+        this is where it shows up and nothing downstream had to change.
+
+        Only lists whose type has somewhere to fetch from. A set of system
+        design prompts has no statements to download, and listing it on the
+        fetch screen would be promising a cache that cannot exist. The active
+        list leads, so it is what a budget too small for everything keeps.
         """
-        return (self.session.active_list,)
+        ordered = dict.fromkeys((self.session.active_list, *(s.name for s in self.sets)))
+        return tuple(
+            name for name in ordered if problemtypes.load(self.type_of(name)).fetch
+        )
 
 
 def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -266,6 +340,53 @@ def _queue_n_follows_planned_n(raw: dict[str, Any]) -> dict[str, Any]:
     return {**raw, "session": {**session, "queue_n": follows}}
 
 
+def _count(raw: Any, floor: int) -> int | None:
+    """A per-set number, or None to follow the session's. Never a bool."""
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < floor:
+        return None
+    return raw
+
+
+def _sets(raw: dict[str, Any]) -> tuple[ProblemSet, ...]:
+    """The `[sets]` table, laid over the sets that are always there.
+
+    A set named in the file replaces a bundled one of the same name, in place --
+    which is how you point `neetcode150` at a copy you have corrected -- and
+    anything else is added after, in the order the file names it.
+
+    A table that makes no sense is skipped rather than raised on. The rule at
+    the top of `_read_file` covers this too: a broken config must never stop a
+    run, and what was wrong with a set is `doctor`'s to say.
+    """
+    sets = {s.name: s for s in catalog.BUNDLED_SETS}
+    for name, body in _section(raw, "sets").items():
+        if not isinstance(body, dict):
+            continue
+        name = problemtypes.normalise(name)
+        if not name:
+            continue
+        path = body.get("path")
+        sets[name] = ProblemSet(
+            name=name,
+            type=problemtypes.normalise(body.get("type")) or problemtypes.DEFAULT_TYPE,
+            path=path if isinstance(path, str) and path.strip() else None,
+            queue_n=_count(body.get("queue_n"), 1),
+            reviews_per_day=_count(body.get("reviews_per_day"), 0),
+        )
+    return tuple(sets.values())
+
+
+def list_names(sets: tuple[ProblemSet, ...] | None = None) -> tuple[str, ...]:
+    """Every list there is to run from: the bundled ones, then each set.
+
+    Reads the file when not handed the sets, because `options` is asked for the
+    choices without a `Config` in hand.
+    """
+    if sets is None:
+        sets = _sets(_read_file())
+    return tuple(dict.fromkeys((*BUNDLED_LISTS, *(s.name for s in sets))))
+
+
 def _build(raw: dict[str, Any]) -> Config:
     raw = _queue_n_follows_planned_n(raw)
 
@@ -283,6 +404,7 @@ def _build(raw: dict[str, Any]) -> Config:
         audio=pick(AudioConfig, "audio"),
         cache=pick(CacheConfig, "cache"),
         ai=pick(AiConfig, "ai"),
+        sets=_sets(raw),
     )
 
 
@@ -417,8 +539,8 @@ def options() -> tuple[Option, ...]:
         Option(
             "session.active_list",
             "problem list",
-            "which catalog list runs are drawn from",
-            ("neetcode150", "blind75"),
+            "which list the queue and the setup screen open on — h and l step across there",
+            list_names(),
         ),
         Option(
             "scoring.weights",

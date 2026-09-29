@@ -1654,7 +1654,12 @@ async def test_the_finish_prompt_asks_what_the_solution_cost(app):
     """The typed complexities and the optimality answers, from keystrokes to row."""
     from textual.widgets import RadioButton, RadioSet
 
-    from core.tui.screens.finish import SOLUTION_AXES
+    from core import problemtypes
+
+    # The three ladders are the LeetCode type's, read from where they are
+    # written down rather than from a copy of them in the test.
+    ladders = [f for f in problemtypes.load("leetcode").fields if f.kind == "choice"]
+    assert [f.key for f in ladders] == ["time_optimality", "space_optimality", "code_style"]
 
     async with app.run_test() as pilot:
         app.start_run(["two-sum"])
@@ -1670,12 +1675,12 @@ async def test_the_finish_prompt_asks_what_the_solution_cost(app):
         # The axes are named on screen, or three ladders mean nothing.
         assert "time" in labels and "space" in labels and "code style" in labels
 
-        for radio_id, _, _, options, _ in SOLUTION_AXES:
-            buttons = screen.query_one(f"#{radio_id}", RadioSet).query(RadioButton)
-            assert [b.label.plain for b in buttons] == [label for _, label in options]
+        for ladder in ladders:
+            buttons = screen.query_one(f"#{ladder.widget_id}", RadioSet).query(RadioButton)
+            assert [b.label.plain for b in buttons] == [o.label for o in ladder.options]
 
-        screen.query_one("#complexity", Input).value = "O(n log n)"
-        screen.query_one("#space-complexity", Input).value = "O(n)"
+        screen.query_one("#claimed-complexity", Input).value = "O(n log n)"
+        screen.query_one("#claimed-space-complexity", Input).value = "O(n)"
         # `k` off the default highlights "not optimal"; `space` presses it. The
         # motion moves the cursor and nothing else, which is the point of the
         # rule in `vim.py` — a key that moves must never also commit.
@@ -1774,7 +1779,7 @@ async def test_what_you_claimed_is_not_shown_back_on_the_next_attempt(app):
         await pilot.pause()
         await pilot.press("f")
         await pilot.pause()
-        app.screen.query_one("#complexity", Input).value = "O(n log n)"
+        app.screen.query_one("#claimed-complexity", Input).value = "O(n log n)"
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         # Seal the first run before opening a second one on the same problem.
@@ -1802,8 +1807,8 @@ async def test_history_shows_the_approach_after_the_fact(app):
         await pilot.pause()
         await pilot.press("f")
         await pilot.pause()
-        app.screen.query_one("#complexity", Input).value = "O(n)"
-        app.screen.query_one("#space-complexity", Input).value = "O(1)"
+        app.screen.query_one("#claimed-complexity", Input).value = "O(n)"
+        app.screen.query_one("#claimed-space-complexity", Input).value = "O(1)"
         await pilot.press("ctrl+s")
         await _decline_another_pass(app, pilot)
         await pilot.press("enter")
@@ -2947,9 +2952,9 @@ async def test_stepping_back_keeps_every_answer_on_all_three_screens(strategy_ap
         await pilot.press("f")
         await pilot.pause()
         finish = app.screen
-        finish.query_one("#complexity", Input).value = "O(n log n)"
-        finish.query_one("#space-complexity", Input).value = "O(1)"
-        finish.query_one("#runtime", Input).value = "91"
+        finish.query_one("#claimed-complexity", Input).value = "O(n log n)"
+        finish.query_one("#claimed-space-complexity", Input).value = "O(1)"
+        finish.query_one("#lc-runtime-pct", Input).value = "91"
         finish.query_one("#verdict", RadioSet).focus()
         await pilot.press("j")
         await pilot.press("space")  # solved with hints
@@ -2981,10 +2986,10 @@ async def test_stepping_back_keeps_every_answer_on_all_three_screens(strategy_ap
 
         finish = app.screen
         assert isinstance(finish, FinishModal)
-        assert finish.query_one("#complexity", Input).value == "O(n log n)"
-        assert finish.query_one("#space-complexity", Input).value == "O(1)"
+        assert finish.query_one("#claimed-complexity", Input).value == "O(n log n)"
+        assert finish.query_one("#claimed-space-complexity", Input).value == "O(1)"
         # 91, not 91.0: the box is a number field and it never held a decimal.
-        assert finish.query_one("#runtime", Input).value == "91"
+        assert finish.query_one("#lc-runtime-pct", Input).value == "91"
         assert VERDICTS[finish.query_one("#verdict", RadioSet).pressed_index] == (
             "solved_with_hints"
         )

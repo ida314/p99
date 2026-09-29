@@ -275,6 +275,11 @@ class MethodsScreen(VimMotion, Screen[None]):
         if problem is None:
             return
 
+        # The problem type's own language where it names one, exactly as the
+        # capture after a solve chooses it: a route written from here must land
+        # in the same kind of file as one written from a run.
+        language = capture.language_for(problem, cfg.capture.language)
+
         self._busy = True
         try:
             if not capture.editor_available():
@@ -285,7 +290,7 @@ class MethodsScreen(VimMotion, Screen[None]):
                     result = capture.capture_method(
                         problem,
                         methods.Named(key=way.key, name=way.name),
-                        cfg.capture.language,
+                        language,
                     )
             except SuspendNotSupported:
                 self.notify("this terminal can't hand off to $EDITOR", severity="warning")
@@ -300,7 +305,7 @@ class MethodsScreen(VimMotion, Screen[None]):
                     "slug": slug,
                     "method": way.name,
                     "code_path": str(result.path),
-                    "language": cfg.capture.language,
+                    "language": language,
                 },
             )
             self.notify(f"{way.name} — archived")

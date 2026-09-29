@@ -3,6 +3,13 @@
 The finish prompt is the manual verdict entry (spec §15.4). LeetCode is the
 judge; you self-report. Keep it fast — this screen sits between you and the
 next problem, and friction here is what makes people stop logging.
+
+The verdict and the recall question are asked of every problem, because the
+score and the review are built on them. Everything under those two is the
+problem *type's*: a form drawn from the fields the type lists, in the order it
+lists them. What LeetCode asks — the two complexities, the three ladders, the
+percentiles — used to be written out here and is now `data/types/leetcode.toml`,
+where the reasons for each default went with it.
 """
 
 from __future__ import annotations
@@ -15,9 +22,9 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 
-from ... import clipboard
+from ... import clipboard, problemtypes
 from ...config import DEFAULT_POST_SOLVE_PROMPT
-from ...scoring import VERDICTS, VERDICT_LABELS, fmt_duration
+from ...scoring import VERDICT_LABELS, fmt_duration
 from ..vim import MOTIONS, VimMotion
 
 # Still 1..4, still worst-to-best, still stored in `attempts.self_confidence` --
@@ -35,71 +42,16 @@ from ..vim import MOTIONS, VimMotion
 # would do, with a month and a blank page as the conditions. The rung you pick
 # is the same rung either way -- the wording just makes it harder to answer the
 # easier question by mistake.
+#
+# Not a field of any type, and asked of all of them: whether it would come back
+# cold is the same question about a design as about a solution, and `srs.rate`
+# reads the answer without asking what kind of problem it was.
 CONFIDENCE_OPTIONS = [
     "1  I'd be lost",
     "2  I'd struggle to reconstruct it",
     "3  I'd reconstruct it",
     "4  I'd reconstruct it quickly",
 ]
-
-# Stored value first, wording second, so the vocabulary that reaches the database
-# and the vocabulary on screen can never drift apart.
-#
-# The cursor starts on "not sure" -- the last entry -- for the same reason the
-# verdict cursor starts on the worst thing already on the record. "Optimal" is
-# the flattering answer, and a default of flattering is how a month of solves
-# you never actually checked quietly claims to have been optimal.
-OPTIMALITY_OPTIONS = (
-    ("optimal", "optimal"),
-    ("suboptimal", "not optimal"),
-    ("unsure", "not sure"),
-)
-OPTIMALITY_DEFAULT = len(OPTIMALITY_OPTIONS) - 1
-
-# Would you have handed this code in. A third ladder with its own words, and the
-# words are the reason it is a third ladder rather than a third axis of the one
-# above: `suboptimal` is a claim that something exists which does it in less,
-# and time and space each have a lower bound to make that claim against. How the
-# code reads has none. Calling a clunky solution "not optimal" would be grading
-# it against a best nobody wrote, so this asks the question the app is actually
-# for -- would you have been happy for the interviewer to read it.
-#
-# `rough` rather than `messy` or `bad`: every number this app produces rests on
-# a self-report, and a label that punishes the honest answer is how you stop
-# giving it. Last entry is the default, for the same reason as the optimality
-# axes -- see below.
-#
-# One word each, because a third column of a 74-wide box leaves fourteen
-# characters after the radio button and "needs a rewrite" came out as "needs a
-# rewri...". `render.STYLE_LABELS` spells the answers out in full for the stat
-# line, which has the room -- the same split `CONFIDENCE_LABELS` already makes.
-STYLE_OPTIONS = (
-    ("clean", "clean"),
-    ("rough", "rough"),
-    ("unsure", "not sure"),
-)
-STYLE_DEFAULT = len(STYLE_OPTIONS) - 1
-
-# The ladders that sit side by side under one question, each with its own
-# options, its own default and its own column on `attempts`.
-#
-# Three answers rather than one because they are three facts. The trade between
-# the first two is the whole point: the hash map that turns O(n log n) into O(n)
-# pays O(n) space for it, and an answer that cannot say "bought time with space"
-# cannot record the decision you actually made. The third is about the code
-# rather than the algorithm, and finding the optimal complexity and still
-# writing something you would not show anyone is a normal, recordable evening.
-#
-# Each axis keeps its own "not sure", and each defaults to it. Being certain
-# about time and having never thought about space is the usual state, a single
-# answer would force you to lie about one of them, and a default of the
-# flattering answer is how a month of solves you never actually checked quietly
-# claims to have been optimal.
-SOLUTION_AXES = (
-    ("time-optimality", "time", "time_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
-    ("space-optimality", "space", "space_optimality", OPTIMALITY_OPTIONS, OPTIMALITY_DEFAULT),
-    ("code-style", "code style", "code_style", STYLE_OPTIONS, STYLE_DEFAULT),
-)
 
 #: The two ways out of `EndRunModal` that end the run. Named rather than spelled
 #: out at both ends, so the caller's branch and the modal's answer cannot drift.
@@ -114,39 +66,42 @@ SIGNAL_DISCARD = "discard"
 SIGNAL_BACK = "back"
 
 
-def _pct_text(value: Any) -> str:
-    """A percentile back in the box you typed it into.
+def _number_text(value: Any) -> str:
+    """A number back in the box you typed it into.
 
-    `%g` rather than `str`: the field is `type="number"` and `_pct` has already
-    turned "91" into 91.0, which would come back as "91.0" and read as a number
-    you did not enter.
+    `%g` rather than `str`: the field is `type="number"` and the form has
+    already turned "91" into 91.0, which would come back as "91.0" and read as
+    a number you did not enter.
     """
-    return "" if value is None else f"{float(value):g}"
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
-    """Verdict, self-confidence, what you say the solution costs, the percentiles."""
+    """Verdict, self-confidence, and whatever the problem's type asks after them."""
 
     # No VIM_TARGET: motions here move the focused radio set and nothing else.
-    # With focus in a complexity field or one of the percentile inputs there is
-    # nothing sensible for `j` to move, and guessing would move a radio set you
-    # can't see moving.
+    # With focus in a text field there is nothing sensible for `j` to move, and
+    # guessing would move a radio set you can't see moving.
     BINDINGS = [
         *MOTIONS,
         Binding("escape", "cancel", "back to the problem"),
         Binding("ctrl+s", "save", "save"),
         # A chord, not a letter: focus lives in a radio set or in one of the
-        # percentile inputs, where a bare `x` is something you typed.
+        # inputs, where a bare `x` is something you typed.
         Binding("ctrl+x", "throw_away", "throw away"),
-        # `y` for yank. Copies and stays put: the point is to paste it into
-        # LeetCode and come back here with the answers.
+        # `y` for yank. Copies and stays put: the point is to paste it
+        # somewhere and come back here with the answers.
         Binding("ctrl+y", "copy_prompt", "copy AI prompt"),
-        # The one place on this screen with sideways content: the three ladders
-        # under "how did it come out?". `h` and `l` cross between them and mean
-        # nothing anywhere else, which keeps the rule from `vim.py` — whatever
-        # `l` does, `h` undoes.
-        Binding("h", "axis(-1)", "time / space / code style", show=False),
-        Binding("l", "axis(1)", "time / space / code style", show=False),
+        # The one place on this screen with sideways content: ladders that share
+        # a row. `h` and `l` cross between them and mean nothing anywhere else,
+        # which keeps the rule from `vim.py` — whatever `l` does, `h` undoes.
+        Binding("h", "axis(-1)", "across the ladders", show=False),
+        Binding("l", "axis(1)", "across the ladders", show=False),
     ]
 
     def __init__(
@@ -156,6 +111,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         submissions: int,
         hint_tier: int,
         answers: dict[str, Any] | None = None,
+        ptype: problemtypes.ProblemType | None = None,
     ):
         super().__init__()
         self.problem_title = title
@@ -167,24 +123,34 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         #: reads its own default, so stepping back and forward is a round trip
         #: rather than a form you fill in twice.
         self.answers = answers or {}
+        #: What kind of problem this is, which is what decides every row under
+        #: the recall question. LeetCode when nobody said, because that is what
+        #: a problem was before there were types.
+        self.ptype = ptype or problemtypes.load()
 
-    def _prior_index(self, key: str, options: tuple, fallback: int) -> int:
-        """Where one of the three ladders starts: your last answer, or its default.
+    @property
+    def verdicts(self) -> tuple[str, ...]:
+        """The rungs on offer, in radio order. Index 0 is the default."""
+        return self.ptype.verdicts
 
-        One helper for all three rather than the lookup written out per axis,
-        which is how one of them ends up quietly not restoring. Each caller
-        passes its own options and its own fallback, because the code style ladder
-        does not share the other two's words. The verdict and confidence
-        ladders each restore in their own way — the first has a default worth
-        computing, the second is a 1..4 offset.
+    def _prior_index(self, entry: problemtypes.Field) -> int:
+        """Where a ladder starts: your last answer, or the field's own default.
+
+        One helper for every ladder rather than the lookup written out per
+        field, which is how one of them ends up quietly not restoring. The
+        verdict and confidence ladders each restore in their own way — the
+        first has a default worth computing, the second is a 1..4 offset.
         """
-        value = self.answers.get(key)
-        if value is None:
-            return fallback
-        try:
-            return options.index(value)
-        except ValueError:
-            return fallback
+        value = self.answers.get(entry.key)
+        if value in entry.values:
+            return entry.values.index(value)
+        return entry.default_index
+
+    def _prior_text(self, entry: problemtypes.Field) -> str:
+        value = self.answers.get(entry.key)
+        if entry.kind == problemtypes.NUMBER:
+            return _number_text(value)
+        return "" if value is None else str(value)
 
     @property
     def _default_verdict(self) -> int:
@@ -196,35 +162,86 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
 
         Offline it starts on `ungraded`, because there was no judge to accept
         anything — and a default of "solved" is precisely how a plane's worth of
-        unverified solves quietly rots the distributions.
+        unverified solves quietly rots the distributions. Only for a type that
+        has a judge to be without: a design is self-assessed on the ground too,
+        and being on a plane changes nothing about that.
 
         Otherwise it starts on the worst thing already on the record: if you
         revealed a hint, the cursor sits on `solved_with_hints`. The hints are
         logged either way, so this costs nothing to be honest about — it just
         saves a keystroke on the common case.
         """
-        if self.answers.get("verdict") in VERDICTS:
-            return VERDICTS.index(self.answers["verdict"])
+        verdicts = self.verdicts
+        if self.answers.get("verdict") in verdicts:
+            return verdicts.index(self.answers["verdict"])
         offline = getattr(getattr(self.app, "config", None), "cache", None)
-        if offline is not None and offline.offline and "ungraded" in VERDICTS:
-            return VERDICTS.index("ungraded")
-        if self.hint_tier > 0 and "solved_with_hints" in VERDICTS:
-            return VERDICTS.index("solved_with_hints")
+        if (
+            self.ptype.judge
+            and offline is not None
+            and offline.offline
+            and "ungraded" in verdicts
+        ):
+            return verdicts.index("ungraded")
+        if self.hint_tier > 0 and "solved_with_hints" in verdicts:
+            return verdicts.index("solved_with_hints")
         return 0
 
-    def compose(self) -> ComposeResult:
-        summary = (
-            f"{fmt_duration(self.active_seconds)}   ·   "
-            f"{self.submissions} failed submit{'s' if self.submissions != 1 else ''}   ·   "
-            f"{'no hints' if not self.hint_tier else f'hint tier {self.hint_tier}'}"
+    def _summary(self) -> str:
+        bits = [fmt_duration(self.active_seconds)]
+        if self.ptype.judge:
+            # Only where there was something to submit to. "0 failed submits"
+            # about a whiteboard is a count of a thing that cannot happen.
+            bits.append(
+                f"{self.submissions} failed submit{'s' if self.submissions != 1 else ''}"
+            )
+        bits.append("no hints" if not self.hint_tier else f"hint tier {self.hint_tier}")
+        return "   ·   ".join(bits)
+
+    def _copy_button(self) -> Button:
+        return Button("copy AI prompt  (ctrl+y)", id="copy-prompt")
+
+    def _compose_field(self, entry: problemtypes.Field, row_label: str) -> ComposeResult:
+        """One field, as the widget its kind calls for.
+
+        A ladder is a radio set under its own name. Everything else is a box
+        you type in, because a number, a share and a sentence are all things
+        you already know how to write — the kind decides what is *stored*, in
+        `Field.clean`, not what you are made to click through.
+        """
+        if entry.kind == problemtypes.CHOICE:
+            chosen = self._prior_index(entry)
+            with Vertical(classes="field-axis"):
+                # Named on screen, or three ladders side by side mean nothing.
+                # Not when the row's own label already said it.
+                if entry.label != row_label:
+                    yield Static(entry.label, classes="axis-label")
+                with RadioSet(id=entry.widget_id):
+                    for i, option in enumerate(entry.options):
+                        yield RadioButton(option.label, value=(i == chosen))
+            return
+        yield Input(
+            self._prior_text(entry),
+            placeholder=entry.placeholder or entry.label,
+            id=entry.widget_id,
+            type="number" if entry.kind == problemtypes.NUMBER else "text",
         )
+
+    def compose(self) -> ComposeResult:
         default = self._default_verdict
+        groups = self.ptype.groups()
+        # The copy button joins the last row of the group the type names for
+        # it, and gets a row of its own when the type names none.
+        beside = max(
+            (i for i, g in enumerate(groups) if g.label == self.ptype.ai_group),
+            default=None,
+        ) if self.ptype.ai_copy and self.ptype.ai_group else None
+
         with Vertical(id="finish-box"):
             yield Static(self.problem_title, classes="modal-title")
-            yield Static(summary, classes="field-label")
+            yield Static(self._summary(), classes="field-label")
             yield Static("verdict", classes="field-label")
             with RadioSet(id="verdict"):
-                for i, v in enumerate(VERDICTS):
+                for i, v in enumerate(self.verdicts):
                     yield RadioButton(VERDICT_LABELS[v], value=(i == default))
             yield Static(
                 "a month from now, no hints or notes — could you reconstruct it?",
@@ -235,45 +252,17 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
             with RadioSet(id="confidence"):
                 for i, label in enumerate(CONFIDENCE_OPTIONS):
                     yield RadioButton(label, value=(i == selected))
-            yield Static("what your solution costs — optional", classes="field-label")
-            with Horizontal(id="complexity-row"):
-                yield Input(
-                    self.answers.get("claimed_complexity") or "",
-                    placeholder="time   O(n log n)",
-                    id="complexity",
-                )
-                yield Input(
-                    self.answers.get("claimed_space_complexity") or "",
-                    placeholder="space   O(1)",
-                    id="space-complexity",
-                )
-            yield Static("how did it come out?", classes="field-label")
-            with Horizontal(id="solution-row"):
-                for radio_id, axis, key, options, fallback in SOLUTION_AXES:
-                    stored = tuple(value for value, _ in options)
-                    chosen = self._prior_index(key, stored, fallback)
-                    with Vertical(classes="solution-axis"):
-                        yield Static(axis, classes="axis-label")
-                        with RadioSet(id=radio_id):
-                            for i, (_, label) in enumerate(options):
-                                yield RadioButton(label, value=(i == chosen))
-            yield Static("leetcode percentiles — optional", classes="field-label")
-            with Horizontal(id="optional-row"):
-                yield Input(
-                    _pct_text(self.answers.get("lc_runtime_pct")),
-                    placeholder="runtime %",
-                    id="runtime",
-                    type="number",
-                )
-                yield Input(
-                    _pct_text(self.answers.get("lc_memory_pct")),
-                    placeholder="memory %",
-                    id="memory",
-                    type="number",
-                )
-                # Beside the percentiles because both are errands to the
-                # LeetCode tab you just submitted in.
-                yield Button("copy AI prompt  (ctrl+y)", id="copy-prompt")
+            for index, group in enumerate(groups):
+                if group.labelled:
+                    yield Static(group.label, classes="field-label")
+                with Horizontal(classes="field-row"):
+                    for entry in group.fields:
+                        yield from self._compose_field(entry, group.label)
+                    if index == beside:
+                        yield self._copy_button()
+            if self.ptype.ai_copy and beside is None:
+                with Horizontal(classes="field-row"):
+                    yield self._copy_button()
             with Horizontal(id="confirm-buttons"):
                 yield Button("save  (ctrl+s)", variant="primary", id="save")
                 yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
@@ -291,6 +280,13 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 radio._selected = radio.pressed_index
         self.query_one("#verdict", RadioSet).focus()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Hidden, not just inert, for a type with nothing to copy: a footer
+        # that offers a key which then apologises is worse than no key.
+        if action == "copy_prompt":
+            return self.ptype.ai_copy
+        return True
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
             self.action_save()
@@ -304,52 +300,42 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     def on_input_submitted(self) -> None:
         self.action_save()
 
-    @staticmethod
-    def _pct(raw: str) -> float | None:
-        raw = raw.strip()
-        if not raw:
-            return None
-        try:
-            return max(0.0, min(100.0, float(raw)))
-        except ValueError:
-            return None
-
     def action_axis(self, delta: int) -> None:
-        """Move focus between the two ladders. A no-op from anywhere else.
+        """Move focus between the ladders that share a row. A no-op anywhere else.
 
         Deliberately not a wrap-around ride through every widget on the screen:
         `l` from the verdict ladder has nowhere sideways to go, and taking focus
         somewhere you were not looking is exactly what the motion rule forbids.
+        For the same reason it stays inside the row it started in.
         """
-        ids = [radio_id for radio_id, _, _, _, _ in SOLUTION_AXES]
         focused = getattr(self.focused, "id", None)
-        if focused not in ids:
-            return
-        self.query_one(f"#{ids[(ids.index(focused) + delta) % len(ids)]}", RadioSet).focus()
+        for group in self.ptype.groups():
+            ids = [entry.widget_id for entry in group.ladders]
+            if focused in ids:
+                target = ids[(ids.index(focused) + delta) % len(ids)]
+                self.query_one(f"#{target}", RadioSet).focus()
+                return
 
-    def _axis_answer(self, radio_id: str, options: tuple, fallback: int) -> str:
-        index = self.query_one(f"#{radio_id}", RadioSet).pressed_index
-        return options[index if index >= 0 else fallback][0]
+    def _answer(self, entry: problemtypes.Field) -> Any:
+        """What one field holds right now, as it will be stored."""
+        if entry.kind == problemtypes.CHOICE:
+            index = self.query_one(f"#{entry.widget_id}", RadioSet).pressed_index
+            return entry.values[index if index >= 0 else entry.default_index]
+        return entry.clean(self.query_one(f"#{entry.widget_id}", Input).value)
 
     def action_save(self) -> None:
         verdict_index = self.query_one("#verdict", RadioSet).pressed_index
         confidence_index = self.query_one("#confidence", RadioSet).pressed_index
         self.dismiss(
             {
-                "verdict": VERDICTS[
+                "verdict": self.verdicts[
                     verdict_index if verdict_index >= 0 else self._default_verdict
                 ],
                 "self_confidence": (confidence_index + 1) if confidence_index >= 0 else None,
-                "claimed_complexity": self.query_one("#complexity", Input).value.strip() or None,
-                "claimed_space_complexity": (
-                    self.query_one("#space-complexity", Input).value.strip() or None
-                ),
-                **{
-                    key: self._axis_answer(radio_id, options, fallback)
-                    for radio_id, _, key, options, fallback in SOLUTION_AXES
-                },
-                "lc_runtime_pct": self._pct(self.query_one("#runtime", Input).value),
-                "lc_memory_pct": self._pct(self.query_one("#memory", Input).value),
+                # One key per field, answered or not. `problemtypes.split` is
+                # what sorts them into the columns and the `answers` block on
+                # the way to the log; here they are one flat form.
+                **{entry.key: self._answer(entry) for entry in self.ptype.fields},
             }
         )
 
@@ -357,17 +343,26 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         self.dismiss(None)
 
     def action_copy_prompt(self) -> None:
-        """Put the post-solve prompt on the clipboard for LeetCode's AI.
+        """Put the post-solve prompt on the clipboard.
+
+        The type's own prompt where it wrote one, and `[ai] post_solve_prompt`
+        where it did not — which is LeetCode's arrangement, and the reason the
+        settings screen still edits the one you actually paste.
 
         A clipboard tool first, since that is the copy you can count on; the
         terminal's OSC 52 escape otherwise, which reaches the clipboard over ssh
         but which some terminals quietly drop -- so that path says it tried
         rather than that it worked.
         """
+        if not self.ptype.ai_copy:
+            return
         ai = getattr(getattr(self.app, "config", None), "ai", None)
-        prompt = ai.post_solve_prompt if ai is not None else DEFAULT_POST_SOLVE_PROMPT
+        prompt = self.ptype.ai_prompt or (
+            ai.post_solve_prompt if ai is not None else DEFAULT_POST_SOLVE_PROMPT
+        )
+        where = self.ptype.ai_paste_into
         if clipboard.copy(prompt):
-            self.notify("prompt copied — paste it into LeetCode's AI")
+            self.notify(f"prompt copied — paste it into {where}" if where else "prompt copied")
             return
         self.app.copy_to_clipboard(prompt)
         self.notify("prompt sent to the terminal's clipboard — if paste comes up empty, install wl-copy or xclip")

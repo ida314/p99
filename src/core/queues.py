@@ -96,6 +96,9 @@ class Queue:
     items: tuple[Item, ...]
     rationale: str
     generated_by: str = GENERATED_BY
+    #: The list it was drawn from. A day has one queue per list: each set is its
+    #: own track, and working through one must not overwrite the other's plan.
+    list_name: str = catalog.DEFAULT_LIST
 
     @property
     def slugs(self) -> list[str]:
@@ -154,17 +157,29 @@ def _attempted_slugs(conn: sqlite3.Connection) -> set[str]:
     }
 
 
-def _tail_driver_slugs(conn: sqlite3.Connection, weights: Weights, days: int = 60) -> list[str]:
+def _tail_driver_slugs(
+    conn: sqlite3.Connection, weights: Weights, days: int = 60, type: str | None = None
+) -> list[str]:
     """Problems sitting in the p90+ tail of their difficulty slice.
 
     Spec §6: these are the highest-value review candidates in the system, which
     is exactly why a percentile is reported with the attempts that produced it
     rather than on its own.
+
+    Within one type, when `type` says which. A tail is only a tail against
+    attempts of the same kind: measured across every type at once, the slowest
+    tenth of `medium` is simply whichever type runs longest, and no LeetCode
+    problem would ever be slow enough to be in it.
     """
     out: list[str] = []
     for difficulty in ("easy", "medium", "hard"):
         dist = stats.distribution(
-            conn, label=difficulty, difficulty=difficulty, days=days, weights=weights
+            conn,
+            label=difficulty,
+            difficulty=difficulty,
+            days=days,
+            weights=weights,
+            type=type,
         )
         out.extend(d.slug for d in dist.tail_drivers)
     return out
@@ -229,6 +244,9 @@ def candidates(
 ) -> list[Item]:
     """The pool the selector chooses from, in priority order (spec §10 stage 1)."""
     problems = {p.slug: p for p in catalog.all_problems(conn, active_list)}
+    # What kind of problem this list holds. Everything below that ranks --
+    # the slow tail, the weakest pattern, the weakest tag -- ranks within it.
+    type_name = next((p.type for p in problems.values()), None)
     recent = _recent_slugs(conn, now)
     attempted = _attempted_slugs(conn)
     seen: set[str] = set()
@@ -304,7 +322,7 @@ def candidates(
     #    the fact that it was once slow is a fact about a pattern, not about a
     #    problem you now know. Spend the slot on an unseen problem of the same
     #    shape instead, which is the transfer this is all for.
-    for slug in _tail_driver_slugs(conn, weights):
+    for slug in _tail_driver_slugs(conn, weights, type=type_name):
         if srs.is_mastered(srs.card_row(conn, slug)):
             driver = problems.get(slug)
             add_unseen_in_pattern(driver.pattern if driver else None, "pattern-transfer")
@@ -324,8 +342,8 @@ def candidates(
     #    right behind it. The two lists can never share a pattern (fewer than
     #    MIN_PATTERN_ATTEMPTS against at least that many), and once every
     #    pattern is open `breadth` is empty and this is the depth loop alone.
-    breadth = unopened_patterns(conn, weights, problems.values())
-    depth = weak_patterns(conn, weights)
+    breadth = unopened_patterns(conn, weights, problems.values(), type=type_name)
+    depth = weak_patterns(conn, weights, type=type_name)
     for k in range(max(len(breadth), len(depth))):
         if k < len(breadth):
             add_unseen_in_pattern(breadth[k], "new-pattern")
@@ -333,7 +351,7 @@ def candidates(
             add_unseen_in_pattern(depth[k], "weak-pattern")
 
     # 4. Unattempted problems carrying your weakest tags.
-    for tag in weak_tags(conn, weights):
+    for tag in weak_tags(conn, weights, type=type_name):
         for p in unseen:
             if tag in p.tags:
                 add(p.slug, "weak-tag")
@@ -345,15 +363,25 @@ def candidates(
     return pool[: 3 * n]
 
 
-def weak_patterns(conn: sqlite3.Connection, weights: Weights) -> list[str]:
-    """Patterns you are worst at, weakest first."""
+def weak_patterns(
+    conn: sqlite3.Connection, weights: Weights, *, type: str | None = None
+) -> list[str]:
+    """Patterns you are worst at, weakest first. One type's, when `type` says."""
     return [
         m.name
-        for m in stats.pattern_mastery(conn, weights, min_attempts=MIN_PATTERN_ATTEMPTS)
+        for m in stats.pattern_mastery(
+            conn, weights, min_attempts=MIN_PATTERN_ATTEMPTS, type=type
+        )
     ]
 
 
-def unopened_patterns(conn: sqlite3.Connection, weights: Weights, problems: Iterable) -> list[str]:
+def unopened_patterns(
+    conn: sqlite3.Connection,
+    weights: Weights,
+    problems: Iterable,
+    *,
+    type: str | None = None,
+) -> list[str]:
     """Patterns with too few attempts to rank, fewest first.
 
     Exactly the complement of `weak_patterns` over the catalog: the same counts,
@@ -364,7 +392,8 @@ def unopened_patterns(conn: sqlite3.Connection, weights: Weights, problems: Iter
     Ties fall to catalog order, so the result is reproducible.
     """
     counts = {
-        m.name: m.attempts for m in stats.pattern_mastery(conn, weights, min_attempts=1)
+        m.name: m.attempts
+        for m in stats.pattern_mastery(conn, weights, min_attempts=1, type=type)
     }
     order = list(dict.fromkeys(p.pattern for p in problems if p.pattern))
     # `sorted` is stable, so equal counts keep catalog order.
@@ -374,8 +403,10 @@ def unopened_patterns(conn: sqlite3.Connection, weights: Weights, problems: Iter
     )
 
 
-def weak_tags(conn: sqlite3.Connection, weights: Weights) -> list[str]:
-    return [m.name for m in stats.tag_mastery(conn, weights, min_attempts=3)]
+def weak_tags(
+    conn: sqlite3.Connection, weights: Weights, *, type: str | None = None
+) -> list[str]:
+    return [m.name for m in stats.tag_mastery(conn, weights, min_attempts=3, type=type)]
 
 
 # --- selection -------------------------------------------------------------
@@ -548,10 +579,18 @@ def generate(
         reviews_per_day=reviews_per_day,
     )
     items, relaxed = _select(pool, n, reviews_per_day)
-    weak = (weak_patterns(conn, weights) or weak_tags(conn, weights))[:3]
+    type_name = catalog.type_of(conn, active_list)
+    weak = (
+        weak_patterns(conn, weights, type=type_name)
+        or weak_tags(conn, weights, type=type_name)
+    )[:3]
     # Everything the scheduler wanted today minus what the budget let through,
-    # so the rationale can own the backlog instead of hiding it.
-    deferred = max(0, len(srs.due_cards(conn, now)) - sum(1 for i in items if i.is_review))
+    # so the rationale can own the backlog instead of hiding it. Counted over
+    # this list's own problems: a card due in another set is that set's
+    # backlog, and naming it here would be a number this queue cannot work off.
+    mine = {p.slug for p in catalog.all_problems(conn, active_list)}
+    due = sum(1 for row in srs.due_cards(conn, now) if row["slug"] in mine)
+    deferred = max(0, due - sum(1 for i in items if i.is_review))
     rationale = _rationale(items, relaxed, weak, deferred)
 
     events.append(
@@ -559,13 +598,16 @@ def generate(
         events.QUEUE_GENERATED,
         {
             "date": date,
+            # Which list this is the queue *for*. Carried rather than inferred
+            # from the slugs, because a problem can be in two lists.
+            "list": active_list,
             "slugs": [i.slug for i in items],
             "rationale": rationale,
             "generated_by": GENERATED_BY,
             "created_at": now.isoformat(timespec="seconds"),
         },
     )
-    return Queue(date=date, items=tuple(items), rationale=rationale)
+    return Queue(date=date, items=tuple(items), rationale=rationale, list_name=active_list)
 
 
 def _worked_since(conn: sqlite3.Connection, since: str) -> set[str]:
@@ -630,11 +672,21 @@ def _hydrate(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> Queue
         items=tuple(items),
         rationale=row["rationale"],
         generated_by=row["generated_by"],
+        list_name=row["list"],
     )
 
 
-def load(conn: sqlite3.Connection, date: str, now: datetime | None = None) -> Queue | None:
-    row = conn.execute("SELECT * FROM queues WHERE date = ?", (date,)).fetchone()
+def load(
+    conn: sqlite3.Connection,
+    date: str,
+    now: datetime | None = None,
+    *,
+    active_list: str = catalog.DEFAULT_LIST,
+) -> Queue | None:
+    """One list's queue for one day, if it has been drawn up."""
+    row = conn.execute(
+        "SELECT * FROM queues WHERE date = ? AND list = ?", (date, active_list)
+    ).fetchone()
     return _hydrate(conn, row, now or datetime.now(timezone.utc)) if row else None
 
 
@@ -658,7 +710,7 @@ def ensure(
     now = now or datetime.now(timezone.utc)
     date = today(now)
     if not regenerate:
-        existing = load(conn, date, now)
+        existing = load(conn, date, now, active_list=active_list)
         # A queue you have worked through is as spent as one that was never
         # drawn: handing it back would be a page of ticked rows and nothing to
         # start. Generating here is what `ctrl+r` already does, and it settles

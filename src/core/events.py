@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from . import methods, scoring, srs, strategies
+from . import catalog, methods, scoring, srs, strategies
 from .db import SCHEMA_VERSION, truncate_projections
 
 # --- event types (spec §4) -------------------------------------------------
@@ -240,6 +240,23 @@ def srs_context(conn: sqlite3.Connection) -> tuple[srs.Params, scoring.Weights]:
         srs.load_params(cfg.srs.params),
         scoring.load_weights(cfg.scoring.weights),
     )
+
+
+def _answers(block: Any) -> str | None:
+    """The `answers` block of a finish, as the JSON it is stored as.
+
+    Stored as it was written and interpreted by nothing here. Which field an
+    answer belongs to, and what it does to a review, is the problem type's to
+    say (`problemtypes`) and is read at grade time -- so a type edited since
+    still reads every answer given under the old one, and a field it has
+    dropped simply stops being drawn.
+
+    None for a block that holds nothing, which is every event written before
+    there were types: the column stays NULL rather than holding `{}`.
+    """
+    if not isinstance(block, dict) or not block:
+        return None
+    return json.dumps(block, sort_keys=True)
 
 
 def _update_attempt(conn: sqlite3.Connection, attempt_uuid: str, **fields: Any) -> None:
@@ -661,6 +678,10 @@ def apply(
             time_optimality=p.get("time_optimality"),
             space_optimality=p.get("space_optimality"),
             code_style=p.get("code_style"),
+            # Whatever the problem's type asked beyond the columns above. Set
+            # before `_grade` like everything else here: the type's own review
+            # rules read these answers off the row.
+            answers=_answers(p.get("answers")),
             # Only events written before the question had axes carry this, and
             # they land in the column of the same name. Nothing maps it onto
             # either axis: see the `attempts.optimality` comment.
@@ -694,8 +715,8 @@ def apply(
             "INSERT OR IGNORE INTO resolves(attempt_uuid, attempt_id, slug, n, verdict, "
             "ended_at, active_seconds, wall_seconds, paused_seconds, self_confidence, "
             "lc_runtime_pct, lc_memory_pct, claimed_complexity, claimed_space_complexity, "
-            "time_optimality, space_optimality, code_style, language) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "time_optimality, space_optimality, code_style, answers, language) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 p["attempt_uuid"],
                 _attempt_id(conn, p["attempt_uuid"]),
@@ -714,6 +735,7 @@ def apply(
                 p.get("time_optimality"),
                 p.get("space_optimality"),
                 p.get("code_style"),
+                _answers(p.get("answers")),
                 p.get("language"),
             ),
         )
@@ -900,14 +922,21 @@ def apply(
         # The payload carries the finished list, so this replays rather than
         # regenerates — which is what keeps a Phase 3 LLM-chosen queue
         # reproducible even though the model that chose it is long gone.
+        #
+        # `list` is absent from every event written before queues were kept per
+        # list, and those fold under the one list there was to draw from. Not a
+        # guess about what the active list was that morning: a queue is only
+        # ever read back for today, so which name an old one files under decides
+        # nothing.
         conn.execute(
-            "INSERT INTO queues(date, slugs, rationale, generated_by, created_at) "
-            "VALUES(?,?,?,?,?) "
-            "ON CONFLICT(date) DO UPDATE SET "
+            "INSERT INTO queues(date, list, slugs, rationale, generated_by, created_at) "
+            "VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(date, list) DO UPDATE SET "
             "  slugs = excluded.slugs, rationale = excluded.rationale, "
             "  generated_by = excluded.generated_by, created_at = excluded.created_at",
             (
                 p["date"],
+                p.get("list") or catalog.DEFAULT_LIST,
                 json.dumps(p["slugs"]),
                 p.get("rationale", ""),
                 p.get("generated_by", "unknown"),

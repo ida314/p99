@@ -65,6 +65,11 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         # type into the filter box, and this one turns a microphone on.
         Binding("ctrl+a", "toggle_speech", "speech mode"),
         Binding("f5", "roll", "roll random", show=False),
+        # Across the lists, from the problem list. In either text box these are
+        # letters you typed: the `Input` swallows them, which is the same
+        # insert-mode switch `j` and `k` already rely on.
+        Binding("h", "step_list(-1)", "list", show=False),
+        Binding("l", "step_list(1)", "list", show=False),
     ]
 
     VIM_TARGET = "#problem-list"
@@ -77,6 +82,11 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         # written back: `ctrl+a` is a decision about tonight, not a new default.
         self.speech_mode = speech_mode
         self.problems: list[Problem] = []
+        #: Every list there is to step to, and where every problem sits in the
+        #: catalog -- the second so a run picked across two lists still starts
+        #: in one order. Both settled in `on_mount`.
+        self.lists: tuple[str, ...] = (active_list,)
+        self.order: dict[str, int] = {}
         self.attempted: set[str] = set()
         self.mastered: set[str] = set()
         # The chosen set lives here, not in the widget: SelectionList only knows
@@ -94,32 +104,45 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         )
         yield SelectionList(id="problem-list")
         yield Static(id="setup-status")
-        yield Vertical(
-            Static(
-                "  / filter    c count    space pick    ctrl+r roll"
-                "    ctrl+e all    ctrl+x none    ctrl+a speech    ctrl+s start",
-                classes="hint-bar",
-            )
-        )
+        yield Vertical(Static(id="setup-hint", classes="hint-bar"))
         yield Footer()
 
     def on_mount(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
-        self.problems = catalog.all_problems(conn, self.active_list)
+        everything = catalog.all_problems(conn)
+        self.order = {p.slug: i for i, p in enumerate(everything)}
+        # The list you opened on, and every other that has something in it. A
+        # set whose file did not load is not a place worth stepping to.
+        named = getattr(getattr(self.app, "config", None), "lists", ())
+        self.lists = tuple(
+            name
+            for name in dict.fromkeys((*named, self.active_list))
+            if name == self.active_list or any(name in p.lists for p in everything)
+        )
         self.attempted = {
             r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM attempts").fetchall()
         }
         # Read once here rather than per row: this list is 150 long and gets
         # redrawn on every keystroke in the filter box.
         self.mastered = {r["slug"] for r in srs.mastered_cards(conn)}
-        self.query_one("#problem-list", SelectionList).border_title = (
-            f"{self.active_list}  ·  {len(self.problems)} problems"
+        self.query_one("#setup-hint", Static).update(
+            ("  h/l list    " if len(self.lists) > 1 else "  ")
+            + "/ filter    c count    space pick    ctrl+r roll"
+            "    ctrl+e all    ctrl+x none    ctrl+a speech    ctrl+s start"
         )
-        self._populate("")
+        self._load_list()
         self.action_roll()
         # Land in the list, not the filter box: a set has already been rolled,
         # so the first thing you do is look at it, not type.
         self.query_one("#problem-list", SelectionList).focus()
+
+    def _load_list(self) -> None:
+        """Read the list on screen out of the catalog, and say which it is."""
+        conn = self.app.conn  # type: ignore[attr-defined]
+        self.problems = catalog.all_problems(conn, self.active_list)
+        self.query_one("#problem-list", SelectionList).border_title = (
+            f"{self.active_list}  ·  {len(self.problems)} problems"
+        )
 
     # --- list ------------------------------------------------------------
 
@@ -170,10 +193,20 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
 
     def _update_status(self) -> None:
         n = self._count()
-        hidden = len(self.chosen) - len(self.query_one("#problem-list", SelectionList).selected)
+        # Picks made on a list you have since stepped away from are still picks.
+        # Counted apart from the ones the filter is hiding, because the two are
+        # undone in different places and the line should say which.
+        elsewhere = len(self.chosen - {p.slug for p in self.problems})
+        hidden = (
+            len(self.chosen)
+            - elsewhere
+            - len(self.query_one("#problem-list", SelectionList).selected)
+        )
         note = ""
         if hidden > 0:
             note = f"   ({hidden} hidden by the filter)"
+        elif elsewhere:
+            note = f"   ({elsewhere} on another list)"
         elif len(self.chosen) != n:
             note = f"   (ctrl+r rolls {n} — the run uses what's selected)"
         elif n != self.planned_n:
@@ -247,6 +280,34 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
         self.chosen |= {p.slug for p in self.problems if self._matches(p, needle)}
         self._populate(needle)
 
+    def action_step_list(self, delta: int) -> None:
+        """The next list along. What you have picked comes with you.
+
+        Clamped rather than wrapping, for the reason the queue screen's is: `h`
+        has to undo `l`. Nothing is written to the settings -- this is which
+        list you are picking from, not which one the app opens on.
+
+        The picks are kept, so a run can hold a problem from each of two lists.
+        That is deliberate: the run loop asks each problem what type it is, not
+        the run, and a LeetCode warm-up in front of a design is a reasonable
+        evening. `ctrl+r` still replaces the lot with a roll from the list on
+        screen, which is the way back to a run drawn from one place.
+        """
+        if self.active_list not in self.lists:
+            return
+        index = self.lists.index(self.active_list) + delta
+        if not 0 <= index < len(self.lists):
+            return
+        self.active_list = self.lists[index]
+        self._load_list()
+        self._populate(self.query_one("#filter", Input).value)
+        # Park the cursor on the first row of the list you have arrived at. A
+        # rebuilt list leaves it unset, and `space` on an unset cursor picks
+        # nothing -- the queue screen parks its own for the same reason.
+        listing = self.query_one("#problem-list", SelectionList)
+        if listing.option_count:
+            listing.highlighted = 0
+
     def action_toggle_speech(self) -> None:
         """Record this run, or don't. Never a surprise: the status line says which."""
         self.speech_mode = not self.speech_mode
@@ -262,10 +323,11 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
             return
         # Preserve catalog order so a run interleaves patterns rather than
         # marching through one group (spec §10 makes this a hard constraint).
-        order = {p.slug: i for i, p in enumerate(self.problems)}
+        # The whole catalog's order, not the list's on screen: picks can come
+        # from more than one list, and they all have to sort against something.
         self.dismiss(
             RunPlan(
-                slugs=sorted(chosen, key=lambda s: order.get(s, 0)),
+                slugs=sorted(chosen, key=lambda s: self.order.get(s, 0)),
                 speech_mode=self.speech_mode,
             )
         )

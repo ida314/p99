@@ -34,7 +34,14 @@ in `srs.py` may read the clock — every timestamp arrives from the event being 
 ## The rating map
 
 FSRS wants one of four grades per review. p99 derives it from what was measured,
-in `srs.rate`, in this order:
+in `srs.rate`, in this order.
+
+The table is the map as a **LeetCode** problem meets it. The rows about help,
+the clock and recall are code, and are the same for every
+[problem type](problem-types.md); the rows about what the solution costs are the
+`review` rules in `data/types/leetcode.toml`, which is where a type says how its
+own answers move a review. Another type has the first kind of row unchanged and
+its own rows of the second kind.
 
 | Condition | Grade |
 |---|---|

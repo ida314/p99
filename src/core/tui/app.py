@@ -45,17 +45,26 @@ class CoreApp(App):
         # run starts, so flipping the setting mid-run cannot start a microphone
         # under a problem that began without one.
         self.speech_mode: bool = False
+        #: What the launch's catalog sync found, one report per set.
+        self.catalog_reports: list[catalog.SetReport] = []
 
     def on_mount(self) -> None:
         paths.ensure_dirs()
         config_module.write_default_config()
-        if catalog.count(self.conn) == 0:
-            catalog.seed(self.conn, name=self.config.session.active_list)
+        # Every launch, not only the first. Seeding is an upsert and a set is a
+        # few hundred rows, so there is nothing to save by skipping it -- and
+        # doing it every time is what makes adding a problem set a matter of
+        # naming it in config.toml and opening the app.
+        self.catalog_reports = catalog.sync(self.conn, self.config.sets)
         # Before home draws its menu: a run whose process was killed has to be
         # turned back into a suspended one first, or `build_menu` reads a session
         # that is neither ended nor suspended and shows no way back into it.
         engine_module.recover_crashed_runs(self.conn)
         self.push_screen(HomeScreen())
+        # Said once, on the way in. A set that did not load is otherwise
+        # invisible: nothing breaks, the list is simply not there to step to.
+        for line in catalog.complaints(self.catalog_reports):
+            self.notify(line, title=f"{branding.COMMAND} doctor", severity="warning", timeout=12)
 
     def on_unmount(self) -> None:
         """Leave a run recoverable rather than sealing it behind you.

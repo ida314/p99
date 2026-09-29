@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
-from . import methods, scoring, strategies
+from . import methods, problemtypes, scoring, strategies
 from .scoring import Weights, fmt_duration
 
 ATTEMPT_SELECT = """
-SELECT a.*, p.title, p.difficulty, p.tags, p.pattern, s.started_at AS session_started_at,
+SELECT a.*, p.title, p.difficulty, p.tags, p.pattern, p.type,
+       s.started_at AS session_started_at,
        (SELECT COUNT(*) FROM resolves r WHERE r.attempt_uuid = a.uuid) AS resolves
 FROM attempts a
 JOIN problems p ON p.slug = a.slug
@@ -44,8 +45,15 @@ def load_attempts(
     slug: str | None = None,
     session_id: int | None = None,
     strategy: str | None = None,
+    type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Attempts joined with their catalog metadata, newest last."""
+    """Attempts joined with their catalog metadata, newest last.
+
+    `type` keeps one kind of problem. Anything that compares solve times has to
+    pass it: a forty-minute system design and a twelve-minute LeetCode problem
+    are both `medium`, and a percentile over the two of them is a number about
+    neither. None is every type, which is what a count of attempts wants.
+    """
     where: list[str] = []
     params: list[Any] = []
     if finished_only:
@@ -69,6 +77,9 @@ def load_attempts(
     if session_id is not None:
         where.append("a.session_id = ?")
         params.append(session_id)
+    if type:
+        where.append("p.type = ?")
+        params.append(type)
 
     sql = ATTEMPT_SELECT
     if where:
@@ -78,6 +89,9 @@ def load_attempts(
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["tags"] = json.loads(row["tags"]) if row["tags"] else []
+        # Decoded once here, so nothing downstream has to know the column is
+        # JSON. `problemtypes.answer` reads either form.
+        row["answers"] = problemtypes.answers_of(row)
     if tag:
         rows = [r for r in rows if tag in r["tags"]]
     _hydrate_strategies(conn, rows)
@@ -268,15 +282,23 @@ def distribution(
     min_samples: int = 20,
     weights: Weights | None = None,
     n_tail_drivers: int = 3,
+    strategy: str | None = None,
+    type: str | None = None,
 ) -> Distribution:
     """Build one distribution slice, including the attempts sitting in its tail.
 
     Naming the tail drivers is the whole feature: a percentile without the
     attempts that produced it is a number you can't act on (spec §6).
     """
-    w = weights or scoring.load_weights()
+    w = scoring.for_type(weights or scoring.load_weights(), type)
     attempts = load_attempts(
-        conn, days=days, tag=tag, pattern=pattern, difficulty=difficulty
+        conn,
+        days=days,
+        tag=tag,
+        pattern=pattern,
+        difficulty=difficulty,
+        strategy=strategy,
+        type=type,
     )
     timed = [a for a in attempts if a.get("active_seconds")]
     times = [int(a["active_seconds"]) for a in timed]
@@ -304,6 +326,8 @@ def distribution(
             tag=tag,
             pattern=pattern,
             difficulty=difficulty,
+            strategy=strategy,
+            type=type,
         )
         prior_rate = _clean_rate(prior)
 
@@ -333,6 +357,7 @@ def distributions_by(
     min_samples: int = 20,
     weights: Weights | None = None,
     limit: int | None = None,
+    type: str | None = None,
 ) -> list[Distribution]:
     """Every non-empty slice along `dimension`.
 
@@ -349,7 +374,7 @@ def distributions_by(
     tags are now put on. Retagging a problem tonight does not move an attempt
     from last March into the slice; the attempt keeps what it was solved under.
     """
-    attempts = load_attempts(conn, days=days)
+    attempts = load_attempts(conn, days=days, type=type)
     keys: list[str]
     if dimension == "strategy":
         used: dict[str, int] = {}
@@ -389,6 +414,7 @@ def distributions_by(
             days=days,
             min_samples=min_samples,
             weights=weights,
+            type=type,
             **{kwarg: key},
         )
         for key in keys
@@ -806,15 +832,21 @@ def _mastery(
     *,
     min_attempts: int,
     days: int | None,
+    type: str | None = None,
 ) -> list[Mastery]:
     """The shared arithmetic behind `tag_mastery` and `pattern_mastery`.
 
     One attempt feeds every key its problem carries -- that is the reason these
     slices get a score and not an FSRS card (spec §8): every problem review is
     also a review of all its tags, and scheduling on both would double-count.
+
+    `type` keeps the ranking to one kind of problem, which is how the queue asks
+    it: the weakest pattern in a set of system designs is a system design
+    pattern, however badly `sliding-window` happens to be going.
     """
     w = weights or scoring.load_weights()
-    attempts = load_attempts(conn, days=days)  # oldest first, which the EMA needs
+    # Oldest first, which the EMA needs.
+    attempts = load_attempts(conn, days=days, type=type)
 
     ema: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -853,6 +885,7 @@ def tag_mastery(
     *,
     min_attempts: int = 1,
     days: int | None = None,
+    type: str | None = None,
 ) -> list[Mastery]:
     """Per-tag mastery, weakest first. Spec §10 stage 1's `weak_tags`."""
     return _mastery(
@@ -861,6 +894,7 @@ def tag_mastery(
         lambda a: a.get("tags") or (),  # already decoded by `load_attempts`
         min_attempts=min_attempts,
         days=days,
+        type=type,
     )
 
 
@@ -870,6 +904,7 @@ def pattern_mastery(
     *,
     min_attempts: int = 1,
     days: int | None = None,
+    type: str | None = None,
 ) -> list[Mastery]:
     """Per-pattern mastery, weakest first.
 
@@ -885,6 +920,7 @@ def pattern_mastery(
         lambda a: (a["pattern"],) if a.get("pattern") else (),
         min_attempts=min_attempts,
         days=days,
+        type=type,
     )
 
 

@@ -21,6 +21,15 @@ are projections rebuilt from that log, and scores are computed when you read
 them rather than stored, so changing the scoring weights re-scores all of your
 history at once. Nothing is ever overwritten.
 .PP
+What is practised is not fixed. A
+.I type
+says what kind of thing a problem is \(em what is asked after a solve, which
+screens follow, how the answers move a review, what par is \(em and a
+.I set
+is a list of problems that names the type they are. Both are files you write,
+and every type is scheduled by the same cards. See
+.BR "PROBLEM TYPES AND SETS" .
+.PP
 Speech mode, off by default, additionally records what you say while each
 problem runs — one Opus file per attempt, pausing exactly when the clock does.
 It needs
@@ -81,11 +90,25 @@ Rebuild all projections from the event log. Safe to run at any time; it changes
 no history, only the tables derived from it.
 .TP
 .B seed
-Insert or update the problem catalog. Never touches attempt history.
+Bring the problem catalog in line with the configuration: every set named under
+.I [sets]
+is read and its problems inserted or updated, each stamped with the set's type.
+Prints how many problems each set held and any entry it left out. The same sync
+runs every time the app opens, so this is for seeing what it did. Never touches
+attempt history.
+.TP
+.B types
+The problem types: what each one asks after a solve, which screens follow, how
+each answer moves a review, and whether the type came from the package or from
+your configuration directory. Name one for that type alone. A type is what makes
+a set of system design prompts ask how many requirements you covered where a set
+of LeetCode problems asks what the solution costs; both are scheduled by the
+same cards.
 .TP
 .B fetch
-Cache the active list's problem statements for offline use, so a flight is a
-normal run. Downloads the whole list in priority order — today's queue first,
+Cache problem statements for offline use, so a flight is a normal run. Covers
+every list whose type has somewhere to fetch from, the active list first, and
+downloads the whole of each in priority order — today's queue first,
 then cards by due date, then the rest spread across patterns — until
 .I cache.max_mb
 is spent. Self-contained pages with images inlined; nothing is left to request.
@@ -118,8 +141,12 @@ Look back N days.
 .B 0
 means all time.
 .TP
-.BI \-\-by " pattern|difficulty|tag"
+.BI \-\-by " pattern|difficulty|tag|strategy"
 Also print one distribution per group, ordered by volume.
+.TP
+.BI \-\-type " TYPE"
+Which problem type. Defaults to the active list's. A distribution is only ever
+over one: solve times for different kinds of problem do not share a scale.
 .TP
 .BI \-\-limit " N"
 Maximum number of groups to print with
@@ -139,6 +166,13 @@ until you set it.
 .B \-\-regenerate
 Rebuild today's queue from the current cards, replacing the one already stored
 for today.
+.TP
+.BI \-\-list " NAME"
+Which list's queue. Defaults to
+.IR session.active_list .
+Every list has its own queue for the day, sized by
+.I queue_n
+on its set where the set gives one.
 .SS history
 .TP
 .BI \-\-limit " N"
@@ -149,10 +183,32 @@ Expand one run, by run number, into its per-problem breakdown.
 .SS seed
 .TP
 .BI \-\-file " PATH"
-Seed from a JSON catalog instead of the bundled one.
+Seed one JSON list by hand, outside the configuration. Relative to the current
+directory.
 .TP
 .BI \-\-list " NAME"
-Which bundled catalog to seed.
+One set rather than all of them. With
+.BR \-\-file ,
+the name to seed it under.
+.TP
+.BI \-\-type " TYPE"
+With
+.BR \-\-file ,
+the problem type its entries are.
+.SS types
+.TP
+.BI \-\-new " NAME"
+Write a type into
+.I ~/.config/@SLUG@/types/
+to edit. It starts as a copy of an existing type, comments included. A file
+there takes precedence over a bundled type of the same name. Refuses to
+overwrite one that already exists.
+.TP
+.BI \-\-from " TYPE"
+The type
+.B \-\-new
+starts as a copy of. Defaults to the bundled type of the same name, where there
+is one.
 .SS fetch
 .TP
 .B \-\-refresh
@@ -185,7 +241,8 @@ PageUp/PageDown work everywhere too.
 Down, up.
 .TP
 .BR h ", " l
-Left, right. Where a screen has two panes, these move between them.
+Left, right. Where a screen has two panes, these move between them; on the
+queue and setup screens they step across the problem lists.
 .TP
 .BR gg ", " G
 Top, bottom.
@@ -246,6 +303,11 @@ rebuilds the queue from the current cards, and
 .B q
 goes back. Unchecking a row shortens the run and leaves today's queue as
 generated \(em what you skipped is still owed.
+.BR h " and " l
+step to the next list's queue: each problem set has its own for the day. That
+changes what is on screen and nothing else;
+.I session.active_list
+is still the list the app opens on.
 .PP
 On the setup screen:
 .B /
@@ -272,6 +334,9 @@ rolls a fresh random set,
 turns speech mode on or off for this run only, and
 .B ^s
 starts the run.
+.BR h " and " l
+step across the problem lists, from the list and not from either text box. What
+you have picked comes with you, so one run can hold problems of two types.
 .PP
 On the active problem screen:
 .TP
@@ -300,11 +365,15 @@ last tier is the full solution and ends the attempt.
 Log a failed submit, then hand you an editor buffer to paste the code that was
 rejected. Skippable with
 .BR :q! ,
-like every capture step, and switchable off in the settings screen.
+like every capture step, and switchable off in the settings screen. Offered only
+for a problem type that has a judge to submit to.
 .TP
 .B f
 Finish: how much help you needed, whether you could reconstruct it cold in a
-month, the time and space complexities you claim with a separate
+month, and then whatever the problem's type asks. What follows describes a
+LeetCode problem; see
+.BR "@COMMAND@ types" .
+The time and space complexities you claim with a separate
 .I "was it optimal?"
 answer for each, a
 .I "code style"
@@ -381,6 +450,79 @@ and opens the editor for the partial code, and
 throws it away instead — nothing about it is recorded, no review is scheduled,
 and no editor opens. Problems already finished in the run keep their scores
 either way.
+.SH PROBLEM TYPES AND SETS
+A set is named in the configuration, under a table of its own:
+.PP
+.RS
+.nf
+[sets.system-design]
+type = "system-design"
+path = "sets/system-design.json"
+queue_n = 1
+.fi
+.RE
+.PP
+.I type
+is a bundled type or one in
+.IR ~/.config/@SLUG@/types/ .
+.I path
+is a JSON list of problems, relative to the configuration file; leave it out to
+use a list bundled with
+.BR @NAME@ .
+.I queue_n
+and
+.I reviews_per_day
+are optional, and size this set's queue on their own. In the list only
+.I title
+is required of an entry;
+.IR slug ,
+.IR url ,
+.IR difficulty ,
+.IR pattern " and"
+.I tags
+are the rest. A
+.I url
+with no scheme is a file, relative to the list. The set is read the next time
+the app opens.
+.PP
+To add a new kind of problem, write its type first:
+.PP
+.RS
+.nf
+@COMMAND@ types \-\-new distributed\-systems \-\-from system\-design
+@COMMAND@ types distributed\-systems
+.fi
+.RE
+.PP
+The first writes a copy of an existing type to edit. The second reads it back:
+every field, what its answer does to a review, and anything in the file that
+could not be made sense of. Then write the list, name the set, and run
+.B @COMMAND@ seed
+to see what came in.
+.PP
+A type's fields are
+.IR text ", " number ", " fraction
+(a share such as 7/10, stored as typed) or
+.I choice
+(one answer off a ladder). A field may carry a
+.I review
+rule saying which answers fail an attempt, which demote it to Hard, and which
+an Easy grade requires. Answers move reviews and never the score. The type is
+read when a card is graded rather than copied into the log, so changing a rule
+and running
+.B @COMMAND@ replay
+regrades every attempt already logged under it.
+.PP
+Two sets that claim one slug share the problem if they are the same type, and
+collide if they are not: the first keeps it and the second's entry is left out
+and named. Nothing about a type or a set can stop a run. A list that will not
+load costs that list, a field that makes no sense is dropped, and
+.B @COMMAND@ doctor
+says what was wrong.
+.PP
+Each set has its own queue for the day. On the queue and setup screens
+.BR h " and " l
+step across the lists.
 .SH FILES
 .TP
 .I ~/.config/@SLUG@/config.toml
@@ -388,6 +530,14 @@ Written on first run with every default present and commented. The settings
 screen never rewrites it: changes made there are events layered on top, and
 .B x
 on a settings row drops the override and takes this file's value back.
+.TP
+.I ~/.config/@SLUG@/types/<type>.toml
+Problem types you have written or changed, one file each. Optional: two types
+are bundled, and a file here takes precedence over a bundled type of the same
+name. Read when it is needed rather than copied into the log, so editing one and
+running
+.B replay
+regrades every review under the new rules.
 .TP
 .I ~/.config/@SLUG@/session
 Your LeetCode session cookie, if you have one, mode 0600. Optional: without it

@@ -348,13 +348,17 @@ def test_code_style_is_not_folded_into_the_derived_quality():
 
 def test_the_code_style_row_carries_its_own_words():
     """Not "not optimal": nothing beat your formatting, so nothing may say so."""
-    from core import render
-    from core.tui.screens.finish import STYLE_OPTIONS
+    from core import problemtypes, render
 
-    for stored, _ in STYLE_OPTIONS:
-        label = render.STYLE_LABELS[stored]
+    # The ladder is the LeetCode type's now, and so is the wording: the table
+    # in `render` is what an attempt falls back on once its type stops asking.
+    style = problemtypes.load("leetcode").field("code_style")
+    assert [o.value for o in style.options] == ["clean", "rough", "unsure"]
+    for option in style.options:
+        label = render.STYLE_LABELS[option.value]
         # The stat line's detail column is 26 wide, same bound as the quality row.
         assert 0 < len(label) <= 26
+        assert option.report == label
     assert "optimal" not in " ".join(render.STYLE_LABELS.values())
     # An unanswered question is not an answer, and gets no row at all.
     assert render.approach_rows({}) == []

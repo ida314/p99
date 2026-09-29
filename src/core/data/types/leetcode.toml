@@ -1,0 +1,165 @@
+# problem type — leetcode
+#
+# A type says what kind of thing a problem is: what the prompt after a solve
+# asks, which screens follow it, and how the answers move the review. Every
+# problem set names the type its problems are (`[sets.<name>] type = ...` in
+# config.toml), and everything below is read at the moment it is needed — so
+# editing a type and running `replay` regrades every card under the new rules,
+# the same bargain `scoring/v1.toml` and `srs/v3.toml` already make.
+#
+# This file is the bundled one. To change it, copy it out with
+# `types --new leetcode` and edit the copy: a file of the same name in your
+# config directory's `types/` wins over this one. `docs/problem-types.md` has
+# the whole format.
+
+# How the type is named on screen.
+label = "LeetCode"
+
+# Which rungs of the help ladder the verdict prompt offers, in radio order. The
+# words are the ladder's own and are not set here: a verdict is priced by the
+# scoring weights and graded by the review schedule, and both read the key.
+verdicts = [
+  "solved_unaided",
+  "solved_with_hints",
+  "solved_after_description",
+  "solved_after_pseudocode",
+  "solved_after_implementation",
+  "gave_up",
+  "ungraded",
+]
+
+[solve]
+# There is something to submit to. `s` logs a failed submit, the clock line
+# counts them, and offline — where there is no judge to ask — the verdict prompt
+# starts on `not graded` rather than on a solve nothing checked.
+judge = true
+# Where `fetch` downloads problem statements from for offline use. Only
+# "leetcode" exists; leave it out for a type with nothing to cache.
+fetch = "leetcode"
+# What the solve screen says when a problem opens.
+prompt = "solve it in the browser — o opens it"
+
+# The prompts after the verdict, in the order they run. Each one is on unless
+# it is turned off here; `[strategy] enabled` and `[capture] enabled` in
+# config.toml still switch them off everywhere at once.
+[screens]
+patterns = true    # which reusable techniques can solve this problem
+methods = true     # the ways this problem can be solved, and the one you wrote
+solution = true    # the $EDITOR handoff that archives what you wrote
+note = true        # the $EDITOR handoff for the reflection note
+again = true       # the offer of a second pass at the same problem
+
+[ai]
+# ctrl+y on the verdict prompt copies a prompt to the clipboard. No `prompt`
+# here on purpose: this type uses `[ai] post_solve_prompt` from config.toml,
+# which is also the one the settings screen edits.
+copy = true
+paste_into = "LeetCode's AI"
+# Beside the percentiles, because both are errands to the LeetCode tab you just
+# submitted in.
+group = "leetcode percentiles — optional"
+
+# --- the fields -------------------------------------------------------------
+#
+# In the order they are asked. Fields that share a `group` sit side by side
+# under that one label.
+
+# What you say the solution costs. Free text: O(n+m), O(nk) and "amortized O(1)"
+# are the answers worth having, and a format that rejected them would only be
+# recording the easy cases.
+#
+# `easy_needs_answer`: an Easy grade asks you to price the solution, on both
+# axes. A solution you cannot cost is one you pattern-matched, and
+# pattern-matching is exactly what a long interval will not survive.
+[[fields]]
+key = "claimed_complexity"
+kind = "text"
+label = "time"
+group = "what your solution costs — optional"
+placeholder = "time   O(n log n)"
+review = { easy_needs_answer = true }
+
+[[fields]]
+key = "claimed_space_complexity"
+kind = "text"
+label = "space"
+group = "what your solution costs — optional"
+placeholder = "space   O(1)"
+review = { easy_needs_answer = true }
+
+# Three ladders under one question, because they are three facts. The trade
+# between the first two is the whole point: the hash map that turns O(n log n)
+# into O(n) pays O(n) space for it, and one answer cannot record a decision made
+# in two directions.
+#
+# Every one of them defaults to "not sure", separately. Being certain about time
+# and having never thought about space is the usual state, and a default of the
+# flattering answer is how a month of solves you never actually checked quietly
+# claims to have been optimal.
+#
+# The time answer is the one that moves a review. `suboptimal` demotes the grade
+# to Hard — unless the methods page holds an optimal method that is not the one
+# you wrote, because the gap you diagnosed is not the gap you missed. `unsure`
+# is free. And Easy requires `optimal`.
+[[fields]]
+key = "time_optimality"
+kind = "choice"
+label = "time"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "optimal", label = "optimal" },
+  { value = "suboptimal", label = "not optimal" },
+  { value = "unsure", label = "not sure" },
+]
+review = { hard_on = ["suboptimal"], easy_on = ["optimal"], unless_better_known = true }
+
+[[fields]]
+key = "space_optimality"
+kind = "choice"
+label = "space"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "optimal", label = "optimal" },
+  { value = "suboptimal", label = "not optimal" },
+  { value = "unsure", label = "not sure" },
+]
+
+# Would you have handed this code in. Its own words rather than a third "not
+# optimal": that is a claim that something exists which does it in less, and
+# how the code reads has no lower bound to make the claim against. `rough`
+# rather than `messy`, because a label that punishes the honest answer is how
+# you stop giving it. Reported, never priced — it carries no `review`.
+#
+# One word each: a third column of a 74-wide box leaves fourteen characters
+# after the radio button. `report` is the longer wording the stat line uses.
+[[fields]]
+key = "code_style"
+kind = "choice"
+label = "code style"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "clean", label = "clean", report = "would hand it in" },
+  { value = "rough", label = "rough", report = "needs a rewrite" },
+  { value = "unsure", label = "not sure", report = "not sure" },
+]
+
+[[fields]]
+key = "lc_runtime_pct"
+kind = "number"
+label = "runtime"
+group = "leetcode percentiles — optional"
+placeholder = "runtime %"
+min = 0
+max = 100
+
+[[fields]]
+key = "lc_memory_pct"
+kind = "number"
+label = "memory"
+group = "leetcode percentiles — optional"
+placeholder = "memory %"
+min = 0
+max = 100

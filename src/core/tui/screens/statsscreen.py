@@ -15,7 +15,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
-from ... import stats
+from ... import catalog, problemtypes, stats
 from ...render import distribution_panel, empty_state, strategy_coverage_table
 from ..vim import MOTIONS, VimMotion
 
@@ -32,6 +32,11 @@ class StatsScreen(VimMotion, Screen[None]):
         Binding("q", "back", "back", show=False),
         Binding("d", "cycle_dimension", "slice by"),
         Binding("w", "cycle_window", "window"),
+        # Which kind of problem. Shown only once there is more than one: see
+        # `check_action`. `y` because `t` opens this screen from home and a key
+        # that is both the way in and a thing to press once inside is a key you
+        # press twice by accident.
+        Binding("y", "cycle_type", "type"),
     ]
 
     #: One scrolling pane, so motions work without anything being focused.
@@ -41,6 +46,12 @@ class StatsScreen(VimMotion, Screen[None]):
         super().__init__()
         self.dimension_index = 0
         self.window_index = 1
+        #: Every type there is a problem of, the active list's first, and which
+        #: of them is on screen. A distribution is only ever over one: a
+        #: forty-minute design and a twelve-minute LeetCode problem are both
+        #: `medium`, and a percentile across the two is a number about neither.
+        self.types: tuple[str, ...] = (problemtypes.DEFAULT_TYPE,)
+        self.type_index = 0
 
     def compose(self) -> ComposeResult:
         yield Static(id="stats-title", classes="section-title")
@@ -49,7 +60,25 @@ class StatsScreen(VimMotion, Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        conn = self.app.conn  # type: ignore[attr-defined]
+        cfg = self.app.config  # type: ignore[attr-defined]
+        first = catalog.type_of(conn, cfg.session.active_list)
+        seeded = [
+            r["type"]
+            for r in conn.execute("SELECT DISTINCT type FROM problems ORDER BY type")
+        ]
+        self.types = tuple(dict.fromkeys((first, *seeded)))
+        self.refresh_bindings()
         self.refresh_stats()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "cycle_type":
+            return len(self.types) > 1
+        return True
+
+    @property
+    def type_name(self) -> str:
+        return self.types[self.type_index]
 
     @property
     def dimension(self) -> str:
@@ -65,8 +94,15 @@ class StatsScreen(VimMotion, Screen[None]):
         weights = self.app.weights  # type: ignore[attr-defined]
 
         window_label = f"last {self.window}d" if self.window else "all time"
+        # Named only when there is a choice. With one type the title is the one
+        # it has always been.
+        which = (
+            f"{problemtypes.load(self.type_name).title}  ·  "
+            if len(self.types) > 1
+            else ""
+        )
         self.query_one("#stats-title", Static).update(
-            f"  solve time distributions  ·  by {self.dimension}  ·  {window_label}"
+            f"  solve time distributions  ·  {which}by {self.dimension}  ·  {window_label}"
         )
 
         overall = stats.distribution(
@@ -75,12 +111,14 @@ class StatsScreen(VimMotion, Screen[None]):
             days=self.window,
             min_samples=cfg.stats.min_samples,
             weights=weights,
+            type=self.type_name,
         )
         if overall.n == 0:
             self.query_one("#stats-content", Static).update(
                 empty_state(
                     "No finished attempts in this window.",
-                    "Percentiles need attempts. Press w to widen the window.",
+                    "Percentiles need attempts. Press w to widen the window."
+                    + (" y is the next type." if len(self.types) > 1 else ""),
                 )
             )
             return
@@ -93,6 +131,7 @@ class StatsScreen(VimMotion, Screen[None]):
             min_samples=cfg.stats.min_samples,
             weights=weights,
             limit=12,
+            type=self.type_name,
         )
         for dist in slices:
             if dist.n == 0:
@@ -124,6 +163,10 @@ class StatsScreen(VimMotion, Screen[None]):
 
     def action_cycle_dimension(self) -> None:
         self.dimension_index = (self.dimension_index + 1) % len(DIMENSIONS)
+        self.refresh_stats()
+
+    def action_cycle_type(self) -> None:
+        self.type_index = (self.type_index + 1) % len(self.types)
         self.refresh_stats()
 
     def action_cycle_window(self) -> None:

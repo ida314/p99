@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from . import branding, scoring
+from . import branding, problemtypes, scoring
 
 from rich.console import Group, RenderableType
 from rich.text import Text
@@ -175,13 +175,30 @@ STYLE_LABELS = {
 }
 
 
-def _cost(complexity: Any, optimality: Any) -> str:
-    """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one."""
-    parts = [
-        (complexity or "").strip(),
-        OPTIMALITY_LABELS.get(optimality or "", ""),
-    ]
+def _cost(complexity: Any, optimality: str) -> str:
+    """`O(n log n)  ·  optimal` — what you said it costs, and whether it was the one.
+
+    `optimality` arrives already in words: see `_said`.
+    """
+    parts = [(complexity or "").strip(), optimality]
     return "  ·  ".join(p for p in parts if p)
+
+
+def _said(attempt: Mapping[str, Any], key: str, fallback: Mapping[str, str]) -> str:
+    """One ladder's answer in the words the stat line uses for it.
+
+    The problem type's own wording first, because the type is where a ladder's
+    answers are written down and a type may word them its own way. `fallback`
+    is the table this module has always carried, and it is what an attempt is
+    read with when its type no longer asks the question: the answer is still in
+    the log, and it still has to say something.
+    """
+    value = attempt.get(key)
+    if not value:
+        return ""
+    entry = problemtypes.load(attempt.get("type")).field(key)
+    said = entry.report(value) if entry is not None and value in entry.values else ""
+    return said or fallback.get(value, "")
 
 
 # What `scoring.solution_quality` derived, in words. Short enough for a stat
@@ -244,10 +261,43 @@ def attempt_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     history detail and `p99 stats` cannot end up showing different halves of the
     same answer.
     """
-    rows = approach_rows(attempt) + strategy_rows(attempt)
+    rows = approach_rows(attempt) + field_rows(attempt) + strategy_rows(attempt)
     resolves = int(attempt.get("resolves") or 0)
     if resolves:
         rows.append(("re-solves", f"{resolves} more pass{'es' if resolves > 1 else ''}"))
+    return rows
+
+
+def field_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The stat line's rows for whatever else the problem's type asked.
+
+    One row per field you answered, in the order the type asks them, worded the
+    way the type words them. Empty for an attempt that was asked nothing more,
+    which is every LeetCode one: its fields all have columns, and the rows for
+    those are `approach_rows` above and the score's own `runtime` line.
+
+    Reads the type as it is *now*, not as it was on the night. An answer to a
+    field the type has since dropped is still in the log and is simply not
+    drawn -- the same way a setting this version no longer offers is ignored
+    rather than loaded -- and putting the field back brings the row back with
+    it.
+
+    Cut to the stat line's columns rather than wrapped. A row that outgrew them
+    would push the score off the end of its own line.
+    """
+    ptype = problemtypes.load(attempt.get("type"))
+    rows: list[tuple[str, str]] = []
+    for entry in ptype.fields:
+        if entry.key in problemtypes.COLUMN_KEYS:
+            continue
+        said = entry.report(problemtypes.answer(attempt, entry.key))
+        if said:
+            rows.append(
+                (
+                    entry.label[: problemtypes.MAX_STAT_LABEL],
+                    said[: problemtypes.MAX_STAT_DETAIL],
+                )
+            )
     return rows
 
 
@@ -293,9 +343,15 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
     row back, labelled `approach` exactly as it was written. Nothing here reads
     that answer as the time one — it was given to a question that did not ask.
     """
-    time_row = _cost(attempt.get("claimed_complexity"), attempt.get("time_optimality"))
-    space_row = _cost(attempt.get("claimed_space_complexity"), attempt.get("space_optimality"))
-    style_row = STYLE_LABELS.get(attempt.get("code_style") or "", "")
+    time_row = _cost(
+        attempt.get("claimed_complexity"),
+        _said(attempt, "time_optimality", OPTIMALITY_LABELS),
+    )
+    space_row = _cost(
+        attempt.get("claimed_space_complexity"),
+        _said(attempt, "space_optimality", OPTIMALITY_LABELS),
+    )
+    style_row = _said(attempt, "code_style", STYLE_LABELS)
     # `code_style` is in here for the same reason the other two are: an attempt
     # that answered any of the three ladders is not a legacy attempt, and must
     # not fall through to a column it never filled in.
@@ -314,7 +370,10 @@ def approach_rows(attempt: Mapping[str, Any]) -> list[tuple[str, str]]:
             if row[1]
         ]
 
-    legacy = _cost(attempt.get("claimed_complexity"), attempt.get("optimality"))
+    legacy = _cost(
+        attempt.get("claimed_complexity"),
+        OPTIMALITY_LABELS.get(attempt.get("optimality") or "", ""),
+    )
     return [("approach", legacy)] if legacy else []
 
 

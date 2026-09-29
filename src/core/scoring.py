@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import functools
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from typing import Any, Mapping
+
+from . import problemtypes
 
 # See the note in `catalog`: a module object, not a dotted name, so the lookup
 # survives a package rename.
@@ -152,6 +154,29 @@ def load_weights(name: str = DEFAULT_WEIGHTS) -> Weights:
         return _parse(tomllib.load(fh))
 
 
+def for_type(weights: Weights, type_name: str | None) -> Weights:
+    """These weights, with one problem type's own par and base laid over them.
+
+    Par is what the clock is measured against, and a system design round is not
+    a LeetCode problem run long: it is a different thing with a different par.
+    So a type may set its own `[par_seconds]` and `[base]`, per difficulty, and
+    whatever it leaves out it inherits. Everything else in the weights -- the
+    hint multipliers, the penalties, what a review is worth -- is one rule for
+    every type, because it prices help and mistakes rather than the problem.
+
+    The weights themselves when the type overrides nothing, which is every
+    LeetCode attempt: nothing about how those score has moved.
+    """
+    ptype = problemtypes.load(type_name)
+    if not ptype.par_seconds and not ptype.base:
+        return weights
+    return replace(
+        weights,
+        par_seconds={**weights.par_seconds, **dict(ptype.par_seconds)},
+        base={**weights.base, **dict(ptype.base)},
+    )
+
+
 def available_weights() -> list[str]:
     return sorted(
         p.name.removesuffix(".toml")
@@ -187,8 +212,14 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def score_attempt(attempt: Mapping[str, Any], difficulty: str, weights: Weights | None = None) -> Score:
-    """Score a single attempt. Pure: `attempt` is a plain mapping of facts."""
-    w = weights or load_weights()
+    """Score a single attempt. Pure: `attempt` is a plain mapping of facts.
+
+    `attempt["type"]` is the problem's type where the row carries one, and it
+    decides par and base and nothing else. What a type *asks* is never read
+    here: an answer is a claim, and the score stays a function of what was
+    measured. Claims move reviews -- see `srs.rate`.
+    """
+    w = for_type(weights or load_weights(), attempt.get("type"))
     difficulty = (difficulty or "medium").lower()
     par = w.par_for(difficulty)
     base = w.base_for(difficulty)

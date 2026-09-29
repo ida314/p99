@@ -18,7 +18,18 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 from textual.worker import Worker
 
-from ... import audio, branding, cache, capture, events, methods, scoring, stats, strategies
+from ... import (
+    audio,
+    branding,
+    cache,
+    capture,
+    events,
+    methods,
+    problemtypes,
+    scoring,
+    stats,
+    strategies,
+)
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
 from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
@@ -34,6 +45,13 @@ from .finish import (
 )
 from .methods import MethodsModal
 from .strategy import StrategyModal
+
+#: The prompts a finish walks through, in order. The first is always asked; the
+#: other two are asked when the problem's type, the settings and the verdict all
+#: say so -- see `SolveScreen._steps`.
+STEP_VERDICT = "verdict"
+STEP_PATTERNS = "patterns"
+STEP_METHODS = "methods"
 
 #: How often the run writes down where it is, so a process that is killed rather
 #: than quit can be picked up. Costs one UPSERT against a one-row table — less
@@ -82,6 +100,17 @@ class SolveScreen(VimMotion, Screen[None]):
         # Speech mode's recorder for the problem on screen. None whenever the
         # run isn't recording, which is the only check any caller has to make.
         self._recorder: audio.Recorder | None = None
+
+    @property
+    def _ptype(self) -> problemtypes.ProblemType:
+        """What kind of problem is on screen, and so what this screen offers.
+
+        Read off the problem rather than off the run: a run is a list of slugs,
+        and nothing stops one from holding a LeetCode problem and a design side
+        by side. Every key below that a type can switch off asks this first.
+        """
+        attempt = self.engine.attempt
+        return problemtypes.load(attempt.problem.type if attempt is not None else None)
 
     def compose(self) -> ComposeResult:
         # Scrollable because the hint panel grows: on a short terminal a tier-3
@@ -147,12 +176,15 @@ class SolveScreen(VimMotion, Screen[None]):
         self.engine.start_problem(remaining[0])
         self._render_problem()
         previous = self.engine.previous
+        # The type's own words for where this gets solved: a browser tab for one
+        # kind of problem, a whiteboard for another.
+        prompt = self._ptype.solve_prompt
         if previous is not None:
             # Said here, the one moment it is worth saying: a `next problem`
             # that meant `again` is noticed on this screen or not at all.
-            self._toast(f"solve it in the browser — o opens it, b goes back to {previous.problem.title}")
+            self._toast(f"{prompt}, b goes back to {previous.problem.title}")
         else:
-            self._toast("solve it in the browser — o opens it")
+            self._toast(prompt)
         self._start_recording()
 
     def _show_summary(self) -> None:
@@ -309,7 +341,12 @@ class SolveScreen(VimMotion, Screen[None]):
         attempt = self.engine.attempt
         if attempt is None:
             return
-        w = self.app.weights  # type: ignore[attr-defined]
+        # The type's own par where it sets one: a design is not measured against
+        # the clock a LeetCode problem is.
+        w = scoring.for_type(
+            self.app.weights,  # type: ignore[attr-defined]
+            attempt.problem.type,
+        )
         par = w.par_for(attempt.problem.difficulty)
         active = attempt.active_seconds
         ratio = active / par if par else 0
@@ -339,9 +376,12 @@ class SolveScreen(VimMotion, Screen[None]):
             f"tier {attempt.max_hint_tier}" if attempt.max_hint_tier else "none",
             style="yellow" if attempt.max_hint_tier else "",
         )
-        state.append("   ·   ")
-        state.append("failed submits ", style="bright_black")
-        state.append(str(attempt.submissions), style="red" if attempt.submissions else "")
+        if self._ptype.judge:
+            state.append("   ·   ")
+            state.append("failed submits ", style="bright_black")
+            state.append(
+                str(attempt.submissions), style="red" if attempt.submissions else ""
+            )
         if attempt.total_paused_seconds:
             state.append("   ·   ")
             state.append("paused ", style="bright_black")
@@ -364,7 +404,13 @@ class SolveScreen(VimMotion, Screen[None]):
         offline mode is not worth a widget of its own, but silently opening a
         different thing than the line says would be.
         """
-        if not self._offline:
+        if not problem.url and not (self._offline and cache.cacheable(problem)):
+            # A problem with nowhere to point. Said rather than left blank: an
+            # empty line where the address usually is reads as a screen that
+            # failed to draw.
+            return Text("nothing to open — this one has no link", style="bright_black")
+        if not self._offline or not cache.cacheable(problem):
+            # Offline changes nothing for a type with no cache to open instead.
             return Text(problem.url)
         if cache.local_path(problem.slug) is not None:
             return Text(f"offline — cached copy of {problem.slug}", style="cyan")
@@ -377,7 +423,10 @@ class SolveScreen(VimMotion, Screen[None]):
         if attempt is None:
             return
         target, is_local = cache.target_for(attempt.problem, offline=self._offline)
-        if self._offline and not is_local:
+        if not target:
+            self._toast("nothing to open — this one has no link", "yellow")
+            return
+        if self._offline and not is_local and cache.cacheable(attempt.problem):
             self._toast(
                 f"not cached — `{branding.COMMAND} fetch` while you have a network",
                 "yellow",
@@ -458,6 +507,8 @@ class SolveScreen(VimMotion, Screen[None]):
         attempt = self.engine.attempt
         if attempt is None or self._busy or attempt.finished:
             return
+        if not self._ptype.judge:
+            return
         self._submit_flow()
 
     def action_finish(self) -> None:
@@ -506,6 +557,11 @@ class SolveScreen(VimMotion, Screen[None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "go_back":
             return self.engine.previous is not None
+        if action == "submit":
+            # Off the footer as well as off the key, for a type with nothing to
+            # submit to. A failed submit costs points, and offering to log one
+            # against a whiteboard is offering to charge for nothing.
+            return self._ptype.judge
         return True
 
     def action_go_back(self) -> None:
@@ -598,12 +654,13 @@ class SolveScreen(VimMotion, Screen[None]):
                 self.engine.pause()
                 self._pause_recording(True)
             try:
+                language = capture.language_for(attempt.problem, cfg.capture.language)
                 with self.app.editor_context():  # type: ignore[attr-defined]
                     result = capture.capture_submission(
-                        attempt.problem, row, attempt.id, n, cfg.capture.language
+                        attempt.problem, row, attempt.id, n, language
                     )
                 if result.saved and result.path:
-                    self.engine.archive_submission(str(result.path), n, cfg.capture.language)
+                    self.engine.archive_submission(str(result.path), n, language)
             except SuspendNotSupported:
                 self._toast("this terminal can't hand off to $EDITOR", "yellow")
                 return
@@ -643,13 +700,19 @@ class SolveScreen(VimMotion, Screen[None]):
             # it up. Stopping happens once the modal has committed to something.
             self._pause_recording(True)
 
-            # Three post-solve prompts, walked as a cursor rather than a chain
-            # of awaits. `esc` on any of them steps back exactly one screen --
-            # methods to strategy, strategy to verdict, verdict to the
-            # problem -- and stepping back has to be repeatable: one back that
-            # works and a second that dumps you somewhere else is worse than
-            # none. Every screen reopens carrying what it last held, so a round
-            # trip changes nothing.
+            # The post-solve prompts, walked as a cursor rather than a chain of
+            # awaits. `esc` on any of them steps back exactly one screen --
+            # methods to patterns, patterns to verdict, verdict to the problem
+            # -- and stepping back has to be repeatable: one back that works and
+            # a second that dumps you somewhere else is worse than none. Every
+            # screen reopens carrying what it last held, so a round trip changes
+            # nothing.
+            #
+            # Which of them run is the problem type's to say, so "one screen
+            # back" is one screen back among the ones that ran: a type with no
+            # patterns prompt steps from methods straight to the verdict,
+            # rather than into a screen that would answer itself and bounce you
+            # forward again.
             #
             # Safe because nothing is written until `engine.finish` below.
             # Everything above that line is a prompt, and the attempt is still
@@ -664,9 +727,9 @@ class SolveScreen(VimMotion, Screen[None]):
             chosen: dict | None = None
             methods_block: list[dict[str, Any]] | None = None
 
-            step = 0
-            while step < 3:
-                if step == 0:
+            step: str | None = STEP_VERDICT
+            while step is not None:
+                if step == STEP_VERDICT:
                     result = await self.app.push_screen_wait(
                         FinishModal(
                             attempt.problem.title,
@@ -674,6 +737,7 @@ class SolveScreen(VimMotion, Screen[None]):
                             attempt.submissions,
                             attempt.max_hint_tier,
                             answers=answers,
+                            ptype=self._ptype,
                         )
                     )
                     if result is None:
@@ -685,50 +749,102 @@ class SolveScreen(VimMotion, Screen[None]):
                         await self._do_throw_away()
                         return
                     answers = result
-                    step = 1
+                    steps = self._steps(answers)
+                    # A prompt the new verdict no longer asks for takes its
+                    # answer with it. Coming back to change `solved` into
+                    # `gave up` must not carry the patterns you ticked for the
+                    # solve you have just said you did not reach.
+                    if STEP_PATTERNS not in steps:
+                        chosen = None
+                    if STEP_METHODS not in steps:
+                        methods_block = None
+                    step = self._after(steps, step)
                     continue
 
-                if step == 1:
+                if step == STEP_PATTERNS:
                     chosen = await self._ask_strategies(answers, used)
                     if isinstance(chosen, dict) and chosen.get(SIGNAL_BACK):
                         used = chosen.get("picked") or []
                         self._toast("back to the verdict")
-                        step = 0
+                        step = STEP_VERDICT
                         continue
                     used = self._used_pairs(chosen)
-                    step = 2
+                    step = self._after(self._steps(answers), step)
                     continue
 
                 methods_block = await self._ask_methods(answers, ways)
                 if isinstance(methods_block, dict) and methods_block.get(SIGNAL_BACK):
                     ways = methods_block.get("picked") or []
                     methods_block = None
-                    self._toast("back to the patterns")
-                    step = 1
+                    step = self._before(self._steps(answers), step)
+                    self._toast(f"back to the {step}")
                     continue
-                step = 3
+                step = None
 
             cfg = self.app.config  # type: ignore[attr-defined]
+            # The form's answers, sorted into the ones that have a column and
+            # the ones that ride the `answers` block. One flat form on screen,
+            # two places in the log, and `problemtypes.split` is the only thing
+            # that knows which is which.
+            columns, rest = problemtypes.split(answers)
             self.engine.finish(
                 answers["verdict"],
                 timing=timing,
                 self_confidence=answers.get("self_confidence"),
-                lc_runtime_pct=answers.get("lc_runtime_pct"),
-                lc_memory_pct=answers.get("lc_memory_pct"),
-                language=cfg.capture.language,
-                claimed_complexity=answers.get("claimed_complexity"),
-                claimed_space_complexity=answers.get("claimed_space_complexity"),
-                time_optimality=answers.get("time_optimality"),
-                space_optimality=answers.get("space_optimality"),
-                code_style=answers.get("code_style"),
+                language=capture.language_for(attempt.problem, cfg.capture.language),
+                answers=rest,
                 strategies=chosen if isinstance(chosen, dict) else None,
                 methods=methods_block if isinstance(methods_block, list) else None,
+                **columns,
             )
             self._record_tags(attempt.problem.slug, chosen)
             self._stop_recording()
             await self._capture_flow(ways=methods_block)
         finally:
             self._busy = False
+
+    # --- which prompts a finish asks ----------------------------------------
+
+    def _asks_about_the_solve(self, answers: dict) -> bool:
+        """Is there a solve to ask about at all.
+
+        Only for one. There is no approach to record on an attempt that never
+        reached one, which is the same reason `engine.finish` drops the
+        complexity claims on the way to `abandon`. And `[strategy] enabled` in
+        config.toml still switches both prompts off for every type at once.
+        """
+        cfg = self.app.config  # type: ignore[attr-defined]
+        return (
+            self.engine.attempt is not None
+            and cfg.strategy.enabled
+            and answers.get("verdict") in scoring.CLEAN_VERDICTS
+        )
+
+    def _steps(self, answers: dict) -> list[str]:
+        """The prompts this finish walks through, in order.
+
+        Computed from the verdict as it now stands, so it is asked again after
+        every trip back to the verdict prompt rather than once at the top.
+        """
+        steps = [STEP_VERDICT]
+        if self._asks_about_the_solve(answers):
+            if self._ptype.screens.patterns:
+                steps.append(STEP_PATTERNS)
+            if self._ptype.screens.methods:
+                steps.append(STEP_METHODS)
+        return steps
+
+    @staticmethod
+    def _after(steps: list[str], step: str) -> str | None:
+        """The prompt that follows `step`, or None when it was the last."""
+        index = steps.index(step) + 1 if step in steps else len(steps)
+        return steps[index] if index < len(steps) else None
+
+    @staticmethod
+    def _before(steps: list[str], step: str) -> str:
+        """The prompt `esc` steps back to. Never further than the verdict."""
+        index = steps.index(step) - 1 if step in steps else 0
+        return steps[max(0, index)]
 
     def _record_tags(self, slug: str, chosen: Any) -> None:
         """Set this problem's tags to what the patterns prompt came back with.
@@ -783,10 +899,7 @@ class SolveScreen(VimMotion, Screen[None]):
         the caller steps on.
         """
         attempt = self.engine.attempt
-        cfg = self.app.config  # type: ignore[attr-defined]
-        if attempt is None or not cfg.strategy.enabled:
-            return None
-        if answers.get("verdict") not in scoring.CLEAN_VERDICTS:
+        if attempt is None or STEP_PATTERNS not in self._steps(answers):
             return None
         return await self.app.push_screen_wait(
             StrategyModal(attempt.problem.title, attempt.problem.slug, used)
@@ -806,13 +919,17 @@ class SolveScreen(VimMotion, Screen[None]):
         just named. See `methods`.
         """
         attempt = self.engine.attempt
-        cfg = self.app.config  # type: ignore[attr-defined]
-        if attempt is None or not cfg.strategy.enabled:
-            return None
-        if answers.get("verdict") not in scoring.CLEAN_VERDICTS:
+        if attempt is None or STEP_METHODS not in self._steps(answers):
             return None
         return await self.app.push_screen_wait(
-            MethodsModal(attempt.problem.title, attempt.problem.slug, answers, ways)
+            MethodsModal(
+                attempt.problem.title,
+                attempt.problem.slug,
+                # The type rides along so the screen knows whether there is a
+                # time answer to read a quality off at all.
+                {**answers, "type": attempt.problem.type},
+                ways,
+            )
         )
 
     async def _do_throw_away(self) -> None:
@@ -919,39 +1036,48 @@ class SolveScreen(VimMotion, Screen[None]):
             return
         cfg = self.app.config  # type: ignore[attr-defined]
         row = self.engine.attempt_row() or {}
+        code = capture.CaptureResult(False)
         note = capture.CaptureResult(False)
-        saved_code = 0
         method = self._method_tag(ways)
+        # Which of the two handoffs this kind of problem takes. Both, for
+        # LeetCode; a type may turn either off, and one that turns off both has
+        # nothing to capture and is told nothing about it.
+        screens = self._ptype.screens
+        wanted = screens.solution or screens.note
+        language = capture.language_for(attempt.problem, cfg.capture.language)
         blocked = ""
 
-        if not cfg.capture.enabled:
+        if not wanted:
+            pass
+        elif not cfg.capture.enabled:
             blocked = "capture is disabled in config.toml"
         elif not capture.editor_available():
             blocked = f"no $EDITOR found — set it, then check `{branding.COMMAND} doctor`"
         else:
             try:
                 with self.app.editor_context():
-                    code = capture.capture_solution(
-                        attempt.problem,
-                        row,
-                        attempt.id,
-                        cfg.capture.language,
-                        method,
-                        again=attempt.solves,
-                    )
-                    if code.saved and code.path:
-                        saved_code += 1
-                        self.engine.archive_code(
-                            str(code.path),
-                            cfg.capture.language,
-                            method.name if method else None,
+                    if screens.solution:
+                        code = capture.capture_solution(
+                            attempt.problem,
+                            row,
+                            attempt.id,
+                            language,
+                            method,
+                            again=attempt.solves,
                         )
+                        if code.saved and code.path:
+                            self.engine.archive_code(
+                                str(code.path),
+                                language,
+                                method.name if method else None,
+                            )
 
-                    note = capture.capture_note(
-                        attempt.problem, attempt.id, again=attempt.solves
-                    )
-                    if note.saved and note.path:
-                        self.engine.record_note(str(note.path))
+                    if screens.note:
+                        note = capture.capture_note(
+                            attempt.problem, attempt.id, again=attempt.solves
+                        )
+                        if note.saved and note.path:
+                            self.engine.record_note(str(note.path))
             except SuspendNotSupported:
                 blocked = "this terminal can't hand off to $EDITOR"
             except Exception:
@@ -963,14 +1089,13 @@ class SolveScreen(VimMotion, Screen[None]):
             # collects and they cannot be written retroactively (spec §7) —
             # silently dropping them for weeks is the worst outcome here.
             self._toast(f"no code or note captured: {blocked}", "yellow")
-        else:
-            if saved_code:
-                archived = "code archived"
-            else:
-                archived = "code skipped"
-            self._toast(
-                f"{archived} · {'note written' if note.saved else 'note skipped'}"
-            )
+        elif wanted:
+            said = []
+            if screens.solution:
+                said.append("code archived" if code.saved else "code skipped")
+            if screens.note:
+                said.append("note written" if note.saved else "note skipped")
+            self._toast(" · ".join(said))
 
         if not advance:
             return
@@ -991,6 +1116,9 @@ class SolveScreen(VimMotion, Screen[None]):
         worth the most.
         """
         if self.engine.attempt is None:
+            return False
+        if not self._ptype.screens.again:
+            # Not offered for a kind of problem nobody sits twice in a night.
             return False
         ok = await self.app.push_screen_wait(
             ConfirmModal(

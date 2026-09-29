@@ -1,0 +1,131 @@
+# problem type — system design
+#
+# The worked example of a second type, and a starting point rather than a
+# verdict on how system design should be graded: copy it out with
+# `types --new system-design`, then change the questions to the ones you
+# actually ask yourself after a design. `docs/problem-types.md` has the format.
+#
+# What is different from `leetcode.toml` is the point of the file. There is no
+# judge, so nothing logs a failed submit. There is no complexity to claim, so
+# the cost fields are gone. What takes their place is coverage — how much of
+# what the design had to handle you actually handled — because that is the part
+# of a system design round you can count afterwards.
+
+label = "system design"
+
+# The same help ladder, minus the rung that has no meaning here: there is no
+# pseudocode between an outline of a design and the design.
+verdicts = [
+  "solved_unaided",
+  "solved_with_hints",
+  "solved_after_description",
+  "solved_after_implementation",
+  "gave_up",
+  "ungraded",
+]
+
+[solve]
+# Nothing to submit to: `s` is not offered and no failed submits are counted.
+judge = false
+prompt = "design it out loud, on paper or a whiteboard — f when you are done"
+
+# A design round runs long. Par is what the clock is measured against, both for
+# the score and for the review grade, so it is set here rather than inherited
+# from the scoring weights — which are sized for a LeetCode problem.
+[par_seconds]
+easy = 1800
+medium = 2700
+hard = 3600
+
+[screens]
+# The building blocks — consistent hashing, a write-ahead log, fan-out on
+# write — are techniques that recur across designs exactly the way patterns
+# recur across problems, so that prompt stays.
+patterns = true
+# Off: the methods page prices each route as optimal or not, and two
+# architectures for one system are a trade, not a ranking.
+methods = false
+solution = true
+note = true
+# Off: a second pass at a forty-five minute design, right now, is not a thing
+# anyone takes.
+again = false
+
+[capture]
+# The write-up is prose and boxes, not code: the archived file is
+# `code/<slug>/<attempt_id>.md` whatever `[capture] language` says.
+language = "markdown"
+prompt = "write the design up below."
+
+[ai]
+copy = true
+paste_into = "your assistant"
+prompt = "Here is my design for this system. Which functional and non-functional requirements did I miss? Where are the bottlenecks and the single points of failure? Which trade-offs did I make without saying so, and what would you have asked me next in an interview?"
+
+# --- the fields -------------------------------------------------------------
+
+# How many of the requirements you got, against however many the reference
+# lists. A fraction because the total is the problem's and changes with it:
+# type "7/10", "70%" or "0.7". Stored as you typed it.
+#
+# This is the answer that moves the review. Under 40% the design missed the
+# problem and comes back as a failure; under 70% it comes back as Hard; and an
+# Easy grade needs 90%.
+#
+# `label` is what the stat line calls it, and that column is eleven characters
+# wide — which is one fewer than "requirements".
+[[fields]]
+key = "requirements"
+kind = "fraction"
+label = "coverage"
+group = "what you covered — optional"
+placeholder = "requirements   7/10"
+review = { again_below = 0.4, hard_below = 0.7, easy_from = 0.9 }
+
+# Reported, not priced: how many you find depends on how deep the reference
+# goes, which is not a fact about you.
+[[fields]]
+key = "bottlenecks"
+kind = "fraction"
+label = "bottlenecks"
+group = "what you covered — optional"
+placeholder = "bottlenecks   2/3"
+
+# Three ladders, each defaulting to "not sure" for the reason the LeetCode ones
+# do: the flattering answer is never the default.
+[[fields]]
+key = "design"
+kind = "choice"
+label = "design"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "sound", label = "sound", report = "would hold up" },
+  { value = "flawed", label = "flawed", report = "has a hole in it" },
+  { value = "unsure", label = "not sure", report = "not sure" },
+]
+review = { hard_on = ["flawed"], easy_on = ["sound"] }
+
+[[fields]]
+key = "tradeoffs"
+kind = "choice"
+label = "trade-offs"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "argued", label = "argued", report = "argued them" },
+  { value = "skipped", label = "skipped", report = "never said why" },
+  { value = "unsure", label = "not sure", report = "not sure" },
+]
+
+[[fields]]
+key = "delivery"
+kind = "choice"
+label = "delivery"
+group = "how did it come out?"
+default = "unsure"
+options = [
+  { value = "clear", label = "clear", report = "easy to follow" },
+  { value = "rambling", label = "rambling", report = "hard to follow" },
+  { value = "unsure", label = "not sure", report = "not sure" },
+]

@@ -58,7 +58,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ... import methods, scoring
+from ... import methods, problemtypes, scoring
 from ...render import QUALITY_LABELS, method_row, quality_reason
 from .finish import SIGNAL_BACK
 from ..vim import MOTIONS, VimMotion
@@ -267,7 +267,16 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         recorded here that is not the one I wrote", which is a question about the
         list on screen. A derived value nobody sees is a value nobody can catch
         being wrong.
+
+        Blank for a problem type that never asks whether the solution was
+        optimal on time. The quality is a reading of that one answer, and
+        "you answered 'not sure' on time" about a question nobody put would be
+        the screen inventing a claim in order to report its absence.
         """
+        if not problemtypes.load(self.attempt.get("type")).has("time_optimality"):
+            self.query_one("#methods-quality", Static).update("")
+            return
+
         facts = {
             **self.attempt,
             "methods_used": sorted(

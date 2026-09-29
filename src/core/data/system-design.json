@@ -1,0 +1,182 @@
+[
+  {
+    "slug": "url-shortener",
+    "title": "Design a URL shortener",
+    "url": "",
+    "difficulty": "easy",
+    "tags": [
+      "hashing",
+      "caching",
+      "key-value-store"
+    ],
+    "pattern": "read-heavy-serving",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "rate-limiter",
+    "title": "Design a rate limiter",
+    "url": "",
+    "difficulty": "easy",
+    "tags": [
+      "rate-limiting",
+      "caching",
+      "counters"
+    ],
+    "pattern": "coordination",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "unique-id-generator",
+    "title": "Design a unique ID generator",
+    "url": "",
+    "difficulty": "easy",
+    "tags": [
+      "clocks",
+      "partitioning",
+      "ordering"
+    ],
+    "pattern": "coordination",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "news-feed",
+    "title": "Design a news feed",
+    "url": "",
+    "difficulty": "medium",
+    "tags": [
+      "fan-out",
+      "caching",
+      "ranking"
+    ],
+    "pattern": "read-heavy-serving",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "chat-system",
+    "title": "Design a chat system",
+    "url": "",
+    "difficulty": "medium",
+    "tags": [
+      "websockets",
+      "presence",
+      "ordering"
+    ],
+    "pattern": "real-time-messaging",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "notification-system",
+    "title": "Design a notification system",
+    "url": "",
+    "difficulty": "medium",
+    "tags": [
+      "queues",
+      "retries",
+      "deduplication"
+    ],
+    "pattern": "real-time-messaging",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "search-autocomplete",
+    "title": "Design search autocomplete",
+    "url": "",
+    "difficulty": "medium",
+    "tags": [
+      "trie",
+      "caching",
+      "ranking"
+    ],
+    "pattern": "search",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "web-crawler",
+    "title": "Design a web crawler",
+    "url": "",
+    "difficulty": "medium",
+    "tags": [
+      "queues",
+      "deduplication",
+      "politeness"
+    ],
+    "pattern": "search",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "key-value-store",
+    "title": "Design a key-value store",
+    "url": "",
+    "difficulty": "hard",
+    "tags": [
+      "replication",
+      "consistency",
+      "partitioning"
+    ],
+    "pattern": "storage",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "file-sync",
+    "title": "Design a file storage and sync service",
+    "url": "",
+    "difficulty": "hard",
+    "tags": [
+      "chunking",
+      "deduplication",
+      "conflict-resolution"
+    ],
+    "pattern": "storage",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "message-queue",
+    "title": "Design a distributed message queue",
+    "url": "",
+    "difficulty": "hard",
+    "tags": [
+      "partitioning",
+      "replication",
+      "ordering"
+    ],
+    "pattern": "streaming",
+    "lists": [
+      "system-design"
+    ]
+  },
+  {
+    "slug": "video-streaming",
+    "title": "Design a video streaming service",
+    "url": "",
+    "difficulty": "hard",
+    "tags": [
+      "cdn",
+      "transcoding",
+      "blob-storage"
+    ],
+    "pattern": "media-delivery",
+    "lists": [
+      "system-design"
+    ]
+  }
+]

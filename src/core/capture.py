@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import branding, config, paths
+from . import branding, config, paths, problemtypes
 from .catalog import Problem
 from .scoring import VERDICT_LABELS, fmt_duration
 from .methods import Named
@@ -44,6 +44,14 @@ COMMENT_PREFIX = {
     "scala": "//",
     "cs": "//",
     "sql": "--",
+    # A write-up rather than a program: the header is an HTML comment, which a
+    # markdown renderer drops, where a `#` would have made it the page's title.
+    "md": "<!--",
+}
+
+#: What closes a header line, for the languages whose comments need closing.
+COMMENT_SUFFIX = {
+    "md": " -->",
 }
 
 NOTE_TEMPLATE = """\
@@ -61,15 +69,23 @@ NOTE_TEMPLATE = """\
 """
 
 
-def note_template(slug: str) -> str:
+def note_template(slug: str, template: str = "") -> str:
     """The reflection buffer for one problem.
 
     Goes through here rather than `NOTE_TEMPLATE.format(...)` at the call site
     so nobody has to remember that the template carries the app name too — the
     emptiness check compares against this exact text, and a template rendered
     with a stray `{app}` in it would never match.
+
+    `template` is a problem type's own questions, where it has written some.
+    Filled in by replacement rather than `str.format`: it is a file somebody
+    typed, and the first `{` in it that was not one of these two would raise in
+    the middle of a run.
     """
-    return NOTE_TEMPLATE.format(app=branding.NAME, slug=slug)
+    text = template if template.strip() else NOTE_TEMPLATE
+    if not text.endswith("\n"):
+        text += "\n"
+    return text.replace("{app}", branding.NAME).replace("{slug}", slug)
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,21 @@ class CaptureResult:
 def editor_available() -> bool:
     cmd = config.editor()
     return bool(cmd) and shutil.which(cmd[0]) is not None
+
+
+def language_for(problem: Problem, configured: str | None = None) -> str:
+    """What one problem's solution is archived as.
+
+    The problem type's own language where it names one, and `[capture]
+    language` otherwise. A type names one when the answer is not code at all: a
+    system design is written up in markdown whatever language you are
+    practising LeetCode in, and asking the one setting to be both would mean
+    flipping it every time you changed sets.
+    """
+    own = problemtypes.load(problem.type).language
+    if own:
+        return own
+    return configured or config.load().capture.language
 
 
 def _code_header(
@@ -99,6 +130,7 @@ def _code_header(
     stamped into the file itself so the answer survives the database.
     """
     prefix = COMMENT_PREFIX.get(ext, "#")
+    suffix = COMMENT_SUFFIX.get(ext, "")
     started = attempt.get("started_at")
     when = ""
     if started:
@@ -109,25 +141,33 @@ def _code_header(
     tier = int(attempt.get("max_hint_tier") or 0)
     hints = f"hints: tier {tier}" if tier else "hints: none"
     duration = fmt_duration(attempt.get("active_seconds"))
-    method_line = f"{prefix} method: {method}\n" if method else ""
+    method_line = f"{prefix} method: {method}{suffix}\n" if method else ""
     return (
-        f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
-        f"{prefix} {when} | {duration} | {hints} | {status}\n"
+        f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}{suffix}\n"
+        f"{prefix} {when} | {duration} | {hints} | {status}{suffix}\n"
         f"{method_line}"
-        f"{prefix} {prompt} :wq to save, :q! to skip.\n\n"
+        f"{prefix} {prompt} :wq to save, :q! to skip.{suffix}\n\n"
     )
 
 
 def solution_header(
-    problem: Problem, attempt: dict, ext: str, method: str | None = None
+    problem: Problem,
+    attempt: dict,
+    ext: str,
+    method: str | None = None,
+    prompt: str | None = None,
 ) -> str:
-    """The pre-filled comment header on the solution buffer."""
+    """The pre-filled comment header on the solution buffer.
+
+    `prompt` is what the problem's type asks for in it. Pasting a solution is
+    LeetCode's; a design is written up.
+    """
     return _code_header(
         problem,
         attempt,
         ext,
         VERDICT_LABELS.get(attempt.get("verdict") or "", "UNRESOLVED"),
-        "paste your solution below.",
+        prompt or problemtypes.load(problem.type).solution_prompt,
         method,
     )
 
@@ -233,8 +273,7 @@ def capture_solution(
 
     Skippable with `:q!` like every other capture step.
     """
-    cfg = config.load()
-    lang = language or cfg.capture.language
+    lang = language or language_for(problem)
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = solution_header(problem, attempt, ext, method.name if method else None)
@@ -265,15 +304,16 @@ def capture_method(
     months ago and finally writing it. Everything else is identical, skipping
     included.
     """
-    cfg = config.load()
-    lang = language or cfg.capture.language
+    lang = language or language_for(problem)
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
+    suffix = COMMENT_SUFFIX.get(ext, "")
+    prompt = problemtypes.load(problem.type).solution_prompt
     header = (
-        f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}\n"
-        f"{prefix} method: {method.name}\n"
-        f"{prefix} not from an attempt — nothing here is timed or scored.\n"
-        f"{prefix} paste your solution below. :wq to save, :q! to skip.\n\n"
+        f"{prefix} {branding.NAME} | {problem.slug} | {problem.difficulty_label}{suffix}\n"
+        f"{prefix} method: {method.name}{suffix}\n"
+        f"{prefix} not from an attempt — nothing here is timed or scored.{suffix}\n"
+        f"{prefix} {prompt} :wq to save, :q! to skip.{suffix}\n\n"
     )
     dest = paths.unclaimed(paths.method_code_path(problem.slug, method.key, ext))
     return _run_capture(
@@ -299,8 +339,7 @@ def capture_submission(
     it is worth one keystroke to keep — the diff against what finally passed is
     the whole lesson.
     """
-    cfg = config.load()
-    lang = language or cfg.capture.language
+    lang = language or language_for(problem)
     ext = config.EXT_BY_LANGUAGE.get(lang.lower(), "txt")
     prefix = COMMENT_PREFIX.get(ext, "#")
     header = submission_header(problem, attempt, ext, n)
@@ -319,8 +358,11 @@ def capture_note(problem: Problem, attempt_id: int, again: int = 1) -> CaptureRe
     A later pass writes its own, `-again<n>`. What you learned solving it the
     second time is a different note from what you learned the first, and it is
     the one place the two are compared.
+
+    The questions are the problem type's where it has written its own, and the
+    three above where it has not.
     """
-    template = note_template(problem.slug)
+    template = note_template(problem.slug, problemtypes.load(problem.type).note_template)
     dest = paths.unclaimed(
         paths.resolve_note_path(problem.slug, attempt_id, again)
         if again > 1

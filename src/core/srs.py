@@ -36,7 +36,7 @@ from typing import Any, Mapping
 
 from fsrs import Card, Rating, Scheduler, State
 
-from . import scoring
+from . import problemtypes, scoring
 # A module object rather than a dotted name, for the reason given in `catalog`:
 # a package rename cannot leave a stale string behind to fail at runtime. Note
 # this is `core.data.srs`, not the third-party `fsrs` imported above.
@@ -217,11 +217,11 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     """Grade one finished attempt as an FSRS rating.
 
     Spec §8, extended along a second axis. The spec's map reads only how much
-    help you needed and how long you took; this one also reads whether the
-    solution you reached was the one the problem is for. Correctness, cost and
-    the shape of the implementation are three separate questions, and a solve
-    that passes every test with the wrong asymptotics has not learned the
-    pattern -- which is precisely what the card is scheduling.
+    help you needed and how long you took; this one also reads what you said
+    about the result. Correctness, cost and the shape of the implementation are
+    three separate questions, and a solve that passes every test with the wrong
+    asymptotics has not learned the pattern -- which is precisely what the card
+    is scheduling.
 
     Nothing here compares your solution to a reference. There is no reference:
     p99 stores no editorial and no canonical implementation, so a different
@@ -230,27 +230,43 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     answers you yourself gave at the finish prompt.
 
     Written as a floor that demotions lower, rather than a chain of early
-    returns. With five conditions that can each cost you a grade, an early
+    returns. With several conditions that can each cost you a grade, an early
     return is a promotion that skips whatever came after it -- the confidence
     demote used to be unreachable for any solve the optimality branch had
     already spoken about.
 
-    The four grades, and the answers that reach them:
+    **One map for every type of problem.** What the clock, the hints and the
+    verdict say is measured the same way whatever you sat down to, and those
+    branches are below in code. What the *answers* say is the part that differs
+    -- LeetCode asks what the solution costs, a system design asks how many of
+    the requirements you covered -- so that half is not written here at all. It
+    is each field's own `review` rule in the problem's type (`problemtypes`),
+    and this function asks the fields three questions: does any answer fail the
+    attempt, does any demote it, and does every one leave Easy on the table.
+
+    The four grades, and what reaches them:
 
       Again  not solved, or solved after seeing pseudocode or the
-             implementation (help tier >= 3)
+             implementation (help tier >= 3), or an answer the type says fails
       Hard   any help at all, or slower than 1.5x par, or a self-report that it
-             would not stick, or an asymptotic gap you did not spot yourself
-      Good   correct; or suboptimal but you named the better approach after
-             solving, which is the thing being trained
-      Easy   fast, unaided, optimal on time, and you said what it costs on both
-             axes
+             would not stick, or an answer the type says demotes
+      Good   everything else
+      Easy   fast, unaided, and every answer the type requires of Easy
 
-    Two of those inputs are new and both are absent from every attempt written
-    before them. `time_optimality` is NULL, so no demote fires and old history
-    grades as it always did -- except that it can no longer reach Easy, which
-    now requires a claim nobody made. That regrade is deliberate and measured;
-    see `docs/spaced-repetition.md`.
+    For LeetCode that is the map this function used to spell out by hand, rule
+    for rule: `suboptimal` on time demotes unless you knew there was better, and
+    Easy requires `optimal` on time with a complexity claimed on both axes. It
+    lives in `data/types/leetcode.toml` now, and `tests/test_srs.py` holds it to
+    the same answers.
+
+    An attempt that carries no `type` is graded as a LeetCode one, which is what
+    every attempt was before there were types.
+
+    Both of LeetCode's inputs are absent from every attempt written before them.
+    `time_optimality` is NULL, so no demote fires and old history grades as it
+    always did -- except that it can no longer reach Easy, which now requires a
+    claim nobody made. That regrade is deliberate and measured; see
+    `docs/spaced-repetition.md`.
 
     The verdict ladder needs no branch of its own: it lands in `scoring.help_tier`
     alongside the hints, and the tier thresholds below already say what to do with
@@ -265,11 +281,12 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     because the one thing every branch below assumes is that the verdict says
     something about whether you were right.
     """
+    ptype = problemtypes.load(attempt.get("type"))
     verdict = attempt.get("verdict")
     tier = scoring.help_tier(attempt)
     active = int(attempt.get("active_seconds") or 0)
     confidence = attempt.get("self_confidence")
-    par = weights.par_for(difficulty)
+    par = scoring.for_type(weights, ptype.name).par_for(difficulty)
 
     # Anything you did not solve at all, or solved only after most of the answer
     # was in front of you. Legacy `wrong_answer`/`tle` land here too -- you left
@@ -277,28 +294,43 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     if verdict not in scoring.CLEAN_VERDICTS or tier >= 3:
         return Rating.Again
 
+    # What you answered to each thing the type asked. An answer nobody gave is
+    # None, and None fires no rule and meets no requirement: an unanswered
+    # question is not an answer, here as everywhere else.
+    answers = [(field, problemtypes.answer(attempt, field.key)) for field in ptype.fields]
+
+    # An answer that says the attempt missed the problem outright -- a design
+    # that covered three requirements of ten -- fails it whatever the verdict
+    # claimed. LeetCode has no such answer, so nothing of its ever lands here.
+    if any(field.fails(value) for field, value in answers):
+        return Rating.Again
+
     worst = Rating.Good
 
     if tier >= 1 or active > 1.5 * par:
         worst = Rating.Hard
 
-    # The asymptotic gap. `suboptimal` here is your own answer to "was it
-    # optimal?", not a judgement anyone made about your code -- and `unsure`,
-    # which is the default, costs nothing. Volunteering that you were beaten is
-    # the report worth acting on; being unsure is the honest state of most
-    # solves and is not evidence of anything.
+    # The answers that demote. For LeetCode this is the asymptotic gap:
+    # `suboptimal` is your own answer to "was it optimal?", not a judgement
+    # anyone made about your code -- and `unsure`, which is the default, costs
+    # nothing. Volunteering that you were beaten is the report worth acting on;
+    # being unsure is the honest state of most solves and is not evidence of
+    # anything.
     #
     # Knowing there was better is the exception, and it is the whole reason
     # `saw_better` exists. "I wrote the O(n^2) and then saw the sliding window"
     # is a solve that found the pattern late; "I wrote the O(n^2) and that is
     # where I stopped" is a solve that missed it. Only the second one needs the
-    # problem back soon.
+    # problem back soon. A field opts in to that waiver with
+    # `unless_better_known`, because it only means anything for an answer about
+    # the route you took.
     #
     # What counts as knowing has moved. It used to be a second role on the
     # strategy prompt; it is now the problem's own list of methods carrying an
     # optimal one you did not write -- a better record of the same fact, since
     # it survives being noticed on a later solve. `grade_attempt` reads both.
-    if attempt.get("time_optimality") == "suboptimal" and not attempt.get("saw_better"):
+    better_known = bool(attempt.get("saw_better"))
+    if any(field.struggles(value, better_known=better_known) for field, value in answers):
         worst = Rating.Hard
 
     # The self-report is used in one direction only, and that asymmetry is the
@@ -315,21 +347,18 @@ def rate(attempt: Mapping[str, Any], difficulty: str, weights: scoring.Weights) 
     if confidence is not None and int(confidence) <= 2:
         worst = Rating.Hard
 
-    # Easy is the one promotion, and it now asks for the cost as well as the
-    # clock. "Can explain the complexity" is not decoration on a fast solve: a
-    # solution you cannot price is one you pattern-matched, and pattern-matching
-    # is exactly what a long interval will not survive. Both axes are required,
-    # because answering time and skipping space is answering half the question.
-    explained = bool(
-        str(attempt.get("claimed_complexity") or "").strip()
-        and str(attempt.get("claimed_space_complexity") or "").strip()
-    )
+    # Easy is the one promotion, and it asks for more than the clock. For
+    # LeetCode, "can explain the complexity" is not decoration on a fast solve:
+    # a solution you cannot price is one you pattern-matched, and
+    # pattern-matching is exactly what a long interval will not survive. Both
+    # axes are required, because answering time and skipping space is answering
+    # half the question. A type that requires nothing of Easy gets it on the
+    # clock and the help alone, which is the spec's own map.
     if (
         worst is Rating.Good
         and active <= 0.6 * par
         and tier == 0
-        and attempt.get("time_optimality") == "optimal"
-        and explained
+        and all(field.earns_easy(value) for field, value in answers)
     ):
         return Rating.Easy
 
@@ -434,8 +463,14 @@ def grade_attempt(
     missing. Reads no clock: `at` is the event's own timestamp.
     """
     row = conn.execute(
+        # Every column a type's field can be kept in, and the block that holds
+        # the rest. `rate` asks the type which of them it reads -- naming three
+        # of LeetCode's here, as this used to, is how a second type's answers
+        # would have reached the row and never the rating.
         "SELECT a.slug, a.verdict, a.active_seconds, a.max_hint_tier, a.self_confidence, "
-        "       a.time_optimality, a.claimed_complexity, a.claimed_space_complexity, "
+        "       a.claimed_complexity, a.claimed_space_complexity, "
+        "       a.time_optimality, a.space_optimality, a.code_style, "
+        "       a.lc_runtime_pct, a.lc_memory_pct, a.answers, "
         # `saw_better` asks one question through two doors, because it has been
         # answered two ways over this app's life. The legacy door is the
         # `worth_learning` role, retired from the prompt and kept in the log
@@ -454,7 +489,7 @@ def grade_attempt(
         "                    AND m.key NOT IN (SELECT u.key FROM attempt_methods u "
         "                                      WHERE u.attempt_uuid = a.uuid))) "
         "         AS saw_better, "
-        "       p.difficulty "
+        "       p.difficulty, p.type "
         "FROM attempts a LEFT JOIN problems p ON p.slug = a.slug "
         "WHERE a.uuid = ?",
         (attempt_uuid,),

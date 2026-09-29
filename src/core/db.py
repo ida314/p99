@@ -68,9 +68,20 @@ from . import paths
 #    property of the problem and has to be somewhere the next solve reads back.
 #    The replay this bump forces backfills it from every strategy answer already
 #    in the log, so nothing you ever tagged is lost.
+# 15: problem types -- `attempts` and `resolves` gain `answers`, the JSON block
+#    holding whatever a problem's type asked that has no column of its own. The
+#    columns that already exist stay exactly where they are: they are LeetCode's
+#    answers, the log already holds them at the top level of their payloads,
+#    and a type may still ask for one by name (`problemtypes.COLUMN_KEYS`). A
+#    new field gets no column, which is the point -- adding a question to a
+#    type is an edit to a TOML file and never again a bump to this number.
+#    `queues` is rekeyed from the day to the day *and the list*, because with
+#    more than one set in play "today's queue" is one queue per set.
+#    `problems` gained a `type` column in the same release and is not part of
+#    this: it is not a projection, so it is altered in place. See `init`.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -93,10 +104,23 @@ CREATE TABLE IF NOT EXISTS problems (
   difficulty   TEXT NOT NULL,             -- easy|medium|hard
   tags         TEXT NOT NULL,             -- JSON array: ['array','hash-table']
   pattern      TEXT,                      -- neetcode group: 'sliding-window'
-  lists        TEXT NOT NULL              -- JSON: ['neetcode150','blind75']
+  lists        TEXT NOT NULL,             -- JSON: ['neetcode150','blind75']
+  -- which `problemtypes` type it is: what finishing it asks, and what par is.
+  -- Stamped by the set that seeded it (`catalog.sync`), never by the entry.
+  type         TEXT NOT NULL DEFAULT 'leetcode'
 );
 CREATE INDEX IF NOT EXISTS problems_pattern_idx ON problems(pattern);
 """
+
+# `problems` is the one table that is neither the log nor a projection of it, so
+# it is the one table `migrate` cannot fix by dropping: nothing replays into it,
+# and `attempts.slug` points at its rows. A column it gains is therefore added in
+# place. Every problem seeded before there were types is a LeetCode problem,
+# which is what the default says, and the next `catalog.sync` restamps the lot
+# from `config.toml` anyway.
+CATALOG_COLUMNS = {
+    "type": "TEXT NOT NULL DEFAULT 'leetcode'",
+}
 
 # Projections. Dropped and rebuilt wholesale by `events.replay`.
 # `uuid` columns are the join key between the log and the projections; integer
@@ -172,6 +196,14 @@ CREATE TABLE IF NOT EXISTS attempts (
   -- a claim about time, it is a claim someone made about a question that did
   -- not distinguish. It renders as it always did.
   optimality         TEXT,
+  -- Everything else the problem's type asked, as a JSON object keyed by field:
+  -- {"requirements": "7/10", "design": "sound"}. One column rather than one per
+  -- question, because the questions are a TOML file you are expected to edit
+  -- and a column per field would make every edit a migration. Stored as typed;
+  -- what an answer *means* -- which rung of the review it lands on -- is read
+  -- off the type at grade time, so changing the type and replaying regrades.
+  -- NULL on every attempt that was asked nothing beyond the columns above.
+  answers            TEXT,
   is_review          INTEGER NOT NULL DEFAULT 0,
   -- Time the app was closed on this attempt, and how many times you walked away
   -- and came back. Deliberately not folded into `paused_seconds`: a pause is
@@ -233,6 +265,7 @@ CREATE TABLE IF NOT EXISTS resolves (
   -- disagree with it about: a second pass is usually the tidy-up, so the pass
   -- that reads `rough` and the pass that reads `clean` are the same evening.
   code_style         TEXT,
+  answers            TEXT,                -- JSON, as on `attempts`
   code_path          TEXT,
   language           TEXT,
   note_path          TEXT,
@@ -402,12 +435,18 @@ CREATE TABLE IF NOT EXISTS jobs (
   result       TEXT, error TEXT
 );
 
+-- One queue per day *per list*. A day used to have one queue because there was
+-- one list to draw it from; with a set of system design prompts beside the
+-- LeetCode one, each is its own track with its own plan for today, and working
+-- one must not overwrite the other's.
 CREATE TABLE IF NOT EXISTS queues (
-  date         TEXT PRIMARY KEY,          -- YYYY-MM-DD, local
+  date         TEXT NOT NULL,             -- YYYY-MM-DD, local
+  list         TEXT NOT NULL,             -- the list it was drawn from
   slugs        TEXT NOT NULL,             -- JSON array, ordered
   rationale    TEXT NOT NULL,
   generated_by TEXT NOT NULL,
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY (date, list)
 );
 """
 
@@ -549,6 +588,20 @@ SHAPE_CHANGED_IN = {
     # The replay this bump forces is what fills it, from `problem_finished`
     # payloads written long before the question changed.
     14: ("problem_strategies",),
+    # A column on `attempts` and on `resolves`, so the same list as 12 and 13 in
+    # the same order -- and `queues`, whose key changed and whose rows the
+    # replay refolds from every `queue_generated` already in the log. An event
+    # written before queues were per-list names no list, and folds under the
+    # one list there was: see the `queue_generated` branch of `events.apply`.
+    15: (
+        "problem_methods",
+        "attempt_methods",
+        "attempt_strategies",
+        "submissions",
+        "resolves",
+        "attempts",
+        "queues",
+    ),
 }
 
 
@@ -614,6 +667,20 @@ def migrate(conn: sqlite3.Connection) -> bool:
     return dropped
 
 
+def extend_catalog(conn: sqlite3.Connection) -> None:
+    """Add whatever columns `problems` has gained since this file was created.
+
+    The one `ALTER TABLE` in the project, and `CATALOG_COLUMNS` says why it
+    cannot be a drop. Idempotent: a column already there is left alone, which is
+    also what makes a fresh database -- created by the DDL above with every
+    column in place -- a no-op.
+    """
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(problems)")}
+    for column, declaration in CATALOG_COLUMNS.items():
+        if column not in have:
+            conn.execute(f"ALTER TABLE problems ADD COLUMN {column} {declaration}")
+
+
 def init(conn: sqlite3.Connection) -> bool:
     """Create every table, migrating first. Idempotent.
 
@@ -623,6 +690,7 @@ def init(conn: sqlite3.Connection) -> bool:
     needs_replay = migrate(conn)
     for ddl in (EVENT_LOG_DDL, CATALOG_DDL, PROJECTION_DDL, FUTURE_DDL, CHECKPOINT_DDL):
         conn.executescript(ddl)
+    extend_catalog(conn)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

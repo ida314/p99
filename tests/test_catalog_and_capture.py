@@ -16,7 +16,11 @@ def test_catalog_seeds_150_problems(conn):
 def test_catalog_stores_no_problem_content(conn):
     """The whole ToS position rests on this: metadata only, never content."""
     columns = {r[1] for r in conn.execute("PRAGMA table_info(problems)")}
-    assert columns == {"slug", "title", "url", "difficulty", "tags", "pattern", "lists"}
+    # `type` is which kind of problem it is — a name, stamped by the set that
+    # seeded it. Still nothing here that a problem's own page would say.
+    assert columns == {
+        "slug", "title", "url", "difficulty", "tags", "pattern", "lists", "type",
+    }
 
 
 def test_catalog_entries_are_well_formed(conn):

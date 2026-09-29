@@ -1,6 +1,7 @@
 """Filesystem layout (spec §3).
 
     ~/.config/<slug>/config.toml
+    ~/.config/<slug>/types/<type>.toml     (optional, yours)
     ~/.config/<slug>/session               (0600, optional)
     ~/.local/share/<slug>/<slug>.db
     ~/.local/share/<slug>/code/<problem-slug>/<attempt_id>.<ext>
@@ -50,6 +51,28 @@ def data_dir() -> Path:
 
 def config_file() -> Path:
     return config_dir() / "config.toml"
+
+
+def types_dir() -> Path:
+    """Problem types you have written or changed, one TOML file each.
+
+    Beside `config.toml` rather than inside it: a type is a page of fields with
+    a comment on most of them, and a file of its own is what lets you drop one
+    in, or take one out, without editing anything else. A file here wins over a
+    bundled type of the same name -- see `problemtypes.load`.
+    """
+    return config_dir() / "types"
+
+
+def resolve(raw: str) -> Path:
+    """A path written in `config.toml`, made absolute.
+
+    `~` is your home directory and a relative path is relative to the config
+    directory, not to wherever the command happened to be run from: the file
+    says the same thing whichever directory you were standing in.
+    """
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else config_dir() / path
 
 
 def session_file() -> Path:
@@ -190,5 +213,13 @@ def cache_manifest() -> Path:
 
 
 def ensure_dirs() -> None:
-    for d in (config_dir(), data_dir(), code_dir(), notes_dir(), audio_dir(), cache_dir()):
+    for d in (
+        config_dir(),
+        types_dir(),
+        data_dir(),
+        code_dir(),
+        notes_dir(),
+        audio_dir(),
+        cache_dir(),
+    ):
         d.mkdir(parents=True, exist_ok=True)

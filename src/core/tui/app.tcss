@@ -298,7 +298,10 @@ FinishModal {
     width: 1fr;
 }
 
-#optional-row, #complexity-row, #solution-row {
+/* One row per group of fields. What is in a row is the problem type's to say,
+   so these are classes rather than the three ids the form used to be built
+   from. */
+.field-row {
     height: auto;
 }
 
@@ -307,8 +310,10 @@ FinishModal {
    one screen where height is the whole budget. `1fr` of a 74-wide box leaves
    each column 23 columns -- fourteen for the answer once the RadioSet's border
    and its button are paid for, which is the constraint on how long an answer
-   may be worded. Anything longer is silently ellipsised. */
-.solution-axis {
+   may be worded. Anything longer is silently ellipsised, which is why a row
+   holds three at most (`problemtypes.MAX_PER_ROW`) and a type is told when one
+   of its answers is too long to fit. */
+.field-axis {
     width: 1fr;
     height: auto;
 }

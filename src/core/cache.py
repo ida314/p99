@@ -41,7 +41,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from . import branding, catalog, paths, queues, srs
+from . import branding, catalog, paths, problemtypes, queues, srs
 from .catalog import Problem
 
 GRAPHQL_URL = "https://leetcode.com/graphql"
@@ -486,12 +486,30 @@ def save_manifest(manifest: Manifest) -> None:
 # --- what to cache, in what order ------------------------------------------
 
 
+#: The one place statements can be downloaded from. A type names it under
+#: `[solve] fetch`; a type that names nothing has nothing to cache.
+FETCHER = "leetcode"
+
+
+def cacheable(problem: Problem) -> bool:
+    """Is there a statement to download for this problem.
+
+    Asked of the problem's type rather than of its URL. Everything in this
+    module speaks LeetCode's GraphQL, keyed by slug, and a system design prompt
+    called `rate-limiter` would be looked up there as if it were a LeetCode
+    problem of that name -- and fail, on every sweep, as a warning that could
+    never be cleared.
+    """
+    return problemtypes.load(problem.type).fetch == FETCHER
+
+
 def catalog_for(conn: sqlite3.Connection, lists: Sequence[str]) -> dict[str, Problem]:
-    """Every problem in the active lists, deduplicated, in catalog order."""
+    """Every cacheable problem in the active lists, deduplicated, in catalog order."""
     problems: dict[str, Problem] = {}
     for name in lists:
         for problem in catalog.all_problems(conn, name):
-            problems.setdefault(problem.slug, problem)
+            if cacheable(problem):
+                problems.setdefault(problem.slug, problem)
     return problems
 
 
@@ -519,10 +537,13 @@ def priority(
         seen.add(slug)
         ordered.append(problem)
 
-    queue = queues.load(conn, queues.today(now), now=now)
-    if queue is not None:
-        for slug in queue.slugs:
-            add(slug)
+    # Every list's queue, in the order the lists were given: the active one
+    # leads, so it is the one a budget too small for everything keeps.
+    for name in lists:
+        queue = queues.load(conn, queues.today(now), now=now, active_list=name)
+        if queue is not None:
+            for slug in queue.slugs:
+                add(slug)
 
     for row in srs.cards_by_due(conn):
         add(row["slug"])
@@ -812,7 +833,7 @@ def target_for(problem: Problem, *, offline: bool) -> tuple[str, bool]:
     answers DNS and resolves nothing, so any auto-detection would be wrong at
     exactly the moment it mattered.
     """
-    if offline:
+    if offline and cacheable(problem):
         path = local_path(problem.slug)
         if path is not None:
             return path.resolve().as_uri(), True

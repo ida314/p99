@@ -13,6 +13,11 @@ Every row arrives checked, and unchecking one shortens tonight's run without
 touching tonight's queue. The scheduler's opinion is a separate thing from how
 much time you actually have, and making you regenerate until the queue happened
 to be short enough conflated the two.
+
+One queue per list. Each problem set is its own track -- LeetCode on one, system
+design on another -- with its own plan for today, its own size and its own
+review budget, and `h`/`l` step across them. The screen opens on
+`session.active_list` and stepping changes nothing but what you are looking at.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from textual.widgets.selection_list import Selection
 
 from rich.text import Text
 
-from ... import queues
+from ... import catalog, queues
 from ...render import queue_row
 from ..vim import MOTIONS, VimMotion
 
@@ -49,10 +54,18 @@ class QueueScreen(VimMotion, Screen[None]):
     # `ctrl+r` regenerates and `ctrl+s` starts, matching the setup screen's roll
     # and start rather than inventing a second vocabulary for the same two
     # actions — and `ctrl+e` / `ctrl+x` pick and unpick everything for the same
-    # reason. No `h`/`l`: there is nothing here to move sideways through, and
-    # the motion rule says a key that moves must be able to move back.
+    # reason.
+    #
+    # `h`/`l` step across the lists. They were unbound while there was one list
+    # and nothing sideways to move through; with a queue per list there is, and
+    # it is the kind of move the motion rule allows -- nothing sticks, and `h`
+    # puts back exactly what `l` took.
     BINDINGS = [
         *MOTIONS,
+        Binding("h", "step_list(-1)", "list", show=False),
+        Binding("l", "step_list(1)", "list", show=False),
+        Binding("left", "step_list(-1)", "list", show=False),
+        Binding("right", "step_list(1)", "list", show=False),
         Binding("escape", "back", "back"),
         Binding("q", "back", "back", show=False),
         Binding("enter", "start", "start run"),
@@ -68,34 +81,63 @@ class QueueScreen(VimMotion, Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self.queue: queues.Queue | None = None
+        #: The list on screen, and every list there is to step to. Settled in
+        #: `on_mount`, once there is an app to ask.
+        self.active_list = catalog.DEFAULT_LIST
+        self.lists: tuple[str, ...] = (catalog.DEFAULT_LIST,)
 
     def compose(self) -> ComposeResult:
         yield Static(id="queue-title", classes="section-title")
         yield QueueList(id="queue-list")
         yield Static(id="queue-status")
         yield Static(id="queue-rationale")
-        yield Static(
-            "  space pick    ctrl+e all    ctrl+x none    enter start"
-            "    ctrl+r regenerate    q back",
-            classes="hint-bar",
-        )
+        yield Static(id="queue-hint", classes="hint-bar")
         yield Footer()
 
     def on_mount(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        self.active_list = app.config.session.active_list
+        self.lists = self._lists()
+        self.query_one("#queue-hint", Static).update(
+            ("  h/l list    " if len(self.lists) > 1 else "  ")
+            + "space pick    ctrl+e all    ctrl+x none    enter start"
+            "    ctrl+r regenerate    q back"
+        )
         self.load(regenerate=False)
         self.query_one("#queue-list", QueueList).focus()
+
+    def _lists(self) -> tuple[str, ...]:
+        """The lists worth stepping to: the one you opened on, and every other
+        that has a problem in it.
+
+        A set whose file did not load is a list with nothing in it, and stepping
+        onto it would draw up an empty queue -- and log that it had -- every
+        time you passed through. `doctor` is where a set that did not load is
+        reported; here it is simply not a place to go.
+        """
+        app = self.app  # type: ignore[attr-defined]
+        return tuple(
+            name
+            for name in app.config.lists
+            if name == self.active_list or catalog.all_problems(app.conn, name)
+        ) or (self.active_list,)
 
     def load(self, *, regenerate: bool) -> None:
         app = self.app  # type: ignore[attr-defined]
         self.queue = queues.ensure(
             app.conn,
-            n=app.config.session.queue_n,
-            active_list=app.config.session.active_list,
+            # The list's own numbers where its set gives them, and the session's
+            # where it does not: three LeetCode problems is an evening, and
+            # three system designs is not.
+            n=app.config.queue_n_for(self.active_list),
+            active_list=self.active_list,
             weights=app.weights,
             regenerate=regenerate,
-            reviews_per_day=app.config.session.reviews_per_day,
+            reviews_per_day=app.config.reviews_per_day_for(self.active_list),
         )
-        self.query_one("#queue-title", Static).update(f"  today's queue  ·  {self.queue.date}")
+        self.query_one("#queue-title", Static).update(
+            f"  today's queue  ·  {self.active_list}  ·  {self.queue.date}"
+        )
         self._populate()
 
     # --- rendering --------------------------------------------------------
@@ -167,6 +209,27 @@ class QueueScreen(VimMotion, Screen[None]):
         self._update_status()
 
     # --- actions ----------------------------------------------------------
+
+    def action_step_list(self, delta: int) -> None:
+        """The next list along, and its queue for today.
+
+        Clamped rather than wrapping, like the home menu's columns: `h` has to
+        undo `l`, and a wrap makes the pair a cycle instead of an axis.
+
+        Nothing is written to the settings. Which list you are looking at is a
+        fact about this screen; which one the app opens on is
+        `session.active_list`, and changing that is what the settings screen is
+        for. What you unchecked on the list you are leaving is dropped with it,
+        for the reason it has never been saved anywhere: it was a fact about
+        tonight.
+        """
+        if self.active_list not in self.lists:
+            return
+        index = self.lists.index(self.active_list) + delta
+        if not 0 <= index < len(self.lists):
+            return
+        self.active_list = self.lists[index]
+        self.load(regenerate=False)
 
     def action_regenerate(self) -> None:
         self.load(regenerate=True)

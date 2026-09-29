@@ -794,9 +794,12 @@ def test_due_cards_come_back_weakest_first(conn):
     much further gone.
     """
     at = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
-    conn.execute("INSERT OR IGNORE INTO problems VALUES(?,?,?,?,?,?,?)",
+    # Columns named, so the catalog can gain one without this test noticing:
+    # `type` takes its default, which is the LeetCode these two are.
+    columns = "(slug, title, url, difficulty, tags, pattern, lists)"
+    conn.execute(f"INSERT OR IGNORE INTO problems{columns} VALUES(?,?,?,?,?,?,?)",
                  ("weak", "Weak", "u", "medium", "[]", "p", '["neetcode150"]'))
-    conn.execute("INSERT OR IGNORE INTO problems VALUES(?,?,?,?,?,?,?)",
+    conn.execute(f"INSERT OR IGNORE INTO problems{columns} VALUES(?,?,?,?,?,?,?)",
                  ("strong", "Strong", "u", "medium", "[]", "p", '["neetcode150"]'))
     # `strong` is the older due date; `weak` has decayed much further past its.
     for slug, stability, last, due in (

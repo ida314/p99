@@ -781,6 +781,7 @@ class RunEngine:
         time_optimality: str | None = None,
         space_optimality: str | None = None,
         code_style: str | None = None,
+        answers: dict[str, Any] | None = None,
         strategies: dict[str, list[str]] | None = None,
         methods: list[dict] | None = None,
     ) -> Attempt:
@@ -803,6 +804,7 @@ class RunEngine:
                 time_optimality=time_optimality,
                 space_optimality=space_optimality,
                 code_style=code_style,
+                answers=answers,
                 strategies=strategies,
                 methods=methods,
             )
@@ -832,6 +834,12 @@ class RunEngine:
                 # the two optimality answers and priced by neither `scoring` nor
                 # `srs` -- see the `attempts.code_style` comment in `db`.
                 "code_style": code_style,
+                # Whatever else the problem's type asked, keyed by field. The
+                # named arguments above are the fields that have columns; this
+                # is every field that does not, which is every field a type of
+                # your own adds. Omitted when nothing was asked, so a LeetCode
+                # finish is the shape it has always been.
+                **({"answers": answers} if answers else {}),
                 # The patterns you reached for, as you typed them. Rides on this
                 # payload rather than a later event so that `events.apply` can
                 # write the rows before it grades the card -- `srs.rate` reads
@@ -893,6 +901,7 @@ class RunEngine:
         time_optimality: str | None = None,
         space_optimality: str | None = None,
         code_style: str | None = None,
+        answers: dict[str, Any] | None = None,
         strategies: dict[str, list[str]] | None = None,
         methods: list[dict] | None = None,
     ) -> Attempt:
@@ -929,6 +938,7 @@ class RunEngine:
                 # the two optimality answers and priced by neither `scoring` nor
                 # `srs` -- see the `attempts.code_style` comment in `db`.
                 "code_style": code_style,
+                **({"answers": answers} if answers else {}),
                 **({"strategies": strategies} if strategies else {}),
                 **({"methods": methods} if methods else {}),
             },
@@ -1106,7 +1116,7 @@ class RunEngine:
         if target is None:
             return None
         row = self.conn.execute(
-            "SELECT a.*, p.difficulty, p.title FROM attempts a "
+            "SELECT a.*, p.difficulty, p.title, p.type FROM attempts a "
             "JOIN problems p ON p.slug = a.slug WHERE a.id = ?",
             (target,),
         ).fetchone()
