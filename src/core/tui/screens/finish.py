@@ -198,7 +198,11 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
         return "   ·   ".join(bits)
 
     def _copy_button(self) -> Button:
-        return Button("copy AI prompt  (ctrl+y)", id="copy-prompt")
+        copy = Button("📋", id="copy-prompt")
+        copy.tooltip = "AI prompt  (ctrl+y)"
+        # ctrl+y reaches it from anywhere, so tab doesn't stop on it.
+        copy.can_focus = False
+        return copy
 
     def _compose_field(self, entry: problemtypes.Field, row_label: str) -> ComposeResult:
         """One field, as the widget its kind calls for.
@@ -229,44 +233,37 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
     def compose(self) -> ComposeResult:
         default = self._default_verdict
         groups = self.ptype.groups()
-        # The copy button joins the last row of the group the type names for
-        # it, and gets a row of its own when the type names none.
-        beside = max(
-            (i for i, g in enumerate(groups) if g.label == self.ptype.ai_group),
-            default=None,
-        ) if self.ptype.ai_copy and self.ptype.ai_group else None
-
-        with Vertical(id="finish-box"):
-            yield Static(self.problem_title, classes="modal-title")
-            yield Static(self._summary(), classes="field-label")
-            yield Static("verdict", classes="field-label")
-            with RadioSet(id="verdict"):
-                for i, v in enumerate(self.verdicts):
-                    yield RadioButton(VERDICT_LABELS[v], value=(i == default))
-            yield Static(
-                "a month from now, no hints or notes — could you reconstruct it?",
-                classes="field-label",
-            )
-            confidence = self.answers.get("self_confidence")
-            selected = int(confidence) - 1 if confidence else 2
-            with RadioSet(id="confidence"):
-                for i, label in enumerate(CONFIDENCE_OPTIONS):
-                    yield RadioButton(label, value=(i == selected))
-            for index, group in enumerate(groups):
-                if group.labelled:
-                    yield Static(group.label, classes="field-label")
-                with Horizontal(classes="field-row"):
-                    for entry in group.fields:
-                        yield from self._compose_field(entry, group.label)
-                    if index == beside:
-                        yield self._copy_button()
-            if self.ptype.ai_copy and beside is None:
-                with Horizontal(classes="field-row"):
-                    yield self._copy_button()
-            with Horizontal(id="confirm-buttons"):
-                yield Button("save  (ctrl+s)", variant="primary", id="save")
-                yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
-                yield Button("back  (esc)", id="cancel")
+        # The prompt sits outside the box, level with its top: it is an errand
+        # to the LeetCode tab rather than one of the answers the box collects.
+        with Horizontal(id="finish-frame"):
+            with Vertical(id="finish-box"):
+                yield Static(self.problem_title, classes="modal-title")
+                yield Static(self._summary(), classes="field-label")
+                yield Static("verdict", classes="field-label")
+                with RadioSet(id="verdict"):
+                    for i, v in enumerate(self.verdicts):
+                        yield RadioButton(VERDICT_LABELS[v], value=(i == default))
+                yield Static(
+                    "a month from now, no hints or notes — could you reconstruct it?",
+                    classes="field-label",
+                )
+                confidence = self.answers.get("self_confidence")
+                selected = int(confidence) - 1 if confidence else 2
+                with RadioSet(id="confidence"):
+                    for i, label in enumerate(CONFIDENCE_OPTIONS):
+                        yield RadioButton(label, value=(i == selected))
+                for group in groups:
+                    if group.labelled:
+                        yield Static(group.label, classes="field-label")
+                    with Horizontal(classes="field-row"):
+                        for entry in group.fields:
+                            yield from self._compose_field(entry, group.label)
+                with Horizontal(id="confirm-buttons"):
+                    yield Button("save  (ctrl+s)", variant="primary", id="save")
+                    yield Button("throw away  (ctrl+x)", variant="warning", id="discard")
+                    yield Button("back  (esc)", id="cancel")
+            if self.ptype.ai_copy:
+                yield self._copy_button()
 
     def on_mount(self) -> None:
         # Textual parks a RadioSet's navigation cursor on the first button

@@ -289,6 +289,24 @@ FinishModal {
     background: $surface;
 }
 
+/* The box and the prompt icon beside it, centred as one so the icon lines up
+   with the box's top edge. Shrinks to its contents: `1fr` here would stretch
+   the icon's column across the screen. */
+#finish-frame {
+    width: auto;
+    height: auto;
+    max-height: 100%;
+}
+
+/* Four columns and a gap, so box and icon still fit an 80-wide terminal. */
+#copy-prompt {
+    width: 4;
+    min-width: 4;
+    height: 3;
+    padding: 0;
+    margin-left: 1;
+}
+
 #finish-box .field-label {
     color: $text-muted;
     margin-top: 1;

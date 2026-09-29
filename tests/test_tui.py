@@ -1446,8 +1446,8 @@ async def test_the_finish_buttons_stay_on_screen_on_a_short_terminal(isolated_ho
         assert isinstance(app.screen, FinishModal)
         box = app.screen.query_one("#finish-box")
         assert box.region.bottom <= 24
-        # The pinned row only. The copy-prompt button scrolls with the
-        # percentiles beside it, and ctrl+y reaches it from anywhere.
+        # The pinned row only. The copy-prompt icon sits outside the box,
+        # and ctrl+y reaches it from anywhere.
         for button in app.screen.query("#confirm-buttons Button"):
             assert button.region.bottom <= 24, f"{button.id} is below the fold"
             assert button.region.right <= box.region.right, f"{button.id} overflows"
@@ -3629,6 +3629,29 @@ async def test_ctrl_y_copies_the_post_solve_prompt(app, monkeypatch):
         app.screen.query_one("#copy-prompt", Button).press()
         await pilot.pause()
         assert len(copied) == 2
+
+
+async def test_the_prompt_icon_sits_outside_the_box_at_its_top(isolated_home):
+    """Right of the finish box, level with its top edge, and still on screen."""
+    paths.ensure_dirs()
+    paths.config_file().write_text(NO_CAPTURE_CONFIG)
+    app = CoreApp(db.open_db())
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FinishModal)
+        box = app.screen.query_one("#finish-box").region
+        icon = app.screen.query_one("#copy-prompt", Button)
+        assert icon.region.x >= box.right
+        assert icon.region.y == box.y
+        assert icon.region.right <= 80
+        assert "AI prompt" in str(icon.tooltip)
 
 
 async def test_the_prompt_falls_back_to_the_terminal_clipboard(app, monkeypatch):
