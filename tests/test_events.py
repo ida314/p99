@@ -1820,3 +1820,50 @@ def test_a_run_cannot_be_suspended_mid_re_solve(conn):
     eng.solve_again()
     with pytest.raises(engine_module.SessionError):
         eng.suspend_session()
+
+
+def test_going_back_reopens_the_last_problem_and_requeues_the_next(conn):
+    """The `next problem` that meant `again`."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.advance()
+    eng.start_problem("3sum")
+
+    a = eng.back_to_previous()
+    assert a.problem.slug == "two-sum"
+    assert a.solves == 2 and not a.finished
+    assert eng.session.remaining == ["two-sum", "3sum"][eng.session.index :]
+    # 3sum was opened and nothing more: it is gone, not graded.
+    assert conn.execute("SELECT COUNT(*) AS n FROM attempts WHERE slug = '3sum'").fetchone()["n"] == 0
+
+    eng.finish("solved_unaided")
+    eng.advance()
+    assert eng.session.remaining == ["3sum"]
+    assert conn.execute("SELECT n FROM resolves").fetchone()["n"] == 2
+    assert conn.execute("SELECT reps FROM fsrs_cards WHERE slug = 'two-sum'").fetchone()["reps"] == 1
+
+
+def test_going_back_refuses_once_the_next_problem_is_under_way(conn):
+    """A hint is logged, and going back would throw it away with the attempt."""
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum", "3sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided")
+    eng.advance()
+    eng.start_problem("3sum")
+    eng.reveal_hint()
+
+    assert not eng.can_go_back()
+    with pytest.raises(engine_module.SessionError):
+        eng.back_to_previous()
+
+
+def test_there_is_nothing_to_go_back_to_on_the_first_problem(conn):
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    assert not eng.can_go_back()
+    with pytest.raises(engine_module.SessionError):
+        eng.back_to_previous()

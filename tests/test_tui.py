@@ -3683,3 +3683,37 @@ async def test_the_post_solve_prompt_is_edited_in_settings(app, monkeypatch):
         await pilot.press("x")
         await pilot.pause()
         assert app.config.ai.post_solve_prompt == config_module.DEFAULT_POST_SOLVE_PROMPT
+
+
+async def test_b_goes_back_to_the_problem_next_skipped_past(app):
+    """Declining `again` by accident is one key and a confirm to undo."""
+    async with app.run_test() as pilot:
+        app.start_run(["two-sum", "3sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        assert app.engine.attempt.problem.slug == "3sum"
+
+        await pilot.press("b")
+        await pilot.pause()
+        assert "Two Sum" in _plain(app.screen.query_one(".modal-title", Static))
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SolveScreen)
+        assert app.engine.attempt.problem.slug == "two-sum"
+        assert app.engine.attempt.solves == 2
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        # And on to 3sum again, which was put back rather than lost.
+        assert app.engine.attempt.problem.slug == "3sum"
+
+    assert app.conn.execute("SELECT COUNT(*) AS n FROM resolves").fetchone()["n"] == 1
+    assert app.conn.execute(
+        "SELECT verdict FROM attempts WHERE slug = 'two-sum'"
+    ).fetchone()["verdict"] == "solved_unaided"

@@ -400,6 +400,11 @@ def _seal_crashed(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
     )
 
 
+def _untouched(a: Attempt) -> bool:
+    """Opened and nothing more: the first pass, with no hint or submit logged."""
+    return a.solves == 1 and not a.finished and not a.max_hint_tier and not a.submits_logged
+
+
 class RunEngine:
     """Owns one run. Append-only: every method below writes an event."""
 
@@ -408,6 +413,9 @@ class RunEngine:
         self.clock = clock
         self.session: Session | None = None
         self.attempt: Attempt | None = None
+        #: The attempt `advance` just moved past, finished and sealed. Held only
+        #: so `back_to_previous` can hand it back; nothing is written about it.
+        self.previous: Attempt | None = None
 
     # --- crash recovery ---------------------------------------------------
 
@@ -508,6 +516,7 @@ class RunEngine:
             },
         )
         self.session = None
+        self.previous = None
         self.clear_checkpoint()
 
     def suspend_session(self) -> None:
@@ -545,6 +554,7 @@ class RunEngine:
         events.append(self.conn, events.SESSION_SUSPENDED, payload)
         self.session = None
         self.attempt = None
+        self.previous = None
         # The log says everything the checkpoint did, and says it properly.
         self.clear_checkpoint()
 
@@ -1049,8 +1059,45 @@ class RunEngine:
         """Move the cursor past the problem just finished."""
         if self.session is not None:
             self.session.index += 1
+        a = self.attempt
+        self.previous = a if a is not None and a.finished else None
         self.attempt = None
         self.checkpoint()
+
+    def can_go_back(self) -> bool:
+        """Whether `back_to_previous` would do anything but refuse."""
+        a = self.attempt
+        return (
+            self.session is not None
+            and self.previous is not None
+            and (a is None or _untouched(a))
+        )
+
+    def back_to_previous(self) -> Attempt:
+        """Undo the `next problem` you meant to be `again`.
+
+        The problem just opened is thrown away, exactly as `discard` throws away
+        any misfire, and the cursor steps back so it comes up again after this.
+        The one before it is handed back and reopened as a later pass: its own
+        finish is sealed, so this is `solve_again` and records the same way.
+
+        Refuses once the new problem has a hint or a submit on it. Those are
+        logged, and going back would take them down with the attempt.
+        """
+        if self.session is None:
+            raise SessionError("no session in progress")
+        prev = self.previous
+        if prev is None:
+            raise SessionError("nothing to go back to")
+        a = self.attempt
+        if a is not None:
+            if not _untouched(a):
+                raise SessionError("this problem is already under way")
+            self.discard()
+        self.session.index -= 1
+        self.attempt = prev
+        self.previous = None
+        return self.solve_again()
 
     # --- reads ------------------------------------------------------------
 

@@ -65,6 +65,9 @@ class SolveScreen(VimMotion, Screen[None]):
         # clock reading exactly what it reads now.
         Binding("z", "suspend", "suspend"),
         Binding("q", "end_run", "end run"),
+        # Shown only while there is a problem behind you to go back to: see
+        # `check_action`. `b` and not `ctrl+b`, which is a motion.
+        Binding("b", "go_back", "back"),
     ]
 
     VIM_TARGET = "#solve-body"
@@ -143,7 +146,13 @@ class SolveScreen(VimMotion, Screen[None]):
             return
         self.engine.start_problem(remaining[0])
         self._render_problem()
-        self._toast("solve it in the browser — o opens it")
+        previous = self.engine.previous
+        if previous is not None:
+            # Said here, the one moment it is worth saying: a `next problem`
+            # that meant `again` is noticed on this screen or not at all.
+            self._toast(f"solve it in the browser — o opens it, b goes back to {previous.problem.title}")
+        else:
+            self._toast("solve it in the browser — o opens it")
         self._start_recording()
 
     def _show_summary(self) -> None:
@@ -178,6 +187,7 @@ class SolveScreen(VimMotion, Screen[None]):
         panel = self.query_one("#hint-panel", Static)
         panel.remove_class("visible")
         panel.update("")
+        self.refresh_bindings()
         self._tick()
 
     # The strategies you named on this problem are deliberately *not* shown
@@ -492,6 +502,61 @@ class SolveScreen(VimMotion, Screen[None]):
         if self._busy:
             return
         self._end_run_flow()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "go_back":
+            return self.engine.previous is not None
+        return True
+
+    def action_go_back(self) -> None:
+        """Back to the problem just finished, for the pass `next problem` skipped."""
+        if self._busy or self.engine.previous is None:
+            return
+        if not self.engine.can_go_back():
+            self._toast(
+                "a hint or submit is logged on this one — finish it or give it up first",
+                "yellow",
+            )
+            return
+        self.run_worker(self._do_go_back(), exclusive=True)
+
+    async def _do_go_back(self) -> None:
+        previous = self.engine.previous
+        current = self.engine.attempt
+        if previous is None:
+            return
+        self._busy = True
+        try:
+            self._pause_recording(True)
+            ok = await self.app.push_screen_wait(
+                ConfirmModal(
+                    f"Back to {previous.problem.title}?",
+                    "Same problem, fresh clock, recorded under the attempt you "
+                    "just finished. "
+                    + (
+                        f"{current.problem.title} isn't started — it comes up "
+                        "again after this."
+                        if current is not None
+                        else ""
+                    ),
+                    yes_label="go back",
+                    no_label="stay",
+                )
+            )
+            if not ok:
+                self._pause_recording(False)
+                self._toast("staying on this one")
+                self._tick()
+                return
+            # The microphone was on the problem being thrown away, and goes with
+            # it, as in `_do_throw_away`. The rerun gets no recorder: see
+            # `_offer_again`.
+            self._stop_recording(keep=False)
+            self.engine.back_to_previous()
+            self._render_problem()
+            self._toast("fresh clock — solve it again")
+        finally:
+            self._busy = False
 
     # --- flows ------------------------------------------------------------
 
