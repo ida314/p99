@@ -216,6 +216,12 @@ def test_the_post_solve_prompt_has_a_default(conn):
     )
 
 
+def test_the_default_prompt_makes_the_ai_pick_a_style_bucket():
+    prompt = config.DEFAULT_POST_SOLVE_PROMPT
+    assert "exactly one of CLEAN or MESSY" in prompt
+    assert "\n" not in prompt  # still one message
+
+
 def test_the_written_config_file_carries_the_default_prompt(conn):
     config.write_default_config()
     assert config.load().ai.post_solve_prompt == config.DEFAULT_POST_SOLVE_PROMPT

@@ -31,7 +31,13 @@ from .catalog import ProblemSet
 #: line, so it pastes as one message and sits in config.toml as a plain string.
 DEFAULT_POST_SOLVE_PROMPT = (
     "What was the time and space complexity of my solution? "
-    "How is the coding style of my solution? "
+    "Classify the coding style of my solution as exactly one of CLEAN or MESSY, "
+    "naming the bucket first and then giving your reasons in one or two sentences. "
+    "CLEAN means readable names, a simple structure, no dead or duplicated code, "
+    "and edge cases handled where the logic is, so I would hand it in as written. "
+    "MESSY means unclear names, tangled control flow, redundant work, special cases "
+    "bolted on, or anything that needs a rewrite before an interviewer sees it; "
+    "if it falls between the two, pick MESSY. "
     "Did I reach the optimal solution? "
     "What would you name my solution? "
     "What other methods exist that I should know to solve this problem? "
