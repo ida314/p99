@@ -30,27 +30,25 @@ from ..vim import MOTIONS, VimMotion
 # Still 1..4, still worst-to-best, still stored in `attempts.self_confidence` --
 # the numbers mean what they always meant, so old attempts read the same way.
 #
-# What changed is the question. "How well will this stick?" is a prediction made
-# with the solution still in front of you, which is the condition under which
-# self-assessment is least reliable; you are rating how clear it feels now, not
-# how it will go cold. Naming the retrieval condition -- a month, nothing to
-# work from -- is the standard correction, and it costs nothing to ask it this
-# way instead.
-#
-# And the four answers name the same act the question does. "I'd nail it" is a
-# rating of yourself; "I'd reconstruct it quickly" is a claim about a thing you
-# would do, with a month and a blank page as the conditions. The rung you pick
-# is the same rung either way -- the wording just makes it harder to answer the
-# easier question by mistake.
+# The question names the retrieval condition -- a month, cold, no notes or hints
+# -- because "how well will this stick?" is a prediction made with the solution
+# still in front of you, when self-assessment is least reliable. And the answers
+# are amounts of help you would need, a thing you can picture, rather than a
+# rating of yourself. (Kept short because a radio label is one line, and the
+# box is 74 wide.)
 #
 # Not a field of any type, and asked of all of them: whether it would come back
 # cold is the same question about a design as about a solution, and `srs.rate`
 # reads the answer without asking what kind of problem it was.
+CONFIDENCE_QUESTION = (
+    "If I saw this problem cold in a month, with no notes or hints, how much "
+    "help would I need to re-derive the key insight and implement it correctly?"
+)
 CONFIDENCE_OPTIONS = [
-    "1  I'd be lost",
-    "2  I'd struggle to reconstruct it",
-    "3  I'd reconstruct it",
-    "4  I'd reconstruct it quickly",
+    "1  Major help — I probably wouldn’t find the key idea",
+    "2  A hint — I’d need a nudge toward the key idea",
+    "3  No hint, but effort — reconstruct with some struggle",
+    "4  Independent — derive and implement from scratch",
 ]
 
 #: The two ways out of `EndRunModal` that end the run. Named rather than spelled
@@ -243,10 +241,7 @@ class FinishModal(VimMotion, ModalScreen[dict[str, Any] | None]):
                 with RadioSet(id="verdict"):
                     for i, v in enumerate(self.verdicts):
                         yield RadioButton(VERDICT_LABELS[v], value=(i == default))
-                yield Static(
-                    "a month from now, no hints or notes — could you reconstruct it?",
-                    classes="field-label",
-                )
+                yield Static(CONFIDENCE_QUESTION, classes="field-label")
                 confidence = self.answers.get("self_confidence")
                 selected = int(confidence) - 1 if confidence else 2
                 with RadioSet(id="confidence"):
