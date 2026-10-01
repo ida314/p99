@@ -43,6 +43,11 @@ METHOD_ARCHIVED = "method_archived"
 #: prompt. An event and not an in-place update, because it feeds `saw_better` and
 #: everything that feeds a rating has to be replayable.
 METHOD_UPDATED = "method_updated"
+#: A method's name changed on the methods screen. Carries the old key and the
+#: new name; the fold moves everything hung on the old key -- the cost claim, the
+#: file, the attempts that wrote it -- to the new one, so a rename never costs
+#: you anything but the spelling.
+METHOD_RENAMED = "method_renamed"
 #: The same two, from before methods were a list of their own: they named a row
 #: in the shared strategy vocabulary, which is not a thing a method can be. They
 #: stay in the log and stay in `EVENT_TYPES` -- history is not rewritten -- and
@@ -90,6 +95,7 @@ EVENT_TYPES = frozenset(
         SUBMISSION_ARCHIVED,
         METHOD_ARCHIVED,
         METHOD_UPDATED,
+        METHOD_RENAMED,
         SOLUTION_ARCHIVED,
         SOLUTION_UPDATED,
         PROBLEM_STRATEGIES_SET,
@@ -465,6 +471,62 @@ def _record_methods(
             )
 
 
+def _rename_method(conn: sqlite3.Connection, event: Event, p: dict[str, Any]) -> None:
+    """Fold `method_renamed`: the same route under a name you like better.
+
+    A name is also a key, so changing the spelling past what `normalise` ignores
+    moves the row. Everything hung on the old key follows it. Where the new key
+    already names another method on this problem the two are one route, and the
+    fold merges them: the surviving row keeps its own cost claim and file and
+    takes the old row's where it has none, and the attempts that wrote either
+    now say they wrote the one.
+    """
+    slug = p.get("slug", "")
+    old = str(p.get("key") or "")
+    named = methods.clean([str(p.get("name") or "")])
+    if not (slug and old and named):
+        return
+    new, name = named[0].key, named[0].name
+    row = conn.execute(
+        "SELECT * FROM problem_methods WHERE slug = ? AND key = ?", (slug, old)
+    ).fetchone()
+    if row is None:
+        return
+    if new == old:
+        conn.execute(
+            "UPDATE problem_methods SET name = ?, updated_at = ? WHERE slug = ? AND key = ?",
+            (name, event.ts, slug, old),
+        )
+        return
+    target = conn.execute(
+        "SELECT 1 FROM problem_methods WHERE slug = ? AND key = ?", (slug, new)
+    ).fetchone()
+    if target is None:
+        conn.execute(
+            "UPDATE problem_methods SET key = ?, name = ?, updated_at = ? "
+            "WHERE slug = ? AND key = ?",
+            (new, name, event.ts, slug, old),
+        )
+    else:
+        conn.execute(
+            "UPDATE problem_methods SET name = ?, updated_at = ?, "
+            "optimality = COALESCE(optimality, ?), "
+            "code_path = COALESCE(code_path, ?), language = COALESCE(language, ?), "
+            "attempt_uuid = COALESCE(attempt_uuid, ?), attempt_id = COALESCE(attempt_id, ?) "
+            "WHERE slug = ? AND key = ?",
+            (
+                name, event.ts, row["optimality"], row["code_path"], row["language"],
+                row["attempt_uuid"], row["attempt_id"], slug, new,
+            ),
+        )
+        conn.execute("DELETE FROM problem_methods WHERE slug = ? AND key = ?", (slug, old))
+    conn.execute(
+        "UPDATE OR IGNORE attempt_methods SET key = ? WHERE slug = ? AND key = ?",
+        (new, slug, old),
+    )
+    conn.execute("DELETE FROM attempt_methods WHERE slug = ? AND key = ?", (slug, old))
+
+
 def _record_method_code(
     conn: sqlite3.Connection,
     event: Event,
@@ -826,6 +888,9 @@ def apply(
         # exactly the same code. No `attempt_uuid`: nothing here is an answer
         # about a solve.
         _record_methods(conn, event, p.get("slug", ""), p.get("methods"))
+
+    elif event.type == METHOD_RENAMED:
+        _rename_method(conn, event, p)
 
     elif event.type == PROBLEM_STRATEGIES_SET:
         # The problem's tags, entire, from the prompt after a solve or from the

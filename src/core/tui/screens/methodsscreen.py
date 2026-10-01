@@ -14,10 +14,11 @@ monotonic stack route through this, it is the optimal one, and I have never
 written it" is a fact about your preparation that no attempt record can state,
 and it is the row you would open this screen to close.
 
-Two keys write:
+Three keys write:
 
   o  cycle what this method costs — optimal, not optimal, not sure, unclaimed
   e  open `$EDITOR` on the first method with no code, and archive what you write
+  r  rename the highlighted method, as `method_renamed`; everything on it follows
 
 Both go through the event log like everything else. `o` emits `method_updated`,
 which matters more than it looks: an optimal method that is not the one you wrote
@@ -43,15 +44,48 @@ from __future__ import annotations
 from rich.text import Text
 from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Footer, OptionList, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ... import capture, catalog, events, methods
 from ...render import method_row
 from ..vim import MOTIONS, VimMotion
 from .methods import OPTIMALITY_CYCLE
+
+
+class RenameMethodModal(ModalScreen[str | None]):
+    """Edit one method's name. Dismisses with the new name, or None."""
+
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, name: str):
+        super().__init__()
+        self.name_now = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rename-method-box"):
+            yield Static("rename this method", classes="modal-title")
+            yield Input(self.name_now, max_length=methods.MAX_NAME, id="rename-method")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("save  (enter)", variant="primary", id="save")
+                yield Button("cancel  (esc)", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#rename-method", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.dismiss(self.query_one("#rename-method", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class MethodsScreen(VimMotion, Screen[None]):
@@ -71,6 +105,7 @@ class MethodsScreen(VimMotion, Screen[None]):
         Binding("q", "back", "back", show=False),
         Binding("o", "cycle_optimality", "optimal / not"),
         Binding("e", "write_code", "write code"),
+        Binding("r", "rename", "rename"),
         Binding("h", "focus_problems", "problems", show=False),
         Binding("l", "focus_ways", "methods", show=False),
     ]
@@ -244,6 +279,31 @@ class MethodsScreen(VimMotion, Screen[None]):
             {"slug": slug, "methods": [{"name": way.name, "optimality": nxt}]},
         )
         self._show(slug, focus_key=way.key)
+
+    # --- what a way is called ----------------------------------------------
+
+    def action_rename(self) -> None:
+        slug = self._highlighted_slug()
+        way = self._highlighted_way()
+        if slug is None or way is None:
+            return
+
+        def done(value: str | None) -> None:
+            named = methods.clean([value or ""])
+            if not named or named[0].name == way.name:
+                return
+            new = named[0]
+            if new.key != way.key and any(w.key == new.key for w in self.ways):
+                self.notify(f"already a method here: {new.name}", severity="warning")
+                return
+            events.append(
+                self.app.conn,  # type: ignore[attr-defined]
+                events.METHOD_RENAMED,
+                {"slug": slug, "key": way.key, "name": new.name},
+            )
+            self._show(slug, focus_key=new.key)
+
+        self.app.push_screen(RenameMethodModal(way.name), done)
 
     # --- writing the code for one way -------------------------------------
 

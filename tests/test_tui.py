@@ -3340,6 +3340,41 @@ async def test_the_methods_screen_edits_what_a_method_costs(library_app):
     assert types[-1] == "method_updated"
 
 
+async def test_the_methods_screen_renames_a_method(library_app):
+    """`r` opens a name box, and the new name replaces the old one in the list."""
+    from textual.widgets import Input
+
+    from core.tui.screens.methodsscreen import RenameMethodModal
+
+    app = library_app
+    async with app.run_test() as pilot:
+        await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "a try every pair")
+        await pilot.press("space")
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, RenameMethodModal)
+        box = app.screen.query_one("#rename-method", Input)
+        assert box.value == "a try every pair"
+        box.value = "Brute force over pairs"
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MethodsScreen)
+        assert [w.name for w in screen.ways] == ["Brute force over pairs"]
+
+    types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
+    assert types[-1] == "method_renamed"
+
+
 async def test_the_methods_screen_writes_code_for_a_method_you_never_wrote(library_app):
     """`e` closes the gap the page exists to show you.
 

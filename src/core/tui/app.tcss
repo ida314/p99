@@ -624,6 +624,18 @@ TextSettingModal {
     background: $surface;
 }
 
+RenameMethodModal {
+    align: center middle;
+}
+
+#rename-method-box {
+    width: 74;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
 #text-setting {
     height: 8;
 }

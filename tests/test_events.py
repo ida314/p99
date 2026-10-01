@@ -1535,6 +1535,58 @@ def test_code_written_from_the_methods_screen_belongs_to_no_attempt(conn):
     assert conn.execute("SELECT COUNT(*) AS n FROM attempts").fetchone()["n"] == 0
 
 
+def _method_rows(conn):
+    return {
+        r["key"]: (r["name"], r["optimality"], r["code_path"])
+        for r in conn.execute("SELECT key, name, optimality, code_path FROM problem_methods")
+    }
+
+
+def test_renaming_a_method_takes_its_claim_and_file_with_it(conn):
+    events.append(
+        conn,
+        events.METHOD_ARCHIVED,
+        {"slug": "two-sum", "method": "brute force", "code_path": "/tmp/m.py", "language": "python"},
+    )
+    events.append(
+        conn,
+        events.METHOD_UPDATED,
+        {"slug": "two-sum", "methods": [{"name": "brute force", "optimality": "suboptimal"}]},
+    )
+    events.append(
+        conn,
+        events.METHOD_RENAMED,
+        {"slug": "two-sum", "key": "brute-force", "name": "Try every pair"},
+    )
+    expect = {"try-every-pair": ("Try every pair", "suboptimal", "/tmp/m.py")}
+    assert _method_rows(conn) == expect
+    events.replay(conn)
+    assert _method_rows(conn) == expect
+
+
+def test_a_respelling_keeps_the_key(conn):
+    events.append(conn, events.METHOD_UPDATED, {"slug": "two-sum", "methods": [{"name": "hash map"}]})
+    events.append(
+        conn, events.METHOD_RENAMED, {"slug": "two-sum", "key": "hash-map", "name": "Hash Map"}
+    )
+    assert _method_rows(conn) == {"hash-map": ("Hash Map", None, None)}
+
+
+def test_renaming_onto_another_method_merges_the_two(conn):
+    eng = _solve(conn, strategies=strategies.payload(["hash map"]))
+    events.append(
+        conn,
+        events.METHOD_UPDATED,
+        {"slug": "two-sum", "methods": [{"name": "one pass", "optimality": "optimal"}, {"name": "map"}]},
+    )
+    events.append(
+        conn, events.METHOD_RENAMED, {"slug": "two-sum", "key": "map", "name": "one pass"}
+    )
+    assert _method_rows(conn) == {"one-pass": ("one pass", "optimal", None)}
+    events.replay(conn)
+    assert list(_method_rows(conn)) == ["one-pass"]
+
+
 def test_the_retired_solution_events_fold_nowhere(conn):
     """They named a row in the strategy vocabulary, which no method can be.
 
