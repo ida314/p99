@@ -138,6 +138,9 @@ async def test_a_mastered_problem_shows_up_starred(app):
         assert "Two Sum" in text
         assert "1 mastered" in text
         assert render.MASTERED_MARK in text
+        # Under it, the share of the list solved at least once.
+        solved = _plain(app.screen.query_one("#solved", Static))
+        assert "1 solved of 150" in solved
 
         # `m` moves the cursor into it and `escape` brings it back, with only
         # ever one cursor on screen.

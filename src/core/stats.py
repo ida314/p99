@@ -937,6 +937,16 @@ class Overview:
     last_run_at: str | None
 
 
+def solved_slugs(conn: sqlite3.Connection) -> set[str]:
+    """Every problem with at least one solved attempt, at any rung of help."""
+    return {
+        a["slug"]
+        for r in load_runs(conn)
+        for a in r.attempts
+        if a.get("ended_at") and a.get("verdict") in scoring.CLEAN_VERDICTS
+    }
+
+
 def overview(conn: sqlite3.Connection, weights: Weights | None = None) -> Overview:
     runs = load_runs(conn, weights=weights)
     attempts = [a for r in runs for a in r.attempts if a.get("ended_at")]

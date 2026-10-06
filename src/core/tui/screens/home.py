@@ -144,6 +144,7 @@ class HomeScreen(VimMotion, Screen):
             VerticalScroll(Static(id="mastered-content"), id="mastered"),
             id="mastered-block",
         )
+        yield Static(id="solved", classes="solved-line")
         yield Footer()
 
     def on_screen_resume(self) -> None:
@@ -152,11 +153,13 @@ class HomeScreen(VimMotion, Screen):
         self.build_menu()
         self.refresh_overview()
         self.refresh_mastered()
+        self.refresh_solved()
 
     def on_mount(self) -> None:
         self.build_menu()  # focuses whichever list it parked the cursor on
         self.refresh_overview()
         self.refresh_mastered()
+        self.refresh_solved()
 
     def build_menu(self) -> None:
         """Draw the menu, with the suspended run on top of it if there is one."""
@@ -248,6 +251,19 @@ class HomeScreen(VimMotion, Screen):
         self.query_one("#mastered-content", Static).update(
             mastered_table(rows, size, datetime.now(timezone.utc))
         )
+
+    def refresh_solved(self) -> None:
+        """One line: how much of the active list you have solved at least once."""
+        conn = self.app.conn  # type: ignore[attr-defined]
+        cfg = self.app.config  # type: ignore[attr-defined]
+        slugs = {p.slug for p in catalog.all_problems(conn, cfg.session.active_list)}
+        solved = stats.solved_slugs(conn) & slugs
+        line = Text("  ")
+        # Worded like the `4 mastered of 150` line above it, so the two read
+        # as a pair.
+        line.append(f"{len(solved)} solved", style="bold")
+        line.append(f" of {len(slugs)}", style="bright_black")
+        self.query_one("#solved", Static).update(line)
 
     # --- menu -------------------------------------------------------------
 
