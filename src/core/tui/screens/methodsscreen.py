@@ -14,11 +14,12 @@ monotonic stack route through this, it is the optimal one, and I have never
 written it" is a fact about your preparation that no attempt record can state,
 and it is the row you would open this screen to close.
 
-Three keys write:
+Four keys write:
 
   o  cycle what this method costs — optimal, not optimal, not sure, unclaimed
   e  open `$EDITOR` on the first method with no code, and archive what you write
   r  rename the highlighted method, as `method_renamed`; everything on it follows
+  v  rank the highlighted method's variants, as `method_updated` carrying the list
 
 Both go through the event log like everything else. `o` emits `method_updated`,
 which matters more than it looks: an optimal method that is not the one you wrote
@@ -34,9 +35,9 @@ problem's and stays the problem's. This is a record you go to, not a queue that
 comes to you.
 
 The one thing this screen must never become is a way to read the answer while
-solving. `solve._render_problem` withholds method names for the same reason it
-withholds the archived code, and reaching this screen mid-run means walking out
-of the run to do it.
+solving by accident. The solve screen keeps method names off the card and shows
+them only behind `m`, and reaching this screen mid-run means walking out of the
+run to do it.
 """
 
 from __future__ import annotations
@@ -50,9 +51,10 @@ from textual.widgets import Button, Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ... import capture, catalog, events, methods
-from ...render import method_row
+from ...render import method_row, variant_lines
 from ..vim import MOTIONS, VimMotion
 from .methods import OPTIMALITY_CYCLE
+from .variants import VariantsModal
 
 
 class RenameMethodModal(ModalScreen[str | None]):
@@ -106,6 +108,7 @@ class MethodsScreen(VimMotion, Screen[None]):
         Binding("o", "cycle_optimality", "optimal / not"),
         Binding("e", "write_code", "write code"),
         Binding("r", "rename", "rename"),
+        Binding("v", "variants", "variants"),
         Binding("h", "focus_problems", "problems", show=False),
         Binding("l", "focus_ways", "methods", show=False),
     ]
@@ -119,6 +122,8 @@ class MethodsScreen(VimMotion, Screen[None]):
         #: order, so `o` and `e` act without asking the database for a list they
         #: just rendered.
         self.ways: list[methods.Method] = []
+        #: Their variants, best first, keyed by method.
+        self.variants: dict[str, list[methods.Variant]] = {}
         self._busy = False
 
     def compose(self) -> ComposeResult:
@@ -209,6 +214,7 @@ class MethodsScreen(VimMotion, Screen[None]):
     def _show(self, slug: str, focus_key: str | None = None) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
         self.ways = methods.for_problem(conn, slug)
+        self.variants = methods.variants_for(conn, slug)
         widget = self.query_one("#method-ways", OptionList)
         highlighted = widget.highlighted
         widget.clear_options()
@@ -223,18 +229,15 @@ class MethodsScreen(VimMotion, Screen[None]):
             )
             return
         for way in self.ways:
-            widget.add_option(
-                Option(
-                    method_row(
-                        name=way.name,
-                        optimality=way.optimality,
-                        complexity=way.complexity,
-                        written=way.written,
-                        attempt_id=way.attempt_id,
-                    ),
-                    id=way.key,
-                )
+            row = method_row(
+                name=way.name,
+                optimality=way.optimality,
+                complexity=way.complexity,
+                written=way.written,
+                attempt_id=way.attempt_id,
             )
+            row.append_text(variant_lines([v.name for v in self.variants.get(way.key, [])]))
+            widget.add_option(Option(row, id=way.key))
         keys = [w.key for w in self.ways]
         if focus_key in keys:
             widget.highlighted = keys.index(focus_key)
@@ -304,6 +307,36 @@ class MethodsScreen(VimMotion, Screen[None]):
             self._show(slug, focus_key=new.key)
 
         self.app.push_screen(RenameMethodModal(way.name), done)
+
+    # --- how one way is written --------------------------------------------
+
+    def action_variants(self) -> None:
+        """Rank the highlighted method's variants, add one, or take one off.
+
+        Through `method_updated`, the event `o` already emits from here: the
+        `methods` block learned to carry a ranked list, and one event for "what
+        this problem's list says about a method" is simpler than two.
+        """
+        slug = self._highlighted_slug()
+        way = self._highlighted_way()
+        if slug is None or way is None:
+            return
+        before = [v.name for v in self.variants.get(way.key, [])]
+
+        def done(result: dict | None) -> None:
+            if result is None:
+                return
+            after = list(result.get("variants") or [])
+            if after == before:
+                return
+            events.append(
+                self.app.conn,  # type: ignore[attr-defined]
+                events.METHOD_UPDATED,
+                {"slug": slug, "methods": [{"name": way.name, "variants": after}]},
+            )
+            self._show(slug, focus_key=way.key)
+
+        self.app.push_screen(VariantsModal(way.name, before, pick=False), done)
 
     # --- writing the code for one way -------------------------------------
 

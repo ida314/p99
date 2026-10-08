@@ -32,7 +32,13 @@ from ... import (
 )
 from ...catalog import Problem
 from ...engine import MAX_HINT_TIER, RunEngine
-from ...render import DIFFICULTY_STYLE, bar, last_attempt_line, past_attempts_panel
+from ...render import (
+    DIFFICULTY_STYLE,
+    bar,
+    last_attempt_line,
+    past_attempts_panel,
+    past_methods_panel,
+)
 from ...scoring import HINT_TIER_NAMES, fmt_duration
 from ..vim import MOTIONS, VimMotion
 from .finish import (
@@ -73,6 +79,9 @@ class SolveScreen(VimMotion, Screen[None]):
         # `r` for runs, the same mnemonic history has on the home menu — and for
         # the same reason it isn't `h` there either: `h` is a motion.
         Binding("r", "toggle_past", "attempts"),
+        # Your methods and their variants: the answer, in your own words, so
+        # behind a key of its own rather than `r`'s, which is only times.
+        Binding("m", "toggle_methods", "methods"),
         Binding("question_mark", "hint", "hint"),
         Binding("s", "submit", "failed submit"),
         Binding("f", "finish", "finish"),
@@ -97,6 +106,8 @@ class SolveScreen(VimMotion, Screen[None]):
         # Read once per problem rather than on every keypress: it is a database
         # query, and nothing can add to it while the problem is on screen.
         self._past_attempts: list[stats.PastAttempt] = []
+        #: The `m` panel, or None when this problem has no methods to show.
+        self._methods_text = None
         # Speech mode's recorder for the problem on screen. None whenever the
         # run isn't recording, which is the only check any caller has to make.
         self._recorder: audio.Recorder | None = None
@@ -128,6 +139,7 @@ class SolveScreen(VimMotion, Screen[None]):
             # Last, under the hint panel: `r` must never move the clock or the
             # hint text you are reading, and this one can be a dozen lines long.
             yield Static(id="past-attempts")
+            yield Static(id="past-methods")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -223,7 +235,9 @@ class SolveScreen(VimMotion, Screen[None]):
         self._tick()
 
     # The strategies you named on this problem are deliberately *not* shown
-    # here, and this is the note that stops someone adding them. `PastAttempt`
+    # here, and this is the note that stops someone adding them. (Your methods
+    # are, behind `m` and only behind it: hidden is the default, and reading
+    # them is a choice you make with a keypress, like the categories.) `PastAttempt`
     # already withholds your code and your notes on the reasoning that reopening
     # a problem you have seen before is supposed to still be the problem. The
     # name of the technique is the same spoiler in fewer words -- being told
@@ -234,21 +248,31 @@ class SolveScreen(VimMotion, Screen[None]):
     def _load_past_attempts(self, slug: str) -> None:
         """Your own record on this problem: when, how long, how it ended.
 
-        The summary line stays up; the full table is folded away behind `r` and
-        refolded for every problem, like the categories. Neither shows the code
-        or the note — see `stats.PastAttempt`.
+        All of it is folded away -- the summary line too -- and `r` unfolds it,
+        refolded for every problem, like the categories. A review is a card you
+        sit cold until you ask otherwise. None of it shows the code or the note
+        -- see `stats.PastAttempt`.
         """
         self._past_attempts = stats.problem_history(
             self.app.conn,  # type: ignore[attr-defined]
             slug,
             weights=self.app.weights,  # type: ignore[attr-defined]
         )
-        self.query_one("#last-attempt", Static).update(
-            last_attempt_line(self._past_attempts)
-        )
+        line = self.query_one("#last-attempt", Static)
+        line.update(last_attempt_line(self._past_attempts))
+        line.add_class("hidden")
         panel = self.query_one("#past-attempts", Static)
         panel.remove_class("visible")
         panel.update(past_attempts_panel(self._past_attempts))
+        conn = self.app.conn  # type: ignore[attr-defined]
+        self._methods_text = past_methods_panel(
+            methods.for_problem(conn, slug),
+            methods.variants_for(conn, slug),
+            methods.last_written(conn, slug),
+        )
+        shelf = self.query_one("#past-methods", Static)
+        shelf.remove_class("visible")
+        shelf.update(self._methods_text or "")
 
     # --- speech mode ------------------------------------------------------
     #
@@ -497,11 +521,31 @@ class SolveScreen(VimMotion, Screen[None]):
             self._toast("first time on this one — no past attempts yet")
             return
         panel.toggle_class("visible")
+        self.query_one("#last-attempt", Static).set_class(
+            not panel.has_class("visible"), "hidden"
+        )
         if panel.has_class("visible"):
             self._toast("past attempts — time and result, no code or notes")
             panel.scroll_visible(animate=False)
         else:
             self._toast("past attempts hidden")
+
+    def action_toggle_methods(self) -> None:
+        """Show or hide the methods you have recorded here, and their variants.
+
+        Unlike `r` this is the answer, or most of it, which is why it is a key of
+        its own: nothing is logged, but you have to mean it.
+        """
+        panel = self.query_one("#past-methods", Static)
+        if not self._methods_text:
+            self._toast("no methods recorded for this one yet")
+            return
+        panel.toggle_class("visible")
+        if panel.has_class("visible"):
+            self._toast("your methods — best variant first")
+            panel.scroll_visible(animate=False)
+        else:
+            self._toast("methods hidden")
 
     def action_submit(self) -> None:
         attempt = self.engine.attempt

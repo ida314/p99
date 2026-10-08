@@ -429,6 +429,7 @@ def _record_methods(
     slug: str,
     entries: Any,
     attempt_uuid: str | None = None,
+    n: int = 1,
 ) -> None:
     """Fold the `methods` block: the ways this problem can be solved.
 
@@ -445,6 +446,9 @@ def _record_methods(
     method it wrote, which is what the archived file is tagged with and what
     `saw_better` compares against. It is only ever added, never cleared -- a
     second pass tonight that took a different route says both, truthfully.
+
+    `variants` is the method's ranked list, whole, and `variant` is the one pass
+    `n` wrote. See `_record_variants`.
     """
     if not isinstance(entries, list):
         return
@@ -469,6 +473,63 @@ def _record_methods(
                 "(attempt_uuid, attempt_id, slug, key) VALUES(?,?,?,?)",
                 (attempt_uuid, _attempt_id(conn, attempt_uuid), slug, key),
             )
+        _record_variants(conn, event, slug, key, entry, attempt_uuid, n)
+
+
+def _record_variants(
+    conn: sqlite3.Connection,
+    event: Event,
+    slug: str,
+    method: str,
+    entry: dict[str, Any],
+    attempt_uuid: str | None,
+    n: int,
+) -> None:
+    """Fold one method's variants: the ranked list, and the one a pass wrote.
+
+    `variants` replaces the list whole, in the order given, best first. Whole
+    rather than a diff so that a reorder is one event, and a variant left out is
+    gone from the list -- the attempts that wrote it keep saying so, under its
+    key. Absent, the list is left exactly as it was: an entry from before
+    variants existed, or from `o` on the methods screen, says nothing about them.
+
+    `variant` joins the bottom of the list if it is not on it yet, and is only
+    read for a method this pass wrote.
+    """
+    ranked = entry.get("variants")
+    if isinstance(ranked, list):
+        named = methods.clean([str(v) for v in ranked])
+        keys = [v.key for v in named]
+        placeholders = ",".join("?" for _ in keys)
+        conn.execute(
+            "DELETE FROM method_variants WHERE slug = ? AND method = ?"
+            + (f" AND key NOT IN ({placeholders})" if keys else ""),
+            (slug, method, *keys),
+        )
+        for rank, v in enumerate(named):
+            conn.execute(
+                "INSERT INTO method_variants"
+                "(slug, method, key, name, rank, first_seen, updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(slug, method, key) DO UPDATE SET "
+                "name = excluded.name, rank = excluded.rank, updated_at = excluded.updated_at",
+                (slug, method, v.key, v.name, rank, event.ts, event.ts),
+            )
+    wrote = methods.clean([str(entry.get("variant") or "")])
+    if not (wrote and attempt_uuid and entry.get("used")):
+        return
+    v = wrote[0]
+    conn.execute(
+        "INSERT OR IGNORE INTO method_variants"
+        "(slug, method, key, name, rank, first_seen, updated_at) "
+        "VALUES(?,?,?,?,(SELECT COALESCE(MAX(rank) + 1, 0) FROM method_variants "
+        "WHERE slug = ? AND method = ?),?,?)",
+        (slug, method, v.key, v.name, slug, method, event.ts, event.ts),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO attempt_variants"
+        "(attempt_uuid, attempt_id, n, slug, method, key) VALUES(?,?,?,?,?,?)",
+        (attempt_uuid, _attempt_id(conn, attempt_uuid), n, slug, method, v.key),
+    )
 
 
 def _rename_method(conn: sqlite3.Connection, event: Event, p: dict[str, Any]) -> None:
@@ -525,6 +586,24 @@ def _rename_method(conn: sqlite3.Connection, event: Event, p: dict[str, Any]) ->
         (new, slug, old),
     )
     conn.execute("DELETE FROM attempt_methods WHERE slug = ? AND key = ?", (slug, old))
+    # The variants follow the method. On a merge the surviving method keeps its
+    # own ranking and the other's variants it lacks go below them.
+    conn.execute(
+        "UPDATE method_variants SET rank = rank + "
+        "(SELECT COALESCE(MAX(rank) + 1, 0) FROM method_variants WHERE slug = ? AND method = ?) "
+        "WHERE slug = ? AND method = ?",
+        (slug, new, slug, old),
+    )
+    conn.execute(
+        "UPDATE OR IGNORE method_variants SET method = ? WHERE slug = ? AND method = ?",
+        (new, slug, old),
+    )
+    conn.execute("DELETE FROM method_variants WHERE slug = ? AND method = ?", (slug, old))
+    conn.execute(
+        "UPDATE OR IGNORE attempt_variants SET method = ? WHERE slug = ? AND method = ?",
+        (new, slug, old),
+    )
+    conn.execute("DELETE FROM attempt_variants WHERE slug = ? AND method = ?", (slug, old))
 
 
 def _record_method_code(
@@ -596,6 +675,9 @@ def _forget_attempts(conn: sqlite3.Connection, attempt_uuids: list[str]) -> None
         # strategy answer does: `replay` skips the `problem_finished` outright,
         # so the row would never have existed on a rebuild.
         conn.execute("DELETE FROM attempt_methods WHERE attempt_uuid = ?", (attempt_uuid,))
+        # And which variant each of its passes wrote. The ranked list stays, for
+        # the reason the problem's methods do.
+        conn.execute("DELETE FROM attempt_variants WHERE attempt_uuid = ?", (attempt_uuid,))
         # The problem's list keeps its rows and loses this attempt's pointer.
         #
         # The row stays because a way to solve the problem did not stop being one
@@ -810,7 +892,7 @@ def apply(
             conn, event, p["attempt_uuid"], p.get("slug", ""), p.get("strategies")
         )
         _record_methods(
-            conn, event, p.get("slug", ""), p.get("methods"), p["attempt_uuid"]
+            conn, event, p.get("slug", ""), p.get("methods"), p["attempt_uuid"], int(p["n"])
         )
         # No `_grade`, and this is the whole reason the event exists. The card
         # was folded by the `problem_finished` this pass sits under; grading

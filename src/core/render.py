@@ -436,18 +436,89 @@ def method_row(
     return line
 
 
-def method_list(ways: Sequence[Any]) -> list[Text]:
+def variant_lines(
+    names: Sequence[str], marks: Mapping[str, str] | None = None, indent: int = 6
+) -> Text:
+    """One method's variants, best at the top, as lines to hang under its row.
+
+    `best` above and `worst` below once there are two, so which end of the list
+    is which never has to be remembered. One variant is just the line: a ladder
+    of one has no ends.
+
+    `marks` maps a variant's name to a note drawn after it -- "last time, pass
+    1" on the solve screen.
+    """
+    pad = " " * indent
+    out = Text()
+    if not names:
+        return out
+    ends = len(names) > 1
+    if ends:
+        out.append(f"\n{pad}best", style="green")
+    for i, name in enumerate(names, 1):
+        out.append(f"\n{pad}  {i}  ", style="bright_black")
+        out.append(name[:50])
+        note = (marks or {}).get(name)
+        if note:
+            out.append(f"   ← {note}", style="bold green")
+    if ends:
+        out.append(f"\n{pad}worst", style="yellow")
+    return out
+
+
+def past_methods_panel(
+    ways: Sequence[Any],
+    variants: Mapping[str, Sequence[Any]],
+    last: Mapping[str, Mapping[str, Sequence[int]]],
+) -> Text | None:
+    """The solve screen's `m` panel: every method here, each with its variants.
+
+    The variants the most recent attempt wrote are marked with the pass that
+    wrote them, so "last time I wrote the set-dedupe one, then the pruned one on
+    the rerun" is on screen. None when there is nothing recorded at all.
+    """
+    if not ways:
+        return None
+    out = Text()
+    out.append("  your methods", style="bold")
+    for way in ways:
+        out.append("\n")
+        out.append_text(
+            method_row(
+                name=way.name,
+                optimality=way.optimality,
+                complexity=way.complexity,
+                written=way.written,
+            )
+        )
+        ranked = list(variants.get(way.key, []))
+        written = last.get(way.key, {})
+        marks = {
+            v.name: "last time, pass " + ", ".join(str(n) for n in written[v.key])
+            for v in ranked
+            if v.key in written
+        }
+        out.append_text(variant_lines([v.name for v in ranked], marks))
+    return out
+
+
+def method_list(
+    ways: Sequence[Any], variants: Mapping[str, Sequence[Any]] | None = None
+) -> list[Text]:
     """A problem's whole list, for the screen that only reads it."""
-    rows = [
-        method_row(
+    rows = []
+    for m in ways:
+        row = method_row(
             name=m.name,
             optimality=m.optimality,
             complexity=m.complexity,
             written=m.written,
             attempt_id=m.attempt_id,
         )
-        for m in ways
-    ]
+        row.append_text(
+            variant_lines([v.name for v in (variants or {}).get(m.key, [])])
+        )
+        rows.append(row)
     if not rows:
         rows.append(Text("  no methods recorded for this problem yet", style="bright_black"))
     return rows

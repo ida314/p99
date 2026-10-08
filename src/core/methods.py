@@ -27,6 +27,14 @@ method recorded on this problem that is not the one you wrote is you knowing
 there was better, and unlike an answer given in the ninety seconds after a solve
 it can be recorded two months later and still be true.
 
+A method can have **variants**: implementations of the same route, so the same
+big-O, that differ in what the big-O leaves out. "Trie-guided DFS with
+backtracking" is one method whether the found words are deduped with a set at
+the end or pruned out of the trie as they are found; the second is the better
+variant of it, not a better method. They are ranked best first, and they carry
+no optimality on purpose: that column is a big-O claim and `srs.rate` reads it,
+and a constant factor is not grounds for a harder review.
+
 Nothing here writes. Like `strategies` and `scoring`, this module is a pure
 function plus reads; the write path is `events.apply` folding a `methods` block.
 """
@@ -89,6 +97,15 @@ class Method:
     @property
     def written(self) -> bool:
         return bool(self.code_path)
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One implementation of a method. `rank` 0 is the best."""
+
+    key: str
+    name: str
+    rank: int
 
 
 def normalise(name: str) -> str:
@@ -178,6 +195,44 @@ def used_by_attempt(conn: sqlite3.Connection, attempt_uuid: str) -> list[Named]:
     ]
 
 
+def variants_for(conn: sqlite3.Connection, slug: str) -> dict[str, list[Variant]]:
+    """Every method's variants on this problem, keyed by method, best first."""
+    out: dict[str, list[Variant]] = {}
+    for r in conn.execute(
+        "SELECT method, key, name, rank FROM method_variants WHERE slug = ? "
+        "ORDER BY method, rank, name",
+        (slug,),
+    ).fetchall():
+        out.setdefault(r["method"], []).append(
+            Variant(key=r["key"], name=r["name"], rank=r["rank"])
+        )
+    return out
+
+
+def last_written(conn: sqlite3.Connection, slug: str) -> dict[str, dict[str, list[int]]]:
+    """Which variants the most recent attempt that named one wrote, and on which pass.
+
+    `{method_key: {variant_key: [pass, ...]}}`. One attempt and not every one:
+    this is "what did I write last time", and a variant written a year ago and
+    improved on since would only be noise beside it.
+    """
+    latest = conn.execute(
+        "SELECT v.attempt_uuid AS uuid FROM attempt_variants v "
+        "JOIN attempts a ON a.uuid = v.attempt_uuid "
+        "WHERE v.slug = ? ORDER BY a.ended_at DESC, a.id DESC LIMIT 1",
+        (slug,),
+    ).fetchone()
+    if latest is None:
+        return {}
+    out: dict[str, dict[str, list[int]]] = {}
+    for r in conn.execute(
+        "SELECT method, key, n FROM attempt_variants WHERE attempt_uuid = ? ORDER BY n",
+        (latest["uuid"],),
+    ).fetchall():
+        out.setdefault(r["method"], {}).setdefault(r["key"], []).append(r["n"])
+    return out
+
+
 def problems_with_methods(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Every problem with at least one recorded method, most recently touched first.
 
@@ -201,7 +256,8 @@ def payload(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The `methods` block of a `problem_finished` payload.
 
     One entry per way this problem can be solved, as
-    `{"name", "optimality", "used"}`. Deduped by key with the first spelling
+    `{"name", "optimality", "used"}`, plus `variants` (the method's whole ranked
+    list, best first) and `variant` (the one this pass wrote) when there are any. Deduped by key with the first spelling
     winning, the same rule `clean` applies everywhere else.
 
     `used` is the one part of an entry that is about tonight rather than about
@@ -221,11 +277,15 @@ def payload(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             continue
         seen.add(named[0].key)
         optimality = entry.get("optimality")
-        out.append(
-            {
-                "name": named[0].name,
-                "optimality": optimality if optimality in OPTIMALITIES else None,
-                "used": bool(entry.get("used")),
-            }
-        )
+        block: dict[str, Any] = {
+            "name": named[0].name,
+            "optimality": optimality if optimality in OPTIMALITIES else None,
+            "used": bool(entry.get("used")),
+        }
+        if isinstance(entry.get("variants"), list):
+            block["variants"] = [v.name for v in clean(entry["variants"])]
+        variant = clean([str(entry.get("variant") or "")])
+        if variant and block["used"]:
+            block["variant"] = variant[0].name
+        out.append(block)
     return out

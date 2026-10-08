@@ -42,6 +42,11 @@ that is not the one you wrote is the modern form of "I saw the better approach" 
 and unlike the retired `worth_learning` role it can be recorded two months later,
 from the browsable copy of this same list, and still be true.
 
+`v` opens the highlighted method's variants: the same route written better or
+worse, ranked best first. Marking one there says which this pass wrote and marks
+the method too, so a Solve-again pass that only tightened the code is "the same
+method, the better variant". See `variants`.
+
 `esc` steps back to the strategy prompt with everything intact, which steps back
 to the verdict prompt in turn. Nothing is written until all three are done.
 """
@@ -61,6 +66,7 @@ from textual.widgets.option_list import Option
 from ... import methods, problemtypes, scoring
 from ...render import QUALITY_LABELS, method_row, quality_reason
 from .finish import SIGNAL_BACK
+from .variants import VariantsModal
 from ..vim import MOTIONS, VimMotion
 
 #: `o` walks this, ending back at None. Unclaimed is a stop on the cycle and not
@@ -86,6 +92,7 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         *MOTIONS,
         Binding("space", "toggle_used", "wrote this one"),
         Binding("o", "cycle_optimality", "optimal / not"),
+        Binding("v", "variants", "variants"),
         Binding("i", "focus_new", "add a method", show=False),
         Binding("slash", "focus_new", "add a method", show=False),
         Binding("ctrl+s", "save", "save"),
@@ -128,6 +135,11 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         #: have just said you did not write has no business keeping it. A claim
         #: you made yourself with `o` leaves this set and stays.
         self._carried: set[str] = set()
+        #: Each method's variants, best first, and the one this pass wrote. The
+        #: stored lists are kept beside them so an untouched list is not re-sent.
+        self.variants: dict[str, list[str]] = {}
+        self.variant: dict[str, str] = {}
+        self._stored_variants: dict[str, list[str]] = {}
         self._order: list[str] = []
         self._syncing = False
         self._restore = list(picked or [])
@@ -147,7 +159,7 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             yield Static(id="methods-quality", classes="panel")
             yield Static(
                 "  space  the one you wrote    o  optimal / not optimal / not sure"
-                "    i add one    ctrl+s save    esc back",
+                "    v  variants    i add one    ctrl+s save    esc back",
                 classes="hint-bar",
             )
             with Horizontal(id="confirm-buttons"):
@@ -161,6 +173,9 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             self.optimality[row.key] = row.optimality
             self._stored[row.key] = row.optimality
             self._detail[row.key] = row
+        for key, ranked in methods.variants_for(conn, self.slug).items():
+            self.variants[key] = [v.name for v in ranked]
+            self._stored_variants[key] = list(self.variants[key])
 
         # What was marked before a step back, including a method that only exists
         # because you typed it: it is in `_restore` and not in the database yet,
@@ -174,6 +189,10 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             self.optimality[key] = entry.get("optimality")
             if entry.get("used"):
                 self.used.add(key)
+            if isinstance(entry.get("variants"), list):
+                self.variants[key] = list(entry["variants"])
+            if entry.get("variant"):
+                self.variant[key] = entry["variant"]
 
         self._resort()
         self._populate()
@@ -195,7 +214,7 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         documents; it fails silently both times.
         """
         detail = self._detail.get(key)
-        return method_row(
+        line = method_row(
             name=self.names.get(key, key),
             optimality=self.optimality.get(key),
             wrote_it=key in self.used,
@@ -206,6 +225,23 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             ),
             written=bool(detail and detail.written),
         )
+        ranked = self.variants.get(key) or []
+        mine = self.variant.get(key) if key in self.used else None
+        if mine:
+            keys = [methods.normalise(n) for n in ranked]
+            at = keys.index(methods.normalise(mine)) + 1 if methods.normalise(mine) in keys else 0
+            line.append("\n      variant  ", style="bright_black")
+            line.append(mine[:44])
+            if at and len(ranked) > 1:
+                where = "best" if at == 1 else "worst" if at == len(ranked) else f"{at} of {len(ranked)}"
+                line.append(f"  ({where})", style="bright_black")
+        elif ranked:
+            line.append(
+                f"\n      {len(ranked)} variant{'s' if len(ranked) > 1 else ''}"
+                "  — v to pick the one you wrote",
+                style="bright_black",
+            )
+        return line
 
     def _visible(self) -> list[str]:
         needle = self.query_one("#methods-new", Input).value.strip().lower()
@@ -327,6 +363,9 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         elif key in self._carried:
             self.optimality[key] = None
             self._carried.discard(key)
+        if key not in self.used:
+            # A variant of a method you did not write is not one you wrote.
+            self.variant.pop(key, None)
         self._populate()
         self._refresh_quality()
 
@@ -342,6 +381,40 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         self._carried.discard(key)
         self._populate()
         self._refresh_quality()
+
+    def action_variants(self) -> None:
+        """Open the highlighted method's variants, to rank them or mark tonight's.
+
+        Marking one marks the method as well: a variant you wrote is a method
+        you wrote, and making you press `space` too would be asking twice.
+        """
+        key = self._current_key()
+        if key is None:
+            return
+
+        def done(result: dict[str, Any] | None) -> None:
+            if result is None:
+                return
+            self.variants[key] = list(result.get("variants") or [])
+            picked = result.get("variant")
+            if picked:
+                self.variant[key] = picked
+                if key not in self.used:
+                    # Through the toggle, so the verdict's claim carries over
+                    # exactly as it does for `space`.
+                    self.action_toggle_used()
+            else:
+                self.variant.pop(key, None)
+            self._populate(focus_key=key)
+
+        self.app.push_screen(
+            VariantsModal(
+                self.names.get(key, key),
+                self.variants.get(key, []),
+                self.variant.get(key) if key in self.used else None,
+            ),
+            done,
+        )
 
     def action_focus_new(self) -> None:
         self.query_one("#methods-new", Input).focus()
@@ -394,14 +467,22 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             self.action_back()
 
     def _entries(self) -> list[dict[str, Any]]:
-        return [
-            {
+        out: list[dict[str, Any]] = []
+        for key in self._order:
+            entry: dict[str, Any] = {
                 "name": self.names[key],
                 "optimality": self.optimality.get(key),
                 "used": key in self.used,
             }
-            for key in self._order
-        ]
+            # The ranking only when it changed, so a night you read the list
+            # does not restate it; the pick whenever there is one.
+            ranked = self.variants.get(key)
+            if ranked is not None and ranked != self._stored_variants.get(key, []):
+                entry["variants"] = list(ranked)
+            if key in self.used and self.variant.get(key):
+                entry["variant"] = self.variant[key]
+            out.append(entry)
+        return out
 
     def _changed(self) -> bool:
         """Did this screen learn anything the database does not already hold?
@@ -416,6 +497,9 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         """
         if self.used:
             return True
+        for key, ranked in self.variants.items():
+            if ranked != self._stored_variants.get(key, []):
+                return True
         for key in self._order:
             if key not in self._stored or self._stored[key] != self.optimality.get(key):
                 return True

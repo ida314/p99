@@ -205,9 +205,9 @@ Screen {
     margin: 0 2;
 }
 
-/* "seen twice before · 12d ago · SOLVED WITH HINTS in 18:42" — always on, so
-   that opening a problem always answers "have I done this before". r opens
-   the rest of the record underneath the hint panel, where it moves nothing. */
+/* "seen twice before · 12d ago · SOLVED WITH HINTS in 18:42" — off the card
+   until r, which shows it with the rest of the record underneath the hint
+   panel, where it moves nothing. */
 #last-attempt {
     height: auto;
     margin: 0 0 1 0;
@@ -254,6 +254,23 @@ Screen {
 
 #past-attempts.visible {
     display: block;
+}
+
+/* The methods you have recorded and the variants of each, behind `m`. Hidden
+   for the reason `r` is: the record of a solve stays off the card until you
+   ask for it. */
+#past-methods {
+    margin: 1 0 1 0;
+    height: auto;
+    display: none;
+}
+
+#past-methods.visible {
+    display: block;
+}
+
+#last-attempt.hidden {
+    display: none;
 }
 
 /* --- offline cache ------------------------------------------------------ */
@@ -631,6 +648,52 @@ TextSettingModal {
 
 RenameMethodModal {
     align: center middle;
+}
+
+#variants-box {
+    width: 70;
+    height: auto;
+    max-height: 100%;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#variants-box .field-label {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#variants-best {
+    color: $success;
+    margin: 1 0 0 2;
+}
+
+#variants-worst {
+    color: $warning;
+    margin: 0 0 0 2;
+}
+
+#variants-list {
+    height: auto;
+    max-height: 10;
+    border: none;
+    background: $surface;
+}
+
+#variants-box Input {
+    width: 1fr;
+    margin-top: 1;
+}
+
+#variants-box .hint-bar {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#variants-box #confirm-buttons {
+    dock: bottom;
+    background: $surface;
 }
 
 #rename-method-box {

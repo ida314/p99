@@ -206,7 +206,9 @@ def cmd_methods(args: argparse.Namespace) -> int:
     console.print()
     for slug in slugs:
         console.print(f"  [bold]{slug}[/bold]")
-        for line in render.method_list(methods.for_problem(conn, slug)):
+        for line in render.method_list(
+            methods.for_problem(conn, slug), methods.variants_for(conn, slug)
+        ):
             console.print(line)
         console.print()
     return 0

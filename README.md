@@ -333,7 +333,8 @@ real points.
 | `o` | open the problem in the browser |
 | `p` | pause / resume (paused time is logged, not hidden) |
 | `c` | show / hide the problem's pattern and tags (hidden by default) |
-| `r` | show / hide your past attempts at this problem — when, how long, how it ended (solve) |
+| `r` | show / hide your past attempts at this problem — when, how long, how it ended; hidden until you ask (solve) |
+| `m` | show / hide the methods you have recorded for this problem and their variants, best first (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
 | `s` | log a failed submit, then paste the code behind it (solve); only for a type with a judge to submit to |
 | `f` | finish — verdict, confidence, then whatever the problem's type asks (for LeetCode: cost, optimality, code style), then the patterns, then the problem's methods, then capture |
@@ -343,6 +344,8 @@ real points.
 | `a` | the methods screen — every way you know to solve a problem (home) |
 | `p` | the patterns screen — which techniques can solve which problems (home) |
 | `e` | write the code for a method you have never written (methods screen); tag the highlighted problem (patterns screen) |
+| `v` | a method's variants — rank them, add one, mark the one this pass wrote (methods prompt, methods screen) |
+| `K` `J` | move a variant up / down the ranking (variants) |
 | `esc` | back one screen — every post-solve prompt steps back to the one before it, and the verdict prompt back to the problem |
 | `ctrl+x` | throw the attempt away from the finish prompt (nothing is recorded); on a rerun it drops the rerun and keeps the solve behind it |
 | `y` `n` | solve it again / move on, at the offer after every finished pass |
@@ -459,10 +462,21 @@ it scores nothing for exactly that reason. Code from a solve arrives the other
 way: one buffer per solve, landing in the attempt's own file and tagged with the
 method you marked.
 
+A method can have **variants**: the same route, so the same big-O, written
+better or worse. "Trie-guided DFS with backtracking" is one method whether the
+found words are deduped with a set at the end or pruned out of the trie as they
+are found; the second is its better variant, not a better method. `v` opens a
+method's variants, ranked with **best** at the top and **worst** at the bottom
+(`K`/`J` move a row). On the prompt after a solve, `space` there marks the one
+this pass wrote, so solving it again to tighten the code records "same method,
+better variant". Variants carry no optimality and never reach the scheduler: that
+column is a big-O claim, and a constant factor is not a harder review.
+
 Nothing here is due. The card stays the **problem's**: recording a second method
 does not shorten an interval or add a second thing to review. And it is a screen
-you walk out of a run to reach — the solve screen withholds method names for the
-same reason it withholds your archived code.
+you walk out of a run to reach — the solve screen keeps method names off the card
+and shows them only when you press `m`, so a review is sat cold unless you choose
+otherwise.
 
 Under `by strategy`, the stats screen shows the same data from the other side:
 how many problems each pattern reaches and how many solves reached for it, with

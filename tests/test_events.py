@@ -68,6 +68,8 @@ def _snapshot(conn):
         keyed("problem_strategies", "slug, key"),
         keyed("attempt_methods", "attempt_uuid, key"),
         keyed("problem_methods", "slug, key"),
+        keyed("method_variants", "slug, method, key"),
+        keyed("attempt_variants", "attempt_uuid, n, method"),
     )
 
 
@@ -1919,3 +1921,132 @@ def test_there_is_nothing_to_go_back_to_on_the_first_problem(conn):
     assert not eng.can_go_back()
     with pytest.raises(engine_module.SessionError):
         eng.back_to_previous()
+
+
+# --- variants: one method, written better or worse ----------------------------
+
+TRIE = "trie-guided DFS with backtracking"
+
+
+def _solve_then_tighten(conn, slug="two-sum"):
+    """Pass 1 dedupes with a set; the rerun prunes the trie. Same method."""
+    eng = RunEngine(conn)
+    eng.start_session([slug])
+    eng.start_problem(slug)
+    eng.finish(
+        "solved_unaided",
+        time_optimality="optimal",
+        methods=methods.payload(
+            [
+                {
+                    "name": TRIE,
+                    "optimality": "optimal",
+                    "used": True,
+                    "variants": ["list(set()) word deletion"],
+                    "variant": "list(set()) word deletion",
+                }
+            ]
+        ),
+    )
+    eng.solve_again()
+    eng.finish(
+        "solved_unaided",
+        time_optimality="optimal",
+        methods=methods.payload(
+            [
+                {
+                    "name": TRIE,
+                    "used": True,
+                    "variants": ["trie pruning optimized", "list(set()) word deletion"],
+                    "variant": "trie pruning optimized",
+                }
+            ]
+        ),
+    )
+    return eng
+
+
+def test_each_pass_records_the_variant_it_wrote(conn):
+    _solve_then_tighten(conn)
+
+    ranked = methods.variants_for(conn, "two-sum")
+    key = methods.normalise(TRIE)
+    assert [v.name for v in ranked[key]] == [
+        "trie pruning optimized",
+        "list(set()) word deletion",
+    ]
+    # One method, not two: the variant is not a route of its own.
+    assert conn.execute("SELECT COUNT(*) FROM problem_methods").fetchone()[0] == 1
+    assert methods.last_written(conn, "two-sum") == {
+        key: {"list-set-word-deletion": [1], "trie-pruning-optimized": [2]}
+    }
+
+
+def test_variants_never_move_the_card(conn):
+    """A constant factor is not a harder review, so the schedule cannot see it."""
+    eng = _solve_then_tighten(conn, "two-sum")
+    eng.advance()
+    eng.start_problem("3sum")
+    eng.finish(
+        "solved_unaided",
+        time_optimality="optimal",
+        methods=methods.payload([{"name": TRIE, "optimality": "optimal", "used": True}]),
+    )
+    cards = {
+        r["slug"]: (r["stability"], r["state"])
+        for r in conn.execute("SELECT slug, stability, state FROM fsrs_cards")
+    }
+    assert cards["two-sum"] == cards["3sum"]
+
+
+def test_reranking_from_the_methods_screen_replaces_the_list(conn):
+    _solve_then_tighten(conn)
+    key = methods.normalise(TRIE)
+    events.append(
+        conn,
+        events.METHOD_UPDATED,
+        {"slug": "two-sum", "methods": [{"name": TRIE, "variants": ["trie pruning optimized"]}]},
+    )
+    assert [v.name for v in methods.variants_for(conn, "two-sum")[key]] == [
+        "trie pruning optimized"
+    ]
+    # Taken off the list, still written: the pass that wrote it says so.
+    assert "list-set-word-deletion" in methods.last_written(conn, "two-sum")[key]
+    # And `o` from the same screen, which carries no list, leaves it alone.
+    events.append(
+        conn,
+        events.METHOD_UPDATED,
+        {"slug": "two-sum", "methods": [{"name": TRIE, "optimality": "optimal"}]},
+    )
+    assert len(methods.variants_for(conn, "two-sum")[key]) == 1
+
+
+def test_variants_follow_a_renamed_method(conn):
+    _solve_then_tighten(conn)
+    old = methods.normalise(TRIE)
+    events.append(
+        conn,
+        events.METHOD_RENAMED,
+        {"slug": "two-sum", "key": old, "name": "trie DFS"},
+    )
+    ranked = methods.variants_for(conn, "two-sum")
+    assert list(ranked) == ["trie-dfs"]
+    assert len(ranked["trie-dfs"]) == 2
+    assert list(methods.last_written(conn, "two-sum")) == ["trie-dfs"]
+
+
+def test_variants_replay_to_the_same_place(conn):
+    _solve_then_tighten(conn)
+    before = _snapshot(conn)
+    events.replay(conn)
+    assert _snapshot(conn) == before
+
+
+def test_a_deleted_run_takes_its_variant_tags_with_it(conn):
+    eng = _solve_then_tighten(conn)
+    eng.advance()
+    session_uuid = eng.session.uuid
+    eng.end_session()
+    events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
+    assert conn.execute("SELECT COUNT(*) FROM attempt_variants").fetchone()[0] == 0
+    assert methods.last_written(conn, "two-sum") == {}

@@ -79,9 +79,14 @@ from . import paths
 #    more than one set in play "today's queue" is one queue per set.
 #    `problems` gained a `type` column in the same release and is not part of
 #    this: it is not a projection, so it is altered in place. See `init`.
+# 16: variants -- `method_variants`, the ranked implementations of one method
+#    that share its big-O and differ in what the big-O leaves out, and
+#    `attempt_variants`, which of them each pass wrote. Two new tables and no
+#    changed ones; the bump is what forces the replay, and the replay has
+#    nothing to put in them, since no event before this one names a variant.
 # Bumping this is cheap precisely because everything it touches is a projection
 # -- see `migrate`.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 EVENT_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -346,6 +351,42 @@ CREATE TABLE IF NOT EXISTS attempt_methods (
 );
 CREATE INDEX IF NOT EXISTS attempt_methods_slug_idx ON attempt_methods(slug);
 
+-- The implementations of one method, ranked best first. A variant shares its
+-- method's route and so its big-O -- "trie-guided DFS with backtracking" is one
+-- method whether found words are deduped with a set at the end or pruned out of
+-- the trie as they are found -- and differs in what the big-O leaves out.
+--
+-- Deliberately carries no optimality. That column on the method is a big-O
+-- claim and `srs.rate` reads it; a constant factor is not grounds for a harder
+-- review, so nothing about a variant reaches the scheduler.
+--
+-- `rank` is the order you put them in, 0 for the best. The list is set whole by
+-- every event that carries it, so reordering is one event and not a swap.
+CREATE TABLE IF NOT EXISTS method_variants (
+  slug         TEXT NOT NULL REFERENCES problems(slug),
+  method       TEXT NOT NULL,            -- problem_methods.key
+  key          TEXT NOT NULL,            -- methods.normalise(name), per method
+  name         TEXT NOT NULL,
+  rank         INTEGER NOT NULL,         -- 0 is the best
+  first_seen   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (slug, method, key)
+);
+
+-- Which variant one pass wrote. Keyed by the pass as well as the attempt,
+-- because solving it again is how a variant usually gets written: pass 1 the
+-- one you reached for, pass 2 the one the feedback pointed at.
+CREATE TABLE IF NOT EXISTS attempt_variants (
+  attempt_uuid TEXT NOT NULL,
+  attempt_id   INTEGER REFERENCES attempts(id),
+  n            INTEGER NOT NULL,         -- 1 is the attempt, 2.. are resolves
+  slug         TEXT NOT NULL,
+  method       TEXT NOT NULL,
+  key          TEXT NOT NULL,
+  PRIMARY KEY (attempt_uuid, n, method)
+);
+CREATE INDEX IF NOT EXISTS attempt_variants_slug_idx ON attempt_variants(slug);
+
 -- Every technique that can solve one problem. The problem's list, not any
 -- attempt's -- see `strategies` for why the prompt after a solve now asks the
 -- question that way round.
@@ -495,6 +536,8 @@ CREATE TABLE IF NOT EXISTS run_checkpoint (
 # slug list, so replaying the log reproduces the queue exactly rather than
 # regenerating it.
 PROJECTION_TABLES = (
+    "attempt_variants",    # references attempts: children first
+    "method_variants",
     "problem_methods",     # references attempts: children first
     "attempt_methods",     # references attempts: children first
     "attempt_strategies",  # references attempts and strategies: children first
@@ -602,6 +645,9 @@ SHAPE_CHANGED_IN = {
         "attempts",
         "queues",
     ),
+    # Two new tables, so nothing to drop and the bump doing the real work, the
+    # same bargain as 7, 8 and 10.
+    16: ("attempt_variants", "method_variants"),
 }
 
 

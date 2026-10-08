@@ -12,7 +12,7 @@ import pytest
 
 from textual.widgets import Button, Input, OptionList, RadioSet, SelectionList, Static
 
-from core import branding, db, paths, stats
+from core import branding, db, events, paths, stats
 from core.engine import RunEngine
 from core.scoring import VERDICTS
 from core.tui.screens import home
@@ -1565,10 +1565,12 @@ async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
         assert len(screen._past_attempts) == 1
         assert screen._past_attempts[0].ago == "12d ago"
 
-        # The summary line is always up; the table is folded away until r.
+        # All of it is off the card until r -- the summary line too.
         panel = screen.query_one("#past-attempts", Static)
+        line = screen.query_one("#last-attempt", Static)
         assert not panel.has_class("visible")
-        summary = _plain(screen.query_one("#last-attempt", Static))
+        assert line.has_class("hidden")
+        summary = _plain(line)
         assert "seen once before" in summary
         assert "12d ago" in summary
         assert "SOLVED WITH HINTS" in summary
@@ -1576,6 +1578,7 @@ async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
         await pilot.press("r")
         await pilot.pause()
         assert panel.has_class("visible")
+        assert not line.has_class("hidden")
         shown = _plain(panel)
         assert "SOLVED WITH HINTS" in shown
         assert "09:12" in shown  # 552 seconds, the time it took
@@ -1587,6 +1590,7 @@ async def test_opening_a_problem_shows_when_you_last_attempted_it(app):
         await pilot.press("r")
         await pilot.pause()
         assert not panel.has_class("visible")
+        assert line.has_class("hidden")
 
 
 async def test_a_problem_you_have_never_seen_says_so(app):
@@ -3783,3 +3787,138 @@ async def test_b_goes_back_to_the_problem_next_skipped_past(app):
     assert app.conn.execute(
         "SELECT verdict FROM attempts WHERE slug = 'two-sum'"
     ).fetchone()["verdict"] == "solved_unaided"
+
+
+# --- variants -------------------------------------------------------------
+
+
+async def test_v_on_the_methods_prompt_marks_the_variant_you_wrote(strategy_app):
+    """Rank the variants, mark tonight's, and both land in the log."""
+    from core.tui.screens.variants import VariantsModal
+
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "trie dfs")
+        await pilot.press("v")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, VariantsModal)
+        await _type_into(app, pilot, "#variants-new", "trie pruning")
+        await _type_into(app, pilot, "#variants-new", "set dedupe at the end")
+        # Typed last, so marked and at the bottom; tonight it is the worse one.
+        assert modal.names == ["trie pruning", "set dedupe at the end"]
+        assert modal.picked == "set dedupe at the end"
+        # Swap them and swap them back: K lifts the row the cursor is on.
+        await pilot.press("K")
+        assert modal.names == ["set dedupe at the end", "trie pruning"]
+        await pilot.press("J")
+        assert modal.names == ["trie pruning", "set dedupe at the end"]
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert screen.variant == {"trie-dfs": "set dedupe at the end"}
+        assert "variant  set dedupe at the end  (worst)" in _option_prompts(
+            screen, "#methods-list"
+        )
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    ranked = [
+        r["name"]
+        for r in app.conn.execute("SELECT name FROM method_variants ORDER BY rank")
+    ]
+    assert ranked == ["trie pruning", "set dedupe at the end"]
+    tag = app.conn.execute("SELECT n, method, key FROM attempt_variants").fetchone()
+    assert tuple(tag) == (1, "trie-dfs", "set-dedupe-at-the-end")
+
+
+async def test_picking_a_variant_marks_the_method(strategy_app):
+    """A variant you wrote is a method you wrote; no second keypress for it."""
+    app = strategy_app
+    async with app.run_test() as pilot:
+        screen = await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "trie dfs")
+        await pilot.press("space")  # unmark it
+        assert screen.used == set()
+        await pilot.press("v")
+        await pilot.pause()
+        await _type_into(app, pilot, "#variants-new", "trie pruning")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert screen.used == {"trie-dfs"}
+        # And unmarking the method drops the variant with it.
+        await pilot.press("space")
+        assert screen.variant == {}
+
+
+async def test_the_methods_screen_ranks_variants(library_app):
+    """`v` on the browsable copy edits the list, through `method_updated`."""
+    app = library_app
+    async with app.run_test() as pilot:
+        await _to_the_methods_prompt(app, pilot)
+        await _name_a_method(app, pilot, "trie dfs")
+        await pilot.press("ctrl+s")
+        await _decline_another_pass(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.press("v")
+        await pilot.pause()
+        await _type_into(app, pilot, "#variants-new", "set dedupe at the end")
+        await _type_into(app, pilot, "#variants-new", "trie pruning")
+        await pilot.press("K")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, MethodsScreen)
+        shown = _option_prompts(screen, "#method-ways")
+        assert shown.index("best") < shown.index("trie pruning")
+        assert shown.index("trie pruning") < shown.index("set dedupe")
+        assert shown.index("set dedupe") < shown.index("worst")
+
+    types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
+    assert types[-1] == "method_updated"
+    # Nothing was solved from here, so no pass is tagged.
+    assert app.conn.execute("SELECT COUNT(*) FROM attempt_variants").fetchone()[0] == 0
+
+
+async def test_your_methods_stay_off_the_card_until_m(app):
+    """A review is sat cold; `m` is how you choose otherwise."""
+    async with app.run_test() as pilot:
+        events.append(
+            app.conn,
+            events.METHOD_UPDATED,
+            {
+                "slug": "two-sum",
+                "methods": [
+                    {
+                        "name": "one pass with a map",
+                        "optimality": "optimal",
+                        "variants": ["check before insert", "two loops"],
+                    }
+                ],
+            },
+        )
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SolveScreen)
+        panel = screen.query_one("#past-methods", Static)
+        assert not panel.has_class("visible")
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert panel.has_class("visible")
+        shown = _plain(panel)
+        assert "one pass with a map" in shown
+        assert shown.index("best") < shown.index("check before insert")
+        assert shown.index("two loops") < shown.index("worst")
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert not panel.has_class("visible")
