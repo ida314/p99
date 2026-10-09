@@ -262,9 +262,11 @@ three days past a four-day interval from one three days past a hundred-day
 interval, and the first is much further gone. The rest are deferred and the queue
 says how many, out loud.
 
-The cap relaxes rather than shortening a queue: once the unseen pool is
-exhausted, `_select`'s third pass drops it and the queue fills with reviews,
-which is the only sensible answer when there is nothing new left to serve.
+The cap used to relax rather than shorten a queue: once the unseen pool ran out,
+`_select`'s third pass dropped it and filled the queue with reviews. Since
+2026-10-09 it holds. "At most one review a session" is the rule, so a queue with
+nothing new left to draw comes back short and says so. That happens sooner with
+`queue.new_patterns` set, because the unseen pool is then only those patterns.
 
 Simulated forward from the real card states on 2026-08-20, at three problems a
 day, varying only the rate at which reviews grade `Again` (new problems held at

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -19,7 +20,7 @@ from textual.widgets.selection_list import Selection
 
 from rich.text import Text
 
-from ... import catalog, srs
+from ... import catalog, queues, srs
 from ...catalog import Problem
 from ...render import DIFFICULTY_STYLE, mastered_prefix
 from ..vim import MOTIONS, VimMotion
@@ -256,11 +257,17 @@ class SetupScreen(VimMotion, Screen[RunPlan | None]):
     def action_roll(self) -> None:
         """Random-from-list, preferring problems you have never attempted."""
         conn = self.app.conn  # type: ignore[attr-defined]
+        cfg = self.app.config  # type: ignore[attr-defined]
+        # The queue's limits, so a roll is never the way around them. A problem
+        # you tick by hand is your call and is not checked against any of this.
         picks = catalog.pick_random(
             conn,
             self._count(),
             active_list=self.active_list,
             rng=random.Random(),
+            exclude=set(queues.skipped(cfg.queue.skip_until, datetime.now(timezone.utc))),
+            new_patterns=cfg.new_patterns_for(self.active_list),
+            max_seen=cfg.reviews_per_day_for(self.active_list),
         )
         self.chosen = {p.slug for p in picks}
         # Clear the filter so a roll is never partly invisible.

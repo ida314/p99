@@ -95,7 +95,18 @@ tonight, not a correction to the schedule.
 
 How many of those slots reviews may take is `session.reviews_per_day`, and one
 is the default. Raise it to work off a backlog faster, at the cost of new
-coverage; set it to zero for a stretch of pure coverage.
+coverage; set it to zero for a stretch of pure coverage. It is a ceiling: when
+there is not enough new work to fill the queue, the queue comes back short and
+says so rather than taking a second review.
+
+`[queue]` narrows what the queue draws from. `new_patterns` lists the patterns
+new LeetCode problems may come from (empty means all of them), and
+`[queue.skip_until]` holds named cards out until a date. `ctrl+r` on the setup
+screen keeps to both, and to the review ceiling.
+
+On the solve screen, `[stuck]` sets when to change tack on a medium or a hard:
+change approach, take a small hint, study the solution. The defaults are
+20/35/50 minutes for a medium and 45/60 for a hard. Easies get no cues.
 
 How many the queue holds is `session.queue_n`. It is a separate knob from
 `session.planned_n`, which is only what the setup screen rolls by default —

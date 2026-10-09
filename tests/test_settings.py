@@ -244,3 +244,33 @@ def test_a_free_text_value_renders_short_and_never_steps():
     assert option.free_text
     assert len(option.render(config.DEFAULT_POST_SOLVE_PROMPT)) == 15
     assert option.step("anything", 1) == "anything"
+
+
+def test_queue_rules_and_the_stuck_plan_are_read_from_the_file(conn):
+    import datetime as dt
+
+    _write_file_config(
+        FILE_CONFIG
+        + """
+[queue]
+new_patterns = ["two-pointers", "1d-dp", "two-pointers"]
+
+[queue.skip_until]
+counting-bits = 2026-11-01
+
+[stuck]
+hard = { hint = 40 }
+
+[sets.system-design]
+type = "system-design"
+"""
+    )
+    cfg = config.load(conn)
+    assert cfg.queue.new_patterns == ("two-pointers", "1d-dp")
+    assert cfg.queue.skip_until == (("counting-bits", dt.date(2026, 11, 1)),)
+    assert cfg.queue.skipped(dt.date(2026, 10, 31)) == {"counting-bits"}
+    assert cfg.queue.skipped(dt.date(2026, 11, 1)) == set()
+    assert cfg.stuck["hard"] == config.StuckRule(hint=40)
+    assert cfg.stuck["medium"] == config.DEFAULT_STUCK["medium"]
+    assert cfg.new_patterns_for("neetcode150") == ("two-pointers", "1d-dp")
+    assert cfg.new_patterns_for("system-design") == ()

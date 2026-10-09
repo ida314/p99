@@ -59,11 +59,15 @@ Every run, ranked against every other run.
 Today's queue: which problems to do, in what order, and why. Reviews are
 scheduled by FSRS from your own history and lead the queue, but take only
 .I session.reviews_per_day
-slots of it \(em one by default \(em so new coverage does not stall. When
+slots of it \(em one by default, and never more \(em so new coverage does not stall. When
 several problems are due the slot goes to the one you have forgotten most
 rather than the one that has waited longest, and the rest are deferred. The
 remaining slots go to problems you have never opened, drawn from your weakest
-patterns. No problem attempted in the last three days appears unless it has come
+patterns, or only from
+.I queue.new_patterns
+when it names any. Cards named in
+.I queue.skip_until
+stay out until their date. No problem attempted in the last three days appears unless it has come
 due, the difficulty mix is targeted at roughly 20/60/20, and no pattern ever runs
 three problems deep: interleaving beats blocking for transfer. Generated on first
 use each day.

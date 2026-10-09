@@ -18,7 +18,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import catalog, events, srs, stats
 from .scoring import Weights
@@ -34,7 +34,8 @@ GENERATED_BY = "deterministic-v1"
 #: every day went to problems already seen while 131 of the 150 had never been
 #: opened. The budget the schedule is built around is 2 new and 1 review, and
 #: that is a number, so it is stored as one. `session.reviews_per_day` overrides
-#: it; `_select` still relaxes it rather than handing back a short queue.
+#: it, and it is a ceiling: `_select` would rather hand back a short queue than
+#: a second review.
 REVIEWS_PER_DAY = 1
 
 #: Days a problem is off the table after an attempt, unless FSRS says otherwise.
@@ -233,6 +234,12 @@ def spread_by_pattern(problems: list) -> list:
     return out
 
 
+def skipped(skip_until: Iterable[tuple[str, date]], now: datetime) -> frozenset[str]:
+    """The cards still held out today, by the local calendar the queue is dated in."""
+    day = date.fromisoformat(today(now))
+    return frozenset(slug for slug, until in skip_until if day < until)
+
+
 def candidates(
     conn: sqlite3.Connection,
     *,
@@ -241,9 +248,18 @@ def candidates(
     weights: Weights,
     now: datetime,
     reviews_per_day: int = REVIEWS_PER_DAY,
+    new_patterns: Iterable[str] = (),
+    skip_until: Iterable[tuple[str, date]] = (),
 ) -> list[Item]:
-    """The pool the selector chooses from, in priority order (spec §10 stage 1)."""
+    """The pool the selector chooses from, in priority order (spec §10 stage 1).
+
+    `new_patterns`, when it names any, is the only place new problems come from;
+    a card you already hold is reviewed whatever its pattern. `skip_until` holds
+    a card out of every step until its date, due or not.
+    """
     problems = {p.slug: p for p in catalog.all_problems(conn, active_list)}
+    held = skipped(skip_until, now)
+    allowed = frozenset(new_patterns)
     # What kind of problem this list holds. Everything below that ranks --
     # the slow tail, the weakest pattern, the weakest tag -- ranks within it.
     type_name = next((p.type for p in problems.values()), None)
@@ -254,7 +270,7 @@ def candidates(
 
     def add(slug: str, source: str, *, due: str | None = None, overdue: int = 0) -> None:
         p = problems.get(slug)
-        if p is None or slug in seen:
+        if p is None or slug in seen or slug in held:
             return
         # The cooldown yields to FSRS: if the model says a problem is due, three
         # days is not a reason to skip it.
@@ -285,7 +301,13 @@ def candidates(
     # Every fill below walks the catalog spread across patterns, so the pool the
     # selector sees can actually satisfy the interleaving rule and the
     # difficulty mix rather than being nine arrays-hashing problems in a row.
-    unseen = spread_by_pattern([p for slug, p in problems.items() if slug not in attempted])
+    unseen = spread_by_pattern(
+        [
+            p
+            for slug, p in problems.items()
+            if slug not in attempted and (not allowed or p.pattern in allowed)
+        ]
+    )
 
     def add_unseen_in_pattern(pattern: str | None, source: str) -> bool:
         """Take the first unseen problem in `pattern`. True if one was added.
@@ -451,6 +473,10 @@ def _select(
     due, the answer is to spend the slot on the weakest of them -- which is the
     order `srs.due_cards` hands the pool over in -- and let the other five wait,
     not to spend the day clearing a backlog instead of covering new ground.
+
+    And it is a ceiling, never relaxed: "at most one review" is the rule, so when
+    there is not enough new work to fill `n` the queue comes back short and the
+    rationale says why.
     """
     targets = _mix_targets(n)
     review_cap = max(0, reviews_per_day)
@@ -484,18 +510,24 @@ def _select(
             used.add(item.slug)
             targets[item.difficulty.lower()] = targets.get(item.difficulty.lower(), 0) - 1
 
-    # Four passes, each dropping one constraint. The review cap and the mix are
-    # targets; interleaving is nearly a law and goes last; none of them is worth
-    # handing back a short queue for. A catalog you have barely started has more
-    # reviews than new problems only for as long as that stays true.
+    # Three passes, each dropping one constraint. The mix is a target and goes
+    # first; interleaving is nearly a law and goes last. The review cap never
+    # goes: it is the one rule here worth a short queue.
     take(respect_reviews=True, respect_mix=True, respect_pattern=True)
     take(respect_reviews=True, respect_mix=False, respect_pattern=True)
-    take(respect_reviews=False, respect_mix=False, respect_pattern=True)
-    take(respect_reviews=False, respect_mix=False, respect_pattern=False)
+    take(respect_reviews=True, respect_mix=False, respect_pattern=False)
     return taken, relaxed
 
 
-def _rationale(items: list[Item], relaxed: bool, weak: list[str], deferred: int = 0) -> str:
+def _rationale(
+    items: list[Item],
+    relaxed: bool,
+    weak: list[str],
+    deferred: int = 0,
+    *,
+    short: int = 0,
+    held: int = 0,
+) -> str:
     """The templated stand-in for Phase 3's written rationale (spec §10 stage 2).
 
     Phase 3 replaces the prose. It does not replace the decision.
@@ -513,6 +545,8 @@ def _rationale(items: list[Item], relaxed: bool, weak: list[str], deferred: int 
         # Said out loud for the same reason the relaxed interleaving is: a
         # backlog you cannot see reads as a scheduler that has lost track of it.
         bits.append(f"{deferred} more due and deferred — they keep")
+    if held > 0:
+        bits.append(f"{held} card{'s' if held != 1 else ''} held out until a later date")
     fresh = [i for i in items if not i.is_review]
     if fresh:
         bits.append(f"{len(fresh)} new")
@@ -539,6 +573,10 @@ def _rationale(items: list[Item], relaxed: bool, weak: list[str], deferred: int 
     for i in items:
         counts[i.difficulty.lower()] = counts.get(i.difficulty.lower(), 0) + 1
     bits.append("/".join(f"{counts.get(d, 0)}{d[0]}" for d in ("easy", "medium", "hard")))
+    if short > 0:
+        bits.append(
+            f"{short} short of a full queue: nothing new left to draw, and reviews stay at the cap"
+        )
 
     if relaxed:
         # Said out loud rather than swallowed: a constraint that silently stops
@@ -561,6 +599,8 @@ def generate(
     now: datetime | None = None,
     date: str | None = None,
     reviews_per_day: int = REVIEWS_PER_DAY,
+    new_patterns: Iterable[str] = (),
+    skip_until: Iterable[tuple[str, date]] = (),
 ) -> Queue:
     """Build today's queue and append the `queue_generated` event.
 
@@ -577,6 +617,8 @@ def generate(
         weights=weights,
         now=now,
         reviews_per_day=reviews_per_day,
+        new_patterns=new_patterns,
+        skip_until=skip_until,
     )
     items, relaxed = _select(pool, n, reviews_per_day)
     type_name = catalog.type_of(conn, active_list)
@@ -589,9 +631,15 @@ def generate(
     # this list's own problems: a card due in another set is that set's
     # backlog, and naming it here would be a number this queue cannot work off.
     mine = {p.slug for p in catalog.all_problems(conn, active_list)}
-    due = sum(1 for row in srs.due_cards(conn, now) if row["slug"] in mine)
+    # A held-out card is not deferred: it is waiting for a date you chose.
+    held = skipped(skip_until, now) & mine
+    due = sum(
+        1 for row in srs.due_cards(conn, now) if row["slug"] in mine and row["slug"] not in held
+    )
     deferred = max(0, due - sum(1 for i in items if i.is_review))
-    rationale = _rationale(items, relaxed, weak, deferred)
+    rationale = _rationale(
+        items, relaxed, weak, deferred, short=max(0, n - len(items)) if items else 0, held=len(held)
+    )
 
     events.append(
         conn,
@@ -699,6 +747,8 @@ def ensure(
     now: datetime | None = None,
     regenerate: bool = False,
     reviews_per_day: int = REVIEWS_PER_DAY,
+    new_patterns: Iterable[str] = (),
+    skip_until: Iterable[tuple[str, date]] = (),
 ) -> Queue:
     """Today's queue, generating it if today has none.
 
@@ -726,4 +776,6 @@ def ensure(
         now=now,
         date=date,
         reviews_per_day=reviews_per_day,
+        new_patterns=new_patterns,
+        skip_until=skip_until,
     )

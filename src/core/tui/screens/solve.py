@@ -26,6 +26,7 @@ from ... import (
     events,
     methods,
     problemtypes,
+    render,
     scoring,
     stats,
     strategies,
@@ -134,6 +135,7 @@ class SolveScreen(VimMotion, Screen[None]):
             yield Static(id="last-attempt")
             yield Static(id="timer")
             yield Static(id="attempt-state")
+            yield Static(id="stuck")
             yield Static(id="toast")
             yield Static(id="hint-panel")
             # Last, under the hint panel: `r` must never move the clock or the
@@ -411,6 +413,16 @@ class SolveScreen(VimMotion, Screen[None]):
             state.append("paused ", style="bright_black")
             state.append(fmt_duration(attempt.total_paused_seconds))
         self.query_one("#attempt-state", Static).update(state)
+
+        # The stuck plan is for LeetCode problems, where the minutes mean
+        # something; it goes quiet once the clock has stopped.
+        cue = None
+        if not attempt.finished and attempt.problem.type == problemtypes.DEFAULT_TYPE:
+            cue = render.stuck_line(
+                self.app.config.stuck.get((attempt.problem.difficulty or "").lower()),  # type: ignore[attr-defined]
+                active,
+            )
+        self.query_one("#stuck", Static).update(cue or "")
 
     def _toast(self, message: str, style: str = "") -> None:
         self.query_one("#toast", Static).update(Text(f"  {message}", style=style))

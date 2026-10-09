@@ -22,6 +22,7 @@ import os
 import sqlite3
 import tomllib
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from . import branding, catalog, events, paths, problemtypes
@@ -89,6 +90,26 @@ selection = "random"
 # Types are TOML files of their own. `{branding.COMMAND} types` lists them, and
 # `{branding.COMMAND} types --new <name>` writes one into types/ beside this
 # file for you to edit.
+
+[queue]
+# which patterns new LeetCode problems may come from, by the pattern's key
+# (`arrays-hashing`, `1d-dp`, ...). Empty means every pattern. Reviews are not
+# affected: a card you already have comes back whatever its pattern.
+#   new_patterns = ["arrays-hashing", "two-pointers", "1d-dp"]
+new_patterns = []
+
+# cards held out of the queue until a date, by slug. The card keeps its schedule
+# and comes back on the morning of that date.
+[queue.skip_until]
+#   counting-bits = 2026-11-01
+
+[stuck]
+# when the solve screen tells you to change tack, by difficulty: minutes of
+# active time before you deliberately change approach, take a small hint (not
+# the solution), and study the solution. 0 leaves that step out. LeetCode
+# problems only; easy has no cues.
+medium = {{ change = 20, hint = 35, solution = 50 }}
+hard = {{ change = 0, hint = 45, solution = 60 }}
 
 [capture]
 # language solutions are archived as; drives the temp-file extension so your
@@ -196,6 +217,37 @@ class SessionConfig:
 
 
 @dataclass(frozen=True)
+class QueueConfig:
+    #: Patterns new LeetCode problems may be drawn from. Empty: all of them.
+    new_patterns: tuple[str, ...] = ()
+    #: Slug -> the first day that card may be queued again.
+    skip_until: tuple[tuple[str, date], ...] = ()
+
+    def skipped(self, today: date) -> frozenset[str]:
+        """The cards still held out on `today`."""
+        return frozenset(slug for slug, until in self.skip_until if today < until)
+
+
+@dataclass(frozen=True)
+class StuckRule:
+    """Minutes of active time at which each step of being stuck begins. 0: never."""
+
+    change: int = 0
+    hint: int = 0
+    solution: int = 0
+
+
+#: Your own rule for mediums, from 2026-09-03: change approach at 20, a small
+#: hint in the 35-45 window, the solution 10-15 minutes after that if the hint
+#: did not unlock it. 35 and 50 are the early ends of those ranges. Hards get
+#: 45 and 60, as asked; easies get nothing.
+DEFAULT_STUCK = {
+    "medium": StuckRule(change=20, hint=35, solution=50),
+    "hard": StuckRule(hint=45, solution=60),
+}
+
+
+@dataclass(frozen=True)
 class CaptureConfig:
     language: str = "python"
     enabled: bool = True
@@ -270,6 +322,9 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    queue: QueueConfig = field(default_factory=QueueConfig)
+    #: Difficulty -> when the solve screen says to change tack.
+    stuck: dict[str, StuckRule] = field(default_factory=lambda: dict(DEFAULT_STUCK))
     #: Every problem set, bundled ones first, then yours in the order the file
     #: names them. The order is `catalog.sync`'s order of precedence.
     sets: tuple[ProblemSet, ...] = catalog.BUNDLED_SETS
@@ -306,6 +361,13 @@ class Config:
         if problem_set is not None and problem_set.reviews_per_day is not None:
             return problem_set.reviews_per_day
         return self.session.reviews_per_day
+
+    def new_patterns_for(self, name: str) -> tuple[str, ...]:
+        """The pattern allowlist, for a LeetCode list. A design set's patterns
+        are a different vocabulary, so the list would only ever empty it."""
+        if self.type_of(name) != problemtypes.DEFAULT_TYPE:
+            return ()
+        return self.queue.new_patterns
 
     @property
     def active_lists(self) -> tuple[str, ...]:
@@ -382,6 +444,43 @@ def _sets(raw: dict[str, Any]) -> tuple[ProblemSet, ...]:
     return tuple(sets.values())
 
 
+def _queue(raw: dict[str, Any]) -> QueueConfig:
+    """`[queue]`, with anything malformed dropped rather than raised on."""
+    body = _section(raw, "queue")
+    patterns = body.get("new_patterns")
+    patterns = patterns if isinstance(patterns, list) else []
+    skips = body.get("skip_until")
+    skips = skips if isinstance(skips, dict) else {}
+    return QueueConfig(
+        new_patterns=tuple(dict.fromkeys(str(p).strip() for p in patterns if str(p).strip())),
+        # A TOML date is a `date`; a datetime is one too, so take its day.
+        skip_until=tuple(
+            (str(slug), until if type(until) is date else until.date())
+            for slug, until in skips.items()
+            if isinstance(until, date)
+        ),
+    )
+
+
+def _stuck(raw: dict[str, Any]) -> dict[str, StuckRule]:
+    """`[stuck]` over the defaults, one difficulty at a time."""
+    out = dict(DEFAULT_STUCK)
+    for difficulty, body in _section(raw, "stuck").items():
+        if not isinstance(body, dict):
+            continue
+        out[str(difficulty).lower()] = StuckRule(
+            **{
+                k: v
+                for k, v in body.items()
+                if k in StuckRule.__dataclass_fields__
+                and isinstance(v, int)
+                and not isinstance(v, bool)
+                and v >= 0
+            }
+        )
+    return out
+
+
 def list_names(sets: tuple[ProblemSet, ...] | None = None) -> tuple[str, ...]:
     """Every list there is to run from: the bundled ones, then each set.
 
@@ -410,6 +509,8 @@ def _build(raw: dict[str, Any]) -> Config:
         audio=pick(AudioConfig, "audio"),
         cache=pick(CacheConfig, "cache"),
         ai=pick(AiConfig, "ai"),
+        queue=_queue(raw),
+        stuck=_stuck(raw),
         sets=_sets(raw),
     )
 

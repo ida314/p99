@@ -60,6 +60,54 @@ VERDICT_LABEL_STYLE = {
 BANNER = branding.BANNER
 
 
+#: What each step of being stuck asks of you, once its minute arrives.
+STUCK_STEPS = (
+    (
+        "change",
+        "change approach",
+        "change approach on purpose: what pattern could this reduce to, "
+        "and what exactly is blocking you?",
+        "yellow",
+    ),
+    (
+        "hint",
+        "small hint",
+        "take a small hint (?), not the solution. If it unlocks you, finish on your own.",
+        "bold yellow",
+    ),
+    ("solution", "solution", "study the solution.", "bold red"),
+)
+
+
+def stuck_line(rule: Any, active_seconds: float) -> Text | None:
+    """The solve screen's stuck plan: every step's minute, and the one you are on.
+
+    `rule` is a `config.StuckRule`, or None for a difficulty with no plan. A
+    step at 0 minutes is not part of the plan and is left off the line.
+    """
+    if rule is None:
+        return None
+    steps = [
+        (getattr(rule, key), short, long, style)
+        for key, short, long, style in STUCK_STEPS
+        if getattr(rule, key, 0) > 0
+    ]
+    if not steps:
+        return None
+    minutes = active_seconds / 60
+    reached = [step for step in steps if minutes >= step[0]]
+    line = Text("  ")
+    line.append("stuck  ", style="bright_black")
+    for index, (at, short, _long, style) in enumerate(steps):
+        if index:
+            line.append(" · ", style="bright_black")
+        line.append(f"{short} {at}m", style=style if minutes >= at else "bright_black")
+    if reached:
+        at, _short, long, style = reached[-1]
+        line.append(f"\n  {at} min: {long}", style=style)
+    return line
+
+
 def rule(char: str = "─", width: int = WIDTH, style: str = "bright_black") -> Text:
     """A divider indented to line up with the two-space content gutter."""
     return Text("  " + char * (width - 4), style=style)

@@ -416,3 +416,84 @@ def test_a_partly_worked_queue_is_left_alone(conn):
 
     assert again.slugs == q.slugs
     assert [i.done for i in again.items] == [True, True, False]
+
+
+# --- the rules you set: allowed patterns, held-out cards, a hard review cap --
+
+
+def test_new_problems_come_only_from_the_allowed_patterns(conn):
+    allowed = ("two-pointers", "binary-search")
+    queue = queues.ensure(
+        conn,
+        n=6,
+        active_list="neetcode150",
+        weights=WEIGHTS,
+        now=NOW,
+        new_patterns=allowed,
+    )
+    fresh = [i for i in queue.items if not i.is_review]
+    assert fresh and all(i.pattern in allowed for i in fresh)
+
+
+def test_an_allowlist_does_not_stop_reviews(conn):
+    slug = _by_pattern(conn)["bit-manipulation"][0]
+    _solve(conn, slug, self_confidence=3)
+    later = datetime.now(timezone.utc) + timedelta(days=400)
+    queue = queues.ensure(
+        conn,
+        n=3,
+        active_list="neetcode150",
+        weights=WEIGHTS,
+        now=later,
+        new_patterns=("two-pointers",),
+    )
+    assert slug in queue.slugs
+
+
+def test_a_held_card_stays_out_until_its_date(conn):
+    slug = _by_pattern(conn)["bit-manipulation"][0]
+    _solve(conn, slug, self_confidence=3)
+    later = datetime.now(timezone.utc) + timedelta(days=400)
+    until = (later + timedelta(days=2)).date()
+
+    def build(now):
+        return queues.ensure(
+            conn,
+            n=3,
+            active_list="neetcode150",
+            weights=WEIGHTS,
+            now=now,
+            regenerate=True,
+            skip_until=((slug, until),),
+        )
+
+    held = build(later)
+    assert slug not in held.slugs
+    assert "held out" in held.rationale
+    assert "deferred" not in held.rationale  # waiting on a date is not a backlog
+    assert slug in build(later + timedelta(days=3)).slugs
+
+
+def test_the_review_cap_is_never_relaxed():
+    """At most one review: with nothing new to draw, the queue comes back short."""
+    pool = [
+        queues.Item(
+            slug=f"r{i}", title=f"R{i}", difficulty="medium", pattern=f"p{i}",
+            source="due", is_review=True,
+        )
+        for i in range(5)
+    ]
+    items, _ = queues._select(pool, 3, reviews_per_day=1)
+    assert len(items) == 1
+    assert "short" in queues._rationale(items, False, [], short=2)
+
+
+def test_a_roll_honours_the_allowlist_and_the_review_cap(conn):
+    for slug in [p.slug for p in catalog.all_problems(conn, "neetcode150")[:5]]:
+        _solve(conn, slug, self_confidence=3)
+    allowed = ("two-pointers",)
+    picks = catalog.pick_random(conn, 150, new_patterns=allowed, max_seen=1)
+    seen = {r["slug"] for r in conn.execute("SELECT slug FROM attempts")}
+    fresh = [p for p in picks if p.slug not in seen]
+    assert fresh and all(p.pattern in allowed for p in fresh)
+    assert len(picks) - len(fresh) == 1

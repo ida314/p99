@@ -365,3 +365,16 @@ def test_the_code_style_row_carries_its_own_words():
     assert render.approach_rows({"code_style": "rough"}) == [
         ("code style", "needs a rewrite")
     ]
+
+
+def test_the_stuck_line_names_the_step_you_are_on():
+    from core import config, render
+
+    rule = config.DEFAULT_STUCK["hard"]
+    assert render.stuck_line(None, 3000) is None
+    early = render.stuck_line(rule, 10 * 60).plain
+    assert "small hint 45m" in early and "solution 60m" in early
+    assert "change approach" not in early  # 0 minutes: not part of the plan
+    assert "\n" not in early
+    assert "small hint (?)" in render.stuck_line(rule, 45 * 60).plain
+    assert "60 min: study the solution" in render.stuck_line(rule, 61 * 60).plain

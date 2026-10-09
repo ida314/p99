@@ -227,6 +227,8 @@ def cmd_queue(args: argparse.Namespace) -> int:
         weights=weights,
         regenerate=args.regenerate,
         reviews_per_day=cfg.reviews_per_day_for(active),
+        new_patterns=cfg.new_patterns_for(active),
+        skip_until=cfg.queue.skip_until,
     )
     console.print()
     console.print(f"  [bold]today's queue[/bold]  ·  {active}  ·  {queue.date}")

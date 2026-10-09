@@ -232,6 +232,10 @@ Screen {
     color: $text-muted;
 }
 
+#stuck {
+    height: auto;
+}
+
 #hint-panel {
     margin: 0 2;
     padding: 1 2;

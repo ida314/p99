@@ -4050,3 +4050,28 @@ async def test_the_methods_prompt_renames_and_deletes_a_method(library_app):
         "method_renamed",
         "method_deleted",
     ]
+
+
+async def test_the_solve_screen_says_when_to_take_a_hint_on_a_hard(app):
+    import dataclasses
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SolveScreen)
+        attempt = screen.engine.attempt
+        attempt.problem = dataclasses.replace(attempt.problem, difficulty="Hard")
+
+        screen._tick()
+        assert "small hint 45m" in _plain(screen.query_one("#stuck", Static))
+
+        attempt.started_monotonic -= 46 * 60
+        screen._tick()
+        assert "45 min: take a small hint" in _plain(screen.query_one("#stuck", Static))
+
+        attempt.started_monotonic -= 15 * 60
+        screen._tick()
+        assert "60 min: study the solution" in _plain(screen.query_one("#stuck", Static))

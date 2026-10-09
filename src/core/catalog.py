@@ -373,12 +373,18 @@ def pick_random(
     exclude: set[str] | None = None,
     prefer_unseen: bool = True,
     rng: random.Random | None = None,
+    new_patterns: Iterable[str] = (),
+    max_seen: int | None = None,
 ) -> list[Problem]:
     """Phase 1 selection: random from the active list.
 
     Not a scheduler — Phase 2 replaces this with FSRS. It does one cheap thing
     the scheduler will also do: prefer problems you have never attempted, so a
     fresh catalog doesn't hand you the same five problems all week.
+
+    It honours the queue's two limits when handed them: new problems only from
+    `new_patterns` when that names any, and at most `max_seen` problems you have
+    tried before. Either can make the roll come back short, as the queue does.
     """
     rng = rng or random.Random()
     pool = [p for p in all_problems(conn, active_list) if p.slug not in (exclude or set())]
@@ -387,10 +393,15 @@ def pick_random(
 
     if prefer_unseen:
         seen = {r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM attempts").fetchall()}
-        unseen = [p for p in pool if p.slug not in seen]
+        allowed = frozenset(new_patterns)
+        unseen = [
+            p for p in pool if p.slug not in seen and (not allowed or p.pattern in allowed)
+        ]
         seen_pool = [p for p in pool if p.slug in seen]
         rng.shuffle(unseen)
         rng.shuffle(seen_pool)
+        if max_seen is not None:
+            seen_pool = seen_pool[: max(0, max_seen)]
         ordered = unseen + seen_pool
     else:
         ordered = list(pool)
