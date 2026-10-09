@@ -56,8 +56,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ... import strategies
-from .finish import SIGNAL_BACK
+from ... import events, strategies
+from .finish import SIGNAL_BACK, ConfirmModal, RenameModal
 from ..vim import MOTIONS, VimMotion
 
 #: What sits in front of a row. Two columns wide, always drawn, so the names
@@ -81,6 +81,8 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
     BINDINGS = [
         *MOTIONS,
         Binding("space", "toggle_used", "solves it"),
+        Binding("r", "rename", "rename"),
+        Binding("d", "delete", "delete"),
         # `h`/`l` are not bound at all here: there is nothing sideways on this
         # screen, and a motion that does nothing is better than one that guesses.
         Binding("i", "focus_filter", "add one", show=False),
@@ -145,8 +147,9 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
             yield OptionList(id="strategy-list")
             yield Input(placeholder="name another pattern…  enter adds it", id="strategy-new")
             yield Static(
-                "  space  a pattern that solves it    i add one    ctrl+s save"
-                + ("    esc back to the verdict" if self.offer_back else "    esc cancel"),
+                "  space  a pattern that solves it    i add one\n"
+                "  r rename    d delete    ctrl+s save"
+                + ("    esc back" if self.offer_back else "    esc cancel"),
                 classes="hint-bar",
             )
             with Horizontal(id="confirm-buttons"):
@@ -289,6 +292,94 @@ class StrategyModal(VimMotion, ModalScreen[dict[str, list[str]] | None]):
         # `strategies.set_payload`.
         self.chosen.symmetric_difference_update({key})
         self._populate()
+
+    def _stored(self, key: str) -> bool:
+        """Is this pattern in the vocabulary yet, or only typed on this screen?"""
+        conn = self.app.conn  # type: ignore[attr-defined]
+        return conn.execute("SELECT 1 FROM strategies WHERE key = ?", (key,)).fetchone() is not None
+
+    def action_rename(self) -> None:
+        """Rename the highlighted pattern, on every problem that carries it.
+
+        Written now, not on save: the word is the vocabulary's, not this
+        attempt's, so it outlives the attempt the same way the tags do. A
+        pattern typed on this screen and not saved yet is only renamed here.
+        Renaming onto a pattern that already exists merges the two.
+        """
+        key = self._current_key()
+        if key is None:
+            return
+        before = self.names.get(key, key)
+
+        def done(value: str | None) -> None:
+            named = strategies.clean([value or ""])
+            if not named or named[0].name == before:
+                return
+            new = named[0]
+            merged = new.key != key and new.key in self.names
+            if self._stored(key):
+                events.append(
+                    self.app.conn,  # type: ignore[attr-defined]
+                    events.STRATEGY_RENAMED,
+                    {"key": key, "name": new.name},
+                )
+            self.names.pop(key, None)
+            self.names[new.key] = new.name
+            self.known = self._merge(
+                [new], [s for s in self.known if s.key not in (key, new.key)]
+            )
+            if key in self.chosen:
+                self.chosen.discard(key)
+                self.chosen.add(new.key)
+            self._populate(focus_key=new.key)
+            if merged:
+                self.notify(f"merged into {new.name}")
+
+        self.app.push_screen(
+            RenameModal("rename this pattern, everywhere", before, strategies.MAX_NAME),
+            done,
+        )
+
+    def action_delete(self) -> None:
+        """Delete the highlighted pattern from every problem, after a confirm.
+
+        Unticking already takes a tag off this problem; this is for a word you
+        no longer want at all. Written now for the reason a rename is.
+        """
+        key = self._current_key()
+        if key is None:
+            return
+        name = self.names.get(key, key)
+
+        def forget() -> None:
+            self.names.pop(key, None)
+            self.known = [s for s in self.known if s.key != key]
+            self.chosen.discard(key)
+            self._populate()
+
+        if not self._stored(key):
+            forget()
+            return
+
+        conn = self.app.conn  # type: ignore[attr-defined]
+        count = strategies.problem_counts(conn).get(key, 0)
+
+        def done(yes: bool | None) -> None:
+            if not yes:
+                return
+            events.append(conn, events.STRATEGY_DELETED, {"key": key})
+            forget()
+
+        self.app.push_screen(
+            ConfirmModal(
+                Text(f"delete the pattern '{name}'?"),
+                f"it comes off {count} problem{'' if count == 1 else 's'}, "
+                "and out of the list for good",
+                yes_label="delete",
+                no_label="keep",
+            ),
+            done,
+        )
 
     def action_focus_filter(self) -> None:
         self.query_one("#strategy-new", Input).focus()

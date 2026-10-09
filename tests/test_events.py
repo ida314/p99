@@ -2050,3 +2050,75 @@ def test_a_deleted_run_takes_its_variant_tags_with_it(conn):
     events.append(conn, events.RUN_DELETED, {"session_uuid": session_uuid})
     assert conn.execute("SELECT COUNT(*) FROM attempt_variants").fetchone()[0] == 0
     assert methods.last_written(conn, "two-sum") == {}
+
+
+# --- renaming and deleting from the prompts after a solve ---------------------
+
+
+def _tag_two(conn):
+    """Two problems sharing a pattern, each with one of its own, and a solve."""
+    for slug, names in (("two-sum", ["Min-Heap", "Quickselect"]), ("3sum", ["min heap"])):
+        events.append(conn, events.PROBLEM_STRATEGIES_SET, strategies.set_payload(slug, names))
+    eng = RunEngine(conn)
+    eng.start_session(["two-sum"])
+    eng.start_problem("two-sum")
+    eng.finish("solved_unaided", strategies=strategies.payload(["Min-Heap", "Quickselect"]))
+    return eng
+
+
+def _keys(conn, slug):
+    return [s.key for s in strategies.for_problem(conn, slug)]
+
+
+def test_renaming_a_pattern_renames_it_on_every_problem(conn):
+    _tag_two(conn)
+    events.append(conn, events.STRATEGY_RENAMED, {"key": "min-heap", "name": "Heap"})
+    assert _keys(conn, "two-sum") == ["heap", "quickselect"]
+    assert _keys(conn, "3sum") == ["heap"]
+    assert {r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")} == {
+        "heap",
+        "quickselect",
+    }
+    assert "min-heap" not in {s.key for s in strategies.vocabulary(conn)}
+
+
+def test_renaming_a_pattern_onto_another_merges_them(conn):
+    _tag_two(conn)
+    events.append(conn, events.STRATEGY_RENAMED, {"key": "min-heap", "name": "quickselect"})
+    assert _keys(conn, "two-sum") == ["quickselect"]
+    assert _keys(conn, "3sum") == ["quickselect"]
+    # The name you just typed is the one you read from now on.
+    assert [s.name for s in strategies.vocabulary(conn)] == ["quickselect"]
+
+
+def test_deleting_a_pattern_takes_it_off_every_problem(conn):
+    _tag_two(conn)
+    events.append(conn, events.STRATEGY_DELETED, {"key": "min-heap"})
+    assert _keys(conn, "two-sum") == ["quickselect"]
+    assert _keys(conn, "3sum") == []
+    assert [s.key for s in strategies.vocabulary(conn)] == ["quickselect"]
+    assert [r["key"] for r in conn.execute("SELECT key FROM attempt_strategies")] == [
+        "quickselect"
+    ]
+
+
+def test_deleting_a_method_takes_its_variants_and_pointers(conn):
+    _solve_then_tighten(conn)
+    events.append(
+        conn, events.METHOD_DELETED, {"slug": "two-sum", "key": methods.normalise(TRIE)}
+    )
+    assert methods.for_problem(conn, "two-sum") == []
+    assert methods.variants_for(conn, "two-sum") == {}
+    assert methods.last_written(conn, "two-sum") == {}
+    assert conn.execute("SELECT COUNT(*) FROM attempt_methods").fetchone()[0] == 0
+
+
+def test_renames_and_deletes_replay_to_the_same_place(conn):
+    _tag_two(conn).advance()
+    _solve_then_tighten(conn, "3sum")
+    events.append(conn, events.STRATEGY_RENAMED, {"key": "quickselect", "name": "Select"})
+    events.append(conn, events.STRATEGY_DELETED, {"key": "min-heap"})
+    events.append(conn, events.METHOD_DELETED, {"slug": "3sum", "key": methods.normalise(TRIE)})
+    before = _snapshot(conn)
+    events.replay(conn)
+    assert _snapshot(conn) == before

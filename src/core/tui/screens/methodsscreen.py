@@ -45,49 +45,17 @@ from __future__ import annotations
 from rich.text import Text
 from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Input, OptionList, Static
+from textual.containers import Horizontal, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ... import capture, catalog, events, methods
 from ...render import method_row, variant_lines
 from ..vim import MOTIONS, VimMotion
+from .finish import RenameModal
 from .methods import OPTIMALITY_CYCLE
 from .variants import VariantsModal
-
-
-class RenameMethodModal(ModalScreen[str | None]):
-    """Edit one method's name. Dismisses with the new name, or None."""
-
-    BINDINGS = [Binding("escape", "cancel", "cancel")]
-
-    def __init__(self, name: str):
-        super().__init__()
-        self.name_now = name
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="rename-method-box"):
-            yield Static("rename this method", classes="modal-title")
-            yield Input(self.name_now, max_length=methods.MAX_NAME, id="rename-method")
-            with Horizontal(id="confirm-buttons"):
-                yield Button("save  (enter)", variant="primary", id="save")
-                yield Button("cancel  (esc)", id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one("#rename-method", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save":
-            self.dismiss(self.query_one("#rename-method", Input).value)
-        else:
-            self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
 
 class MethodsScreen(VimMotion, Screen[None]):
@@ -306,7 +274,7 @@ class MethodsScreen(VimMotion, Screen[None]):
             )
             self._show(slug, focus_key=new.key)
 
-        self.app.push_screen(RenameMethodModal(way.name), done)
+        self.app.push_screen(RenameModal("rename this method", way.name, methods.MAX_NAME), done)
 
     # --- how one way is written --------------------------------------------
 

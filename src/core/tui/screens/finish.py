@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -437,7 +438,7 @@ class ConfirmModal(ModalScreen[bool]):
         Binding("n", "no", "no"),
     ]
 
-    def __init__(self, question: str, detail: str = "", yes_label: str = "yes", no_label: str = "no"):
+    def __init__(self, question: "str | Text", detail: str = "", yes_label: str = "yes", no_label: str = "no"):
         super().__init__()
         self.question = question
         self.detail = detail
@@ -461,3 +462,38 @@ class ConfirmModal(ModalScreen[bool]):
 
     def action_no(self) -> None:
         self.dismiss(False)
+
+
+class RenameModal(ModalScreen[str | None]):
+    """Edit one name: a method's, or a pattern's. Dismisses with it, or None."""
+
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, title: str, name: str, max_length: int):
+        super().__init__()
+        self.title_text = title
+        self.name_now = name
+        self.max_length = max_length
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rename-box"):
+            yield Static(self.title_text, classes="modal-title")
+            yield Input(self.name_now, max_length=self.max_length, id="rename")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("save  (enter)", variant="primary", id="save")
+                yield Button("cancel  (esc)", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#rename", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.dismiss(self.query_one("#rename", Input).value)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

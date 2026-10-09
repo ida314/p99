@@ -567,6 +567,10 @@ EndRunModal {
 #methods-box .hint-bar {
     color: $text-muted;
     margin-top: 1;
+    /* In the flow, not docked: docked, it sat under the docked buttons
+       and never showed. */
+    dock: none;
+    height: auto;
 }
 
 /* Docked for the same reason the finish modal's row is: the list above it
@@ -623,6 +627,10 @@ StrategyModal {
 #strategy-box .hint-bar {
     color: $text-muted;
     margin-top: 1;
+    /* In the flow, not docked: docked, it sat under the docked buttons
+       and never showed. */
+    dock: none;
+    height: auto;
 }
 
 /* Docked for the same reason the finish modal's row is: the list above it
@@ -646,7 +654,7 @@ TextSettingModal {
     background: $surface;
 }
 
-RenameMethodModal {
+RenameModal {
     align: center middle;
 }
 
@@ -696,7 +704,7 @@ RenameMethodModal {
     background: $surface;
 }
 
-#rename-method-box {
+#rename-box {
     width: 74;
     height: auto;
     padding: 1 2;

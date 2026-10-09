@@ -188,7 +188,8 @@ class StrategyScreen(VimMotion, Screen[None]):
         block = await self.app.push_screen_wait(
             StrategyModal(self._highlighted_title(slug), slug, offer_back=False)
         )
-        if block is None:  # cancelled
+        if block is None:  # cancelled -- but a rename or delete may have landed
+            self.load(focus_slug=slug)
             return
         events.append(
             self.app.conn,  # type: ignore[attr-defined]

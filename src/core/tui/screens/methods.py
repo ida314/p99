@@ -63,9 +63,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ... import methods, problemtypes, scoring
+from ... import events, methods, problemtypes, scoring
 from ...render import QUALITY_LABELS, method_row, quality_reason
-from .finish import SIGNAL_BACK
+from .finish import SIGNAL_BACK, ConfirmModal, RenameModal
 from .variants import VariantsModal
 from ..vim import MOTIONS, VimMotion
 
@@ -93,6 +93,8 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
         Binding("space", "toggle_used", "wrote this one"),
         Binding("o", "cycle_optimality", "optimal / not"),
         Binding("v", "variants", "variants"),
+        Binding("r", "rename", "rename"),
+        Binding("d", "delete", "delete"),
         Binding("i", "focus_new", "add a method", show=False),
         Binding("slash", "focus_new", "add a method", show=False),
         Binding("ctrl+s", "save", "save"),
@@ -158,8 +160,8 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
             )
             yield Static(id="methods-quality", classes="panel")
             yield Static(
-                "  space  the one you wrote    o  optimal / not optimal / not sure"
-                "    v  variants    i add one    ctrl+s save    esc back",
+                "  space  the one you wrote    o  optimal / not    v  variants\n"
+                "  i add one    r rename    d delete    ctrl+s save    esc back",
                 classes="hint-bar",
             )
             with Horizontal(id="confirm-buttons"):
@@ -412,6 +414,118 @@ class MethodsModal(VimMotion, ModalScreen[list[dict[str, Any]] | None]):
                 self.names.get(key, key),
                 self.variants.get(key, []),
                 self.variant.get(key) if key in self.used else None,
+            ),
+            done,
+        )
+
+    def _forget(self, key: str) -> dict[str, Any]:
+        """Take one row off the screen, handing back everything it held."""
+        held = {
+            "used": key in self.used,
+            "carried": key in self._carried,
+            "optimality": self.optimality.pop(key, None),
+            "stored": self._stored.pop(key, None),
+            "detail": self._detail.pop(key, None),
+            "variants": self.variants.pop(key, None),
+            "stored_variants": self._stored_variants.pop(key, None),
+            "variant": self.variant.pop(key, None),
+        }
+        self.names.pop(key, None)
+        self.used.discard(key)
+        self._carried.discard(key)
+        return held
+
+    def action_rename(self) -> None:
+        """Rename the highlighted method.
+
+        A row already on the problem's list is renamed now, through the same
+        `method_renamed` the methods screen writes, because the list is the
+        problem's and not this attempt's. A row typed on this screen is only
+        renamed here. Renaming onto another method on this problem is refused,
+        as it is on the methods screen.
+        """
+        key = self._current_key()
+        if key is None:
+            return
+        before = self.names.get(key, key)
+
+        def done(value: str | None) -> None:
+            named = methods.clean([value or ""])
+            if not named or named[0].name == before:
+                return
+            new = named[0]
+            if new.key != key and new.key in self.names:
+                self.notify(f"already a method here: {new.name}", severity="warning")
+                return
+            stored = key in self._stored
+            if stored:
+                events.append(
+                    self.app.conn,  # type: ignore[attr-defined]
+                    events.METHOD_RENAMED,
+                    {"slug": self.slug, "key": key, "name": new.name},
+                )
+            held = self._forget(key)
+            self.names[new.key] = new.name
+            self.optimality[new.key] = held["optimality"]
+            if held["used"]:
+                self.used.add(new.key)
+            if held["carried"]:
+                self._carried.add(new.key)
+            if stored:
+                self._stored[new.key] = held["stored"]
+            for name, value in (
+                ("_detail", held["detail"]),
+                ("variants", held["variants"]),
+                ("_stored_variants", held["stored_variants"]),
+                ("variant", held["variant"]),
+            ):
+                if value is not None:
+                    getattr(self, name)[new.key] = value
+            self._resort()
+            self._populate(focus_key=new.key)
+            self._refresh_quality()
+
+        self.app.push_screen(
+            RenameModal("rename this method", before, methods.MAX_NAME), done
+        )
+
+    def action_delete(self) -> None:
+        """Take the highlighted method off this problem, after a confirm.
+
+        Written now for the reason a rename is. Its variants go with it, and the
+        past solves that wrote it stop saying so; its archived file stays on
+        disk. A row typed on this screen is simply dropped.
+        """
+        key = self._current_key()
+        if key is None:
+            return
+        if key not in self._stored:
+            self._forget(key)
+            self._resort()
+            self._populate()
+            self._refresh_quality()
+            return
+
+        def done(yes: bool | None) -> None:
+            if not yes:
+                return
+            events.append(
+                self.app.conn,  # type: ignore[attr-defined]
+                events.METHOD_DELETED,
+                {"slug": self.slug, "key": key},
+            )
+            self._forget(key)
+            self._resort()
+            self._populate()
+            self._refresh_quality()
+
+        self.app.push_screen(
+            ConfirmModal(
+                Text(f"delete the method '{self.names.get(key, key)}'?"),
+                "it comes off this problem with its variants; any code you "
+                "archived for it stays on disk",
+                yes_label="delete",
+                no_label="keep",
             ),
             done,
         )

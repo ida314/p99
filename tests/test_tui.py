@@ -3351,7 +3351,7 @@ async def test_the_methods_screen_renames_a_method(library_app):
     """`r` opens a name box, and the new name replaces the old one in the list."""
     from textual.widgets import Input
 
-    from core.tui.screens.methodsscreen import RenameMethodModal
+    from core.tui.screens.finish import RenameModal
 
     app = library_app
     async with app.run_test() as pilot:
@@ -3368,8 +3368,8 @@ async def test_the_methods_screen_renames_a_method(library_app):
         await pilot.press("l")
         await pilot.press("r")
         await pilot.pause()
-        assert isinstance(app.screen, RenameMethodModal)
-        box = app.screen.query_one("#rename-method", Input)
+        assert isinstance(app.screen, RenameModal)
+        box = app.screen.query_one("#rename", Input)
         assert box.value == "a try every pair"
         box.value = "Brute force over pairs"
         await pilot.press("enter")
@@ -3922,3 +3922,131 @@ async def test_your_methods_stay_off_the_card_until_m(app):
         await pilot.press("m")
         await pilot.pause()
         assert not panel.has_class("visible")
+
+
+# --- renaming and deleting from the prompts after a solve ---------------------
+
+
+async def _rename_highlighted(app, pilot, name: str):
+    from core.tui.screens.finish import RenameModal
+
+    await pilot.press("r")
+    await pilot.pause()
+    assert isinstance(app.screen, RenameModal)
+    app.screen.query_one("#rename", Input).value = name
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def test_the_patterns_prompt_renames_and_deletes_a_pattern_everywhere(strategy_app):
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap", "Quickselect")
+        _tag(app, "3sum", "Min-Heap", "Quickselect")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, StrategyModal)
+
+        # The cursor starts on Min-Heap; renamed, it stays ticked under its new name.
+        await _rename_highlighted(app, pilot, "Heap")
+        screen = app.screen
+        assert isinstance(screen, StrategyModal)
+        assert screen.chosen == {"heap", "quickselect"}
+        assert _tags(app, "3sum") == ["heap", "quickselect"]
+
+        await pilot.press("j")  # Quickselect
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        await pilot.pause()
+        assert app.screen.chosen == {"heap"}
+        assert "Quickselect" not in _option_prompts(app.screen)
+        assert _tags(app, "3sum") == ["heap"]
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")  # through the methods prompt
+        await pilot.pause()
+
+    assert _tags(app, "two-sum") == ["heap"]
+
+
+async def test_deleting_a_pattern_can_be_kept(strategy_app):
+    app = strategy_app
+    async with app.run_test() as pilot:
+        _tag(app, "two-sum", "Min-Heap")
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.screen.chosen == {"min-heap"}
+    assert _tags(app, "two-sum") == ["min-heap"]
+
+
+async def test_the_methods_prompt_renames_and_deletes_a_method(library_app):
+    app = library_app
+    async with app.run_test() as pilot:
+        await pilot.pause()  # the catalog is loaded on mount
+        events.append(
+            app.conn,
+            events.METHOD_UPDATED,
+            {
+                "slug": "two-sum",
+                "methods": [
+                    {"name": "a try every pair", "optimality": "suboptimal"},
+                    {"name": "b one pass with a map", "optimality": "optimal"},
+                ],
+            },
+        )
+        app.start_run(["two-sum"])
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")  # the verdict
+        await pilot.pause()
+        await pilot.press("ctrl+s")  # the patterns
+        await pilot.pause()
+        assert isinstance(app.screen, MethodsModal)
+        await _rename_highlighted(app, pilot, "brute force over pairs")
+        screen = app.screen
+        assert isinstance(screen, MethodsModal)
+        assert screen.optimality["brute-force-over-pairs"] == "suboptimal"
+        rows = [r["name"] for r in app.conn.execute("SELECT name FROM problem_methods ORDER BY name")]
+        assert rows == ["b one pass with a map", "brute force over pairs"]
+
+        # Onto "brute force…", now second alphabetically, and delete it.
+        await pilot.press("j")
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        await pilot.pause()
+        assert list(app.screen.names) == ["b-one-pass-with-a-map"]
+        rows = [r["key"] for r in app.conn.execute("SELECT key FROM problem_methods")]
+        assert rows == ["b-one-pass-with-a-map"]
+
+        # A method typed here and never saved goes without a question.
+        await _name_a_method(app, pilot, "c something new")
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, MethodsModal)
+        assert "c-something-new" not in app.screen.names
+
+    types = [r["type"] for r in app.conn.execute("SELECT type FROM events ORDER BY id")]
+    # One of each, and nothing for the method that was never saved.
+    assert [t for t in types if t.startswith("method_")] == [
+        "method_updated",
+        "method_renamed",
+        "method_deleted",
+    ]

@@ -48,6 +48,11 @@ METHOD_UPDATED = "method_updated"
 #: file, the attempts that wrote it -- to the new one, so a rename never costs
 #: you anything but the spelling.
 METHOD_RENAMED = "method_renamed"
+#: A method taken off its problem's list, from the prompt after a solve. The
+#: row goes, and so does everything hung on it: its variants, and which attempts
+#: wrote it. The archived file stays on disk, like every other piece of writing.
+#: No `attempt_uuid`: it is a claim about the problem, not about a solve.
+METHOD_DELETED = "method_deleted"
 #: The same two, from before methods were a list of their own: they named a row
 #: in the shared strategy vocabulary, which is not a thing a method can be. They
 #: stay in the log and stay in `EVENT_TYPES` -- history is not rewritten -- and
@@ -63,6 +68,13 @@ SOLUTION_UPDATED = "solution_updated"
 #: not about the evening -- it survives the attempt that was on screen being
 #: thrown away, which skips that attempt's `problem_finished` entirely.
 PROBLEM_STRATEGIES_SET = "problem_strategies_set"
+#: A pattern renamed, everywhere: the vocabulary is shared, so a better word for
+#: it is a better word on every problem. Carries the old key and the new name;
+#: where the new name is already a pattern the two merge into one.
+STRATEGY_RENAMED = "strategy_renamed"
+#: A pattern dropped from the vocabulary and off every problem that carried it.
+#: Unticking takes a tag off one problem; this is for a word you no longer want.
+STRATEGY_DELETED = "strategy_deleted"
 NOTE_WRITTEN = "note_written"
 AUDIO_RECORDED = "audio_recorded"
 SESSION_ENDED = "session_ended"
@@ -96,9 +108,12 @@ EVENT_TYPES = frozenset(
         METHOD_ARCHIVED,
         METHOD_UPDATED,
         METHOD_RENAMED,
+        METHOD_DELETED,
         SOLUTION_ARCHIVED,
         SOLUTION_UPDATED,
         PROBLEM_STRATEGIES_SET,
+        STRATEGY_RENAMED,
+        STRATEGY_DELETED,
         NOTE_WRITTEN,
         AUDIO_RECORDED,
         SESSION_ENDED,
@@ -606,6 +621,72 @@ def _rename_method(conn: sqlite3.Connection, event: Event, p: dict[str, Any]) ->
     conn.execute("DELETE FROM attempt_variants WHERE slug = ? AND method = ?", (slug, old))
 
 
+def _delete_method(conn: sqlite3.Connection, p: dict[str, Any]) -> None:
+    """Fold `method_deleted`: the route is no longer on this problem's list.
+
+    Its variants and the attempts' pointers at it go too, because a row in those
+    tables names a method that no longer exists. Grades already folded stay where
+    they are: `saw_better` was read when each attempt was graded, and a replay
+    reads it at the same point in the log.
+    """
+    slug, key = p.get("slug", ""), str(p.get("key") or "")
+    if not (slug and key):
+        return
+    for table, column in (
+        ("attempt_variants", "method"),
+        ("method_variants", "method"),
+        ("attempt_methods", "key"),
+        ("problem_methods", "key"),
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE slug = ? AND {column} = ?", (slug, key))
+
+
+def _rename_strategy(conn: sqlite3.Connection, p: dict[str, Any]) -> None:
+    """Fold `strategy_renamed`: one pattern under a better word, on every problem.
+
+    Same shape as `_rename_method`, one level up. The new key gets its vocabulary
+    row first, because the tags reference it; then every tag and every attempt's
+    answer moves across, and a problem or attempt that already carried the new
+    key keeps its own row. The old row goes last.
+    """
+    old = str(p.get("key") or "")
+    named = strategies.clean([str(p.get("name") or "")])
+    if not (old and named):
+        return
+    new, name = named[0].key, named[0].name
+    row = conn.execute("SELECT first_seen FROM strategies WHERE key = ?", (old,)).fetchone()
+    if row is None:
+        return
+    if new == old:
+        conn.execute("UPDATE strategies SET name = ? WHERE key = ?", (name, old))
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO strategies(key, name, first_seen) VALUES(?,?,?)",
+        (new, name, row["first_seen"]),
+    )
+    # Renaming onto a pattern that exists is a merge, and the name you just
+    # typed is the one you want to read from now on.
+    conn.execute("UPDATE strategies SET name = ? WHERE key = ?", (name, new))
+    for table in ("problem_strategies", "attempt_strategies"):
+        conn.execute(f"UPDATE OR IGNORE {table} SET key = ? WHERE key = ?", (new, old))
+        conn.execute(f"DELETE FROM {table} WHERE key = ?", (old,))
+    conn.execute("DELETE FROM strategies WHERE key = ?", (old,))
+
+
+def _delete_strategy(conn: sqlite3.Connection, p: dict[str, Any]) -> None:
+    """Fold `strategy_deleted`: the word is gone, from every problem and attempt.
+
+    Children first, because the tags reference the vocabulary row. A later event
+    that names it again simply creates it again, which is right: you deleted the
+    word as of then, not forever.
+    """
+    key = str(p.get("key") or "")
+    if not key:
+        return
+    for table in ("problem_strategies", "attempt_strategies", "strategies"):
+        conn.execute(f"DELETE FROM {table} WHERE key = ?", (key,))
+
+
 def _record_method_code(
     conn: sqlite3.Connection,
     event: Event,
@@ -973,6 +1054,15 @@ def apply(
 
     elif event.type == METHOD_RENAMED:
         _rename_method(conn, event, p)
+
+    elif event.type == METHOD_DELETED:
+        _delete_method(conn, p)
+
+    elif event.type == STRATEGY_RENAMED:
+        _rename_strategy(conn, p)
+
+    elif event.type == STRATEGY_DELETED:
+        _delete_strategy(conn, p)
 
     elif event.type == PROBLEM_STRATEGIES_SET:
         # The problem's tags, entire, from the prompt after a solve or from the
