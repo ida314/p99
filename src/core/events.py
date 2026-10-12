@@ -83,6 +83,11 @@ SESSION_ENDED = "session_ended"
 # scored as a `gave_up` it never was.
 SESSION_SUSPENDED = "session_suspended"
 SESSION_RESUMED = "session_resumed"
+#: Speech mode flipped from the problem screen, partway through a run. Written
+#: the moment it happens rather than carried on the next suspend, so a run that
+#: is killed instead of put down still comes back recording -- or not -- the way
+#: you left it.
+SPEECH_MODE_SET = "speech_mode_set"
 REVIEW_COMPLETED = "review_completed"   # Phase 3
 MEMORY_UPDATED = "memory_updated"       # Phase 3
 QUEUE_GENERATED = "queue_generated"     # Phase 2
@@ -119,6 +124,7 @@ EVENT_TYPES = frozenset(
         SESSION_ENDED,
         SESSION_SUSPENDED,
         SESSION_RESUMED,
+        SPEECH_MODE_SET,
         REVIEW_COMPLETED,
         MEMORY_UPDATED,
         QUEUE_GENERATED,
@@ -1136,6 +1142,12 @@ def apply(
                 wall_seconds=attempt.get("wall_seconds"),
                 paused_seconds=attempt.get("paused_seconds"),
             )
+
+    elif event.type == SPEECH_MODE_SET:
+        conn.execute(
+            "UPDATE sessions SET speech_mode = ? WHERE uuid = ?",
+            (int(bool(p.get("speech_mode"))), p["session_uuid"]),
+        )
 
     elif event.type == SESSION_RESUMED:
         conn.execute(

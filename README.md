@@ -347,6 +347,7 @@ real points.
 | `r` | show / hide your past attempts at this problem — when, how long, how it ended; hidden until you ask (solve) |
 | `m` | show / hide the methods you have recorded for this problem and their variants, best first (solve) |
 | `?` | reveal next hint tier (monotonic, irreversible) |
+| `a` | speech mode on / off for the rest of the run, from the problem itself (solve) |
 | `s` | log a failed submit, then paste the code behind it (solve); only for a type with a judge to submit to |
 | `f` | finish — verdict, confidence, then whatever the problem's type asks (for LeetCode: cost, optimality, code style), then the patterns, then the problem's methods, then capture |
 | `space` | a pattern that can solve this problem (patterns prompt); the method you wrote (methods prompt) |
@@ -651,9 +652,15 @@ the cooldown still keeps it from coming back tomorrow.
 
 ## Speech mode
 
-Off by default. Turn it on in settings, or with `ctrl+a` on the setup screen for
-one run, and the app records what you say while each problem is running — one
-Opus file per attempt, hung on the attempt like the archived code and the note.
+Off by default. Turn it on in settings, with `ctrl+a` on the setup screen for
+one run, or with `a` on the problem screen partway through one, and the app
+records what you say while each problem is running — one Opus file per attempt,
+hung on the attempt like the archived code and the note.
+
+`a` starts recording the problem on screen at once, or from the next `p` if the
+clock is paused. Turning it off keeps what was already recorded, and turning it
+back on continues the same file. Either way it lasts for the rest of the run —
+a suspended run comes back as you left it — and never touches the setting.
 
 ```
 ~/.local/share/p99/audio/<slug>/<attempt_id>.opus
@@ -663,7 +670,9 @@ The recording tracks the clock exactly. It pauses when you press `p`, when the
 `$EDITOR` handoff opens to paste a wrong answer, and while the finish prompt is
 up — so the file is your solve and not the bookkeeping around it. `● REC` sits
 on the clock line the whole time, because a microphone that can be on without
-the screen saying so is not a thing to ship. Throwing an attempt away
+the screen saying so is not a thing to ship, and a level meter scrolls directly
+beneath it. The meter is fed by the recorder's own input rather than a second
+handle on the microphone, so a meter that moves means the recording hears you. Throwing an attempt away
 (`ctrl+x`) deletes its recording; that is the one artifact a discard does not
 leave on disk, since nothing would ever point at it again.
 

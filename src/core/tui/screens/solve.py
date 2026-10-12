@@ -8,6 +8,7 @@ matters writes an event before it changes anything on screen.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from rich.text import Text
@@ -66,6 +67,12 @@ STEP_METHODS = "methods"
 #: and caps what a crash can take off the clock at ten seconds.
 CHECKPOINT_SECONDS = 10.0
 
+#: How often the microphone meter redraws. The clock's half second is too slow
+#: for a level -- a word is over before it moves -- and the redraw is one line.
+METER_SECONDS = 0.1
+#: How many readings the meter shows: 3.2 seconds of you, at one per redraw.
+METER_WIDTH = 32
+
 
 class SolveScreen(VimMotion, Screen[None]):
     # Hint is `?` and give-up is `x` because `h` and `g` are motions everywhere
@@ -84,6 +91,9 @@ class SolveScreen(VimMotion, Screen[None]):
         # behind a key of its own rather than `r`'s, which is only times.
         Binding("m", "toggle_methods", "methods"),
         Binding("question_mark", "hint", "hint"),
+        # `a` for audio, the setup screen's `ctrl+a` without the chord: here
+        # every plain letter is already a key, so there is no text box to dodge.
+        Binding("a", "toggle_speech", "speech"),
         Binding("s", "submit", "failed submit"),
         Binding("f", "finish", "finish"),
         Binding("x", "give_up", "give up"),
@@ -112,6 +122,13 @@ class SolveScreen(VimMotion, Screen[None]):
         # Speech mode's recorder for the problem on screen. None whenever the
         # run isn't recording, which is the only check any caller has to make.
         self._recorder: audio.Recorder | None = None
+        # The meter's recent readings, in dBFS. Per problem: a new attempt
+        # starts on a flat line rather than on the last one's voice.
+        self._levels: deque[float] = deque(maxlen=METER_WIDTH)
+        # The clock line as `_tick` last drew it. The meter redraws five times
+        # as often and goes underneath it in the same widget, so the marker and
+        # the proof the microphone is hearing you are always read together.
+        self._clock = Text()
 
     @property
     def _ptype(self) -> problemtypes.ProblemType:
@@ -155,6 +172,7 @@ class SolveScreen(VimMotion, Screen[None]):
         else:
             self._next_problem()
         self.set_interval(0.5, self._tick)
+        self.set_interval(METER_SECONDS, self._meter_tick)
         self.set_interval(CHECKPOINT_SECONDS, self.engine.checkpoint)
 
     def on_unmount(self) -> None:
@@ -283,10 +301,21 @@ class SolveScreen(VimMotion, Screen[None]):
     # cost you an attempt — a missing ffmpeg, a dead microphone or a failed join
     # is a yellow toast and nothing more.
 
-    def _new_recorder(self) -> audio.Recorder | None:
-        """A recorder for the attempt on screen, or None if this run isn't recording."""
+    @property
+    def _speaking(self) -> bool:
+        return bool(self.app.speech_mode)  # type: ignore[attr-defined]
+
+    def _new_recorder(self, *, quiet: bool = False) -> audio.Recorder | None:
+        """A recorder for the attempt on screen, or None if this run isn't recording.
+
+        `quiet` builds one even with speech mode off, for the one caller that
+        needs it: a resume collecting what an attempt recorded before speech
+        mode was turned off, so it is joined at the end rather than orphaned.
+        """
         attempt = self.engine.attempt
-        if attempt is None or not self.app.speech_mode:  # type: ignore[attr-defined]
+        if attempt is None or not (self._speaking or quiet):
+            return None
+        if quiet and not audio.available():
             return None
         if not audio.available():
             self._toast("speech mode is on but there's no ffmpeg — not recording", "yellow")
@@ -302,6 +331,7 @@ class SolveScreen(VimMotion, Screen[None]):
 
     def _start_recording(self) -> None:
         self._recorder = None
+        self._levels.clear()
         recorder = self._new_recorder()
         if recorder is None:
             return
@@ -320,10 +350,16 @@ class SolveScreen(VimMotion, Screen[None]):
         of the attempt covers both halves as one recording.
         """
         self._recorder = None
-        recorder = self._new_recorder()
+        self._levels.clear()
+        # Built even with speech mode off: the attempt may have recorded a
+        # stretch before it was turned off, and those pieces still belong in
+        # its file. It comes back closed and stays closed until `a`.
+        recorder = self._new_recorder(quiet=not self._speaking)
         if recorder is None:
             return
         if not recorder.adopt():
+            if not self._speaking:
+                return
             # Nothing was recorded before the break — either the run started
             # without a microphone or ffmpeg never opened one. Begin now rather
             # than silently recording nothing for the rest of the attempt.
@@ -337,7 +373,10 @@ class SolveScreen(VimMotion, Screen[None]):
             return
         if paused:
             self._recorder.pause()
-        else:
+        elif self._speaking:
+            # Speech mode turned off mid-attempt keeps its recorder, closed, so
+            # turning it back on continues the same file. Unpausing the clock
+            # must not reopen the microphone behind that.
             self._recorder.resume()
 
     def _stop_recording(self, keep: bool = True) -> None:
@@ -350,6 +389,11 @@ class SolveScreen(VimMotion, Screen[None]):
         if recorder is None:
             return
         if not keep:
+            recorder.discard()
+            return
+        if not recorder.started:
+            # Turned on while the clock was paused, and the clock never ran
+            # again. Nothing was recorded, so nothing failed to save.
             recorder.discard()
             return
         path = recorder.stop()
@@ -392,9 +436,13 @@ class SolveScreen(VimMotion, Screen[None]):
         if self._recorder is not None:
             if self._recorder.recording:
                 clock.append("   ● REC", style="bold red")
+            elif not self._speaking:
+                # Turned off with `a`: what was recorded is kept, nothing more is.
+                clock.append("   ○ REC OFF", style="bold bright_black")
             else:
                 clock.append("   ● REC PAUSED", style="bold yellow")
-        self.query_one("#timer", Static).update(clock)
+        self._clock = clock
+        self._meter_tick(sample=False)
 
         state = Text("  ")
         state.append("hints ", style="bright_black")
@@ -423,6 +471,29 @@ class SolveScreen(VimMotion, Screen[None]):
                 active,
             )
         self.query_one("#stuck", Static).update(cue or "")
+
+    def _meter_tick(self, sample: bool = True) -> None:
+        """Redraw the clock line, and the microphone meter under it if recording.
+
+        `sample` is off when the clock redraws it: the strip scrolls on the
+        meter's own beat, and a second beat would make it lurch twice a second.
+        """
+        timer = self.query_one("#timer", Static)
+        recorder = self._recorder
+        if recorder is None:
+            timer.update(self._clock)
+            return
+        live = recorder.recording
+        if live and sample:
+            level = recorder.take_level()
+            # No reading yet means the encoder is still opening the device:
+            # draw the baseline, so the strip scrolls from the moment REC shows.
+            self._levels.append(level if level is not None else audio.METER_FLOOR_DB)
+        timer.update(
+            Text("\n").join(
+                [self._clock, render.mic_meter(self._levels, live=live, width=METER_WIDTH)]
+            )
+        )
 
     def _toast(self, message: str, style: str = "") -> None:
         self.query_one("#toast", Static).update(Text(f"  {message}", style=style))
@@ -481,6 +552,54 @@ class SolveScreen(VimMotion, Screen[None]):
         paused = self.engine.toggle_pause()
         self._pause_recording(paused)
         self._toast("paused — timer stopped, the pause is logged" if paused else "resumed")
+        self._tick()
+
+    def action_toggle_speech(self) -> None:
+        """Speech mode on or off, from here, for the rest of the run.
+
+        Starts on the problem on screen where it can: from now if the clock is
+        running, from the next `p` if it is paused. Off keeps what was already
+        recorded -- it is joined into the attempt's file as usual -- and turning
+        it back on continues that same file. A problem whose clock has stopped,
+        or a second pass at one, picks it up on the next problem instead.
+        """
+        on = not self._speaking
+        if on and not audio.available():
+            self._toast("no ffmpeg — speech mode can't record here", "yellow")
+            return
+        self.app.speech_mode = on  # type: ignore[attr-defined]
+        self.engine.set_speech_mode(on)
+
+        attempt = self.engine.attempt
+        recorder = self._recorder
+        if not on:
+            if recorder is not None:
+                recorder.pause()
+                self._toast("speech mode off — what was recorded is kept")
+            else:
+                self._toast("speech mode off")
+        elif attempt is None or attempt.finished or attempt.solves > 1:
+            self._toast("speech mode on — recording from the next problem")
+        elif recorder is not None:
+            if not attempt.paused:
+                recorder.resume()
+            self._toast("speech mode on — recording")
+        else:
+            recorder = self._new_recorder()
+            if recorder is None:
+                return
+            if attempt.paused:
+                # Built closed: the first `p` opens it, the same way a resumed
+                # run's recorder waits for the clock.
+                self._recorder = recorder
+                self._levels.clear()
+                self._toast("speech mode on — recording starts with the clock")
+            elif recorder.start():
+                self._recorder = recorder
+                self._levels.clear()
+                self._toast("speech mode on — recording")
+            else:
+                self._toast("couldn't open the microphone — not recording", "yellow")
         self._tick()
 
     def action_hint(self) -> None:

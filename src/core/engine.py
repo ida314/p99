@@ -499,6 +499,16 @@ class RunEngine:
         self.checkpoint()
         return self.session
 
+    def set_speech_mode(self, on: bool) -> None:
+        """Record that this run is recording from here on, or isn't."""
+        if self.session is None:
+            return
+        events.append(
+            self.conn,
+            events.SPEECH_MODE_SET,
+            {"session_uuid": self.session.uuid, "speech_mode": int(on)},
+        )
+
     def end_session(self, outcome: str | None = None, session_note: str | None = None) -> None:
         if self.session is None:
             return

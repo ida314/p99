@@ -4075,3 +4075,152 @@ async def test_the_solve_screen_says_when_to_take_a_hint_on_a_hard(app):
         attempt.started_monotonic -= 15 * 60
         screen._tick()
         assert "60 min: study the solution" in _plain(screen.query_one("#stuck", Static))
+
+
+@pytest.fixture
+def quiet_app(isolated_home, monkeypatch):
+    """Speech mode off in settings, with the fake recorder behind it for `a`."""
+    paths.ensure_dirs()
+    paths.config_file().write_text(
+        SPEECH_CONFIG.replace("speech_mode = true", "speech_mode = false")
+    )
+    recorder = isolated_home / "fake-ffmpeg"
+    recorder.write_text(FAKE_FFMPEG)
+    recorder.chmod(0o755)
+    monkeypatch.setenv(branding.env("FFMPEG"), str(recorder))
+    return CoreApp(db.open_db())
+
+
+def _speech_row(app) -> int:
+    return app.conn.execute("SELECT speech_mode FROM sessions").fetchone()[0]
+
+
+async def test_a_turns_speech_mode_on_from_the_problem_screen(quiet_app):
+    from pathlib import Path
+
+    app = quiet_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert screen._recorder is None
+        assert "mic" not in _plain(screen.query_one("#timer", Static))
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.speech_mode is True
+        assert screen._recorder is not None and screen._recorder.recording
+        timer = _plain(screen.query_one("#timer", Static))
+        assert "● REC" in timer
+        # The meter sits under the marker, in the same widget.
+        assert "mic" in timer.splitlines()[-1]
+        assert _speech_row(app) == 1
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["audio_path"] and Path(attempt["audio_path"]).exists()
+    # Never written back to settings: it is a decision about this run.
+    from core import config as config_module
+
+    assert config_module.overrides(app.conn) == {}
+
+
+async def test_a_turned_off_keeps_what_was_recorded(speaking_app):
+    from pathlib import Path
+
+    app = speaking_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.speech_mode is False
+        assert screen._recorder.recording is False
+        assert "REC OFF" in _plain(screen.query_one("#timer", Static))
+        assert _speech_row(app) == 0
+
+        # Unpausing the clock must not reopen a microphone you turned off.
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        assert screen._recorder.recording is False
+
+        # And on again continues the same recording rather than starting one.
+        await pilot.press("a")
+        await pilot.pause()
+        assert screen._recorder.recording is True
+        assert len(screen._recorder._segments) == 2
+
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    attempt = app.conn.execute("SELECT * FROM attempts").fetchone()
+    assert attempt["audio_path"] and Path(attempt["audio_path"]).exists()
+
+
+async def test_a_while_paused_waits_for_the_clock(quiet_app):
+    app = quiet_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        await pilot.press("p")
+        await pilot.pause()
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert screen._recorder is not None and not screen._recorder.started
+        assert "● REC PAUSED" in _plain(screen.query_one("#timer", Static))
+
+        # Finished without the clock ever running again: nothing to save, and
+        # so no complaint that saving failed.
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert "couldn't be saved" not in _plain(screen.query_one("#toast", Static))
+
+    assert app.conn.execute("SELECT audio_path FROM attempts").fetchone()[0] is None
+
+
+async def test_a_mid_run_toggle_survives_a_suspend(quiet_app):
+    app = quiet_app
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("z")
+        await pilot.pause()
+
+    later = CoreApp(db.open_db())
+    async with later.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        assert later.speech_mode is True
+        assert later.screen._recorder is not None and later.screen._recorder.paused
+        await pilot.press("q")
+        await pilot.pause()
+
+    # And the projection rebuilds it from the log alone.
+    from core import events
+
+    events.replay(later.conn)
+    assert _speech_row(later) == 1

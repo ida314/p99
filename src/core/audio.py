@@ -20,9 +20,13 @@ pause — which is what a pause was supposed to remove from the recording anyway
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
+import sys
+import threading
+from array import array
 from pathlib import Path
 
 from . import branding, paths
@@ -34,6 +38,16 @@ ENV_FFMPEG = branding.env("FFMPEG")
 #: far more than closing a voice stream takes and still short enough that a hung
 #: encoder cannot hold up the finish prompt.
 FINALIZE_TIMEOUT = 3.0
+
+#: The meter's copy of the input: mono, 16-bit, at a rate far below anything
+#: worth listening to and far above what a level reading needs. 16 KB/s of pipe.
+METER_RATE = 8000
+#: One reading per 50 ms of audio. The screen asks ten times a second and takes
+#: the loudest reading since it last asked, so nothing short is lost between.
+METER_CHUNK = METER_RATE // 20 * 2
+#: The floor of the meter, in dBFS. A quiet room sits around -60 on a laptop
+#: microphone and speech at arm's length around -30 to -15.
+METER_FLOOR_DB = -60.0
 
 
 def ffmpeg() -> str:
@@ -71,6 +85,11 @@ class Recorder:
         self._proc: subprocess.Popen | None = None
         self._segments: list[Path] = []
         self._stopped = False
+        self._meter: threading.Thread | None = None
+        # The loudest reading since `take_level` last asked, in dBFS. Written by
+        # the meter thread, swapped out by the screen; a float assignment is
+        # atomic under the GIL, which is all the locking this needs.
+        self._level: float | None = None
 
     # --- state ------------------------------------------------------------
 
@@ -82,6 +101,21 @@ class Recorder:
     @property
     def paused(self) -> bool:
         return not self._stopped and not self.recording and bool(self._segments)
+
+    @property
+    def started(self) -> bool:
+        """Has any segment been opened? False for a recorder that only waited."""
+        return bool(self._segments)
+
+    def take_level(self) -> float | None:
+        """The loudest reading since the last call, in dBFS, or None if none came.
+
+        Read off the encoder's own input, not a second handle on the microphone:
+        a meter that moves is proof the recording is hearing you, which a meter
+        fed by anything else could not be.
+        """
+        level, self._level = self._level, None
+        return level
 
     # --- lifecycle --------------------------------------------------------
 
@@ -175,6 +209,22 @@ class Recorder:
             self.input_format,
             "-i",
             self.device,
+            # The meter's output first, so the recording stays the last argument
+            # (the test fake writes to whatever comes last). Raw PCM on stdout,
+            # flushed per packet: buffered, it would arrive seconds late.
+            "-map",
+            "0:a",
+            "-ac",
+            "1",
+            "-ar",
+            str(METER_RATE),
+            "-f",
+            "s16le",
+            "-flush_packets",
+            "1",
+            "pipe:1",
+            "-map",
+            "0:a",
             "-ac",
             "1",
             "-c:a",
@@ -211,7 +261,7 @@ class Recorder:
                 # the encoder can never read the terminal Textual is about to
                 # hand to $EDITOR. A new session keeps the TUI's ctrl-c off it.
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
@@ -219,7 +269,45 @@ class Recorder:
             self._proc = None
             return False
         self._segments.append(dest)
+        self._meter = threading.Thread(
+            target=self._drain, args=(self._proc.stdout,), daemon=True
+        )
+        self._meter.start()
         return True
+
+    def _drain(self, stream) -> None:
+        """Read the meter pipe until ffmpeg closes it. Never stops early.
+
+        The meter is an output of the same process as the recording, and ffmpeg
+        ends the whole process when one of its outputs breaks — measured: a meter
+        pipe closed after 0.2 s left a 0.2 s recording. So this loop reads to EOF
+        whatever the arithmetic does; a failed reading is skipped, never fatal.
+        The upside of the coupling is that a p99 that dies outright takes the
+        encoder down with it rather than leaving the microphone open.
+        """
+        swap = sys.byteorder == "big"
+        try:
+            while True:
+                chunk = stream.read(METER_CHUNK)
+                if not chunk:
+                    return
+                try:
+                    samples = array("h")
+                    samples.frombytes(chunk[: len(chunk) - len(chunk) % 2])
+                    if swap:
+                        samples.byteswap()
+                    if not samples:
+                        continue
+                    rms = math.sqrt(sum(x * x for x in samples) / len(samples))
+                    db = 20 * math.log10(rms / 32768) if rms else METER_FLOOR_DB
+                    db = max(db, METER_FLOOR_DB)
+                    current = self._level
+                    if current is None or db > current:
+                        self._level = db
+                except Exception:
+                    continue
+        except (OSError, ValueError):
+            return
 
     def _close_segment(self) -> None:
         proc, self._proc = self._proc, None
@@ -248,6 +336,13 @@ class Recorder:
         except (OSError, subprocess.SubprocessError):
             pass
         finally:
+            # The meter thread reads to EOF, which the exit above has just
+            # delivered; closing stdout under a reader still inside `read` is
+            # the one thing to avoid, so it gets a moment to finish first.
+            meter, self._meter = self._meter, None
+            if meter is not None:
+                meter.join(timeout=FINALIZE_TIMEOUT)
+            self._level = None
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if stream is not None:
                     try:

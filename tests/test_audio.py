@@ -226,3 +226,45 @@ def test_adopt_does_not_disturb_a_recorder_that_is_already_running(fake_ffmpeg):
     assert recorder.adopt() == 1
     assert recorder.recording is True
     recorder.discard()
+
+
+# Like the fake above, but it also feeds the meter: loud noise on stdout, the
+# way the real encoder streams its PCM copy of the input.
+LOUD_FFMPEG = """#!/bin/sh
+for arg in "$@"; do dest="$arg"; done
+printf 'segment' > "$dest"
+head -c 4000 /dev/urandom
+read -r line
+exit 0
+"""
+
+
+def test_the_meter_reads_the_encoders_own_output(isolated_home, monkeypatch):
+    import time
+
+    script = isolated_home / "loud-ffmpeg"
+    script.write_text(LOUD_FFMPEG)
+    script.chmod(0o755)
+    monkeypatch.setenv(branding.env("FFMPEG"), str(script))
+    paths.ensure_dirs()
+
+    recorder = audio.Recorder("two-sum", 9)
+    assert recorder.take_level() is None
+    recorder.start()
+    level = None
+    for _ in range(50):
+        level = recorder.take_level()
+        if level is not None:
+            break
+        time.sleep(0.02)
+    # Uniform noise across the full 16-bit range sits near -4.8 dBFS.
+    assert level is not None and level > -10
+    recorder.discard()
+
+
+def test_the_recording_stays_the_last_argument(isolated_home):
+    """The meter is a second output; the file a segment writes must stay last."""
+    recorder = audio.Recorder("two-sum", 1)
+    command = recorder._command(isolated_home / "001.opus")
+    assert command[-1] == str(isolated_home / "001.opus")
+    assert command.index("pipe:1") < command.index("libopus")

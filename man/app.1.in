@@ -35,11 +35,14 @@ problem runs — one Opus file per attempt, pausing exactly when the clock does.
 It needs
 .B ffmpeg
 on the path and nothing else; without one, a run says so and carries on
-unrecorded. Turn it on in the settings screen, or with
+unrecorded. Turn it on in the settings screen, with
 .B ^a
-on the setup screen for a single run. The active problem screen shows
+on the setup screen for a single run, or with
+.B a
+on the active problem screen for the rest of the run. The active problem screen
+shows
 .B "\(bu REC"
-for as long as the microphone is open.
+for as long as the microphone is open, with a level meter beneath it.
 .PP
 With no command,
 .B @COMMAND@
@@ -364,6 +367,13 @@ carries the most recent one.
 .B ?
 Reveal the next hint tier. Hints are monotonic and cannot be taken back; the
 last tier is the full solution and ends the attempt.
+.TP
+.B a
+Turn speech mode on or off for the rest of the run. On starts recording now, or
+from the next
+.B p
+if the clock is paused; off keeps what was recorded, and on again continues
+the same file. The setting itself is never changed.
 .TP
 .B s
 Log a failed submit, then hand you an editor buffer to paste the code that was

@@ -121,6 +121,35 @@ def bar(ratio: float | None, width: int = 13, filled: str = "█", empty: str = 
     return filled * n + empty * (width - n)
 
 
+#: Eight heights, quietest first. The lowest is a visible baseline rather than a
+#: space, so a silent microphone reads as silence and not as a missing line.
+METER_BARS = "▁▂▃▄▅▆▇█"
+
+
+def mic_meter(levels: Sequence[float], *, live: bool, width: int = 32) -> Text:
+    """The microphone's recent levels, oldest first, as a scrolling bar strip.
+
+    `levels` are dBFS readings. Speech lives between about -45 and -10, so that
+    is the span the eight heights cover; anything quieter is the baseline and
+    anything louder is a full bar. Not live -- paused, or speech mode turned off
+    -- the strip freezes and greys rather than vanishing, so the line keeps its
+    place and says what it is doing.
+    """
+    lo, hi = -45.0, -10.0
+    recent = list(levels)[-width:]
+    strip = "".join(
+        METER_BARS[
+            round(max(0.0, min(1.0, (db - lo) / (hi - lo))) * (len(METER_BARS) - 1))
+        ]
+        for db in recent
+    )
+    strip = strip.rjust(width, METER_BARS[0])
+    line = Text("  ")
+    line.append("mic  ", style="bright_black")
+    line.append(strip, style="green" if live else "bright_black")
+    return line
+
+
 def signed(n: int) -> str:
     if n == 0:
         return "0"
